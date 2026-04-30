@@ -1,4 +1,4 @@
-use pyo3::prelude::*;
+use pyo3::{exceptions::PyValueError, prelude::*};
 
 pub const BOARD_SIZE: usize = 9;
 pub const BOARD_CELLS: usize = BOARD_SIZE * BOARD_SIZE;
@@ -171,14 +171,25 @@ impl GameState {
             return Vec::new();
         }
 
-        let mut actions: Vec<usize> = self
-            .board
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, cell)| (*cell == Cell::Empty).then_some(idx))
-            .collect();
+        let mut actions: Vec<usize> = if self.current_player.used_count(self) < CASTLES_PER_PLAYER {
+            self.board
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, cell)| (*cell == Cell::Empty).then_some(idx))
+                .collect()
+        } else {
+            Vec::new()
+        };
         actions.push(PASS_ACTION);
         actions
+    }
+
+    pub fn apply_action(&mut self, action_index: usize) -> PyResult<Option<u8>> {
+        self.apply(Action::from_index(action_index).ok_or_else(|| {
+            PyValueError::new_err(format!("invalid action index: {action_index}"))
+        })?)
+        .map(|outcome| outcome.map(|outcome| outcome.winner as u8))
+        .map_err(|err| PyValueError::new_err(format!("invalid action: {err:?}")))
     }
 
     #[must_use]
@@ -200,6 +211,58 @@ impl GameState {
 impl Default for GameState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl GameState {
+    pub fn apply(&mut self, action: Action) -> Result<Option<GameOutcome>, InvalidAction> {
+        if self.terminal {
+            return Err(InvalidAction::GameAlreadyEnded);
+        }
+
+        match action {
+            Action::Place { row, col } => self.apply_place(row, col),
+            Action::Pass => self.apply_pass(),
+        }
+    }
+
+    fn apply_place(
+        &mut self,
+        row: usize,
+        col: usize,
+    ) -> Result<Option<GameOutcome>, InvalidAction> {
+        if row >= BOARD_SIZE || col >= BOARD_SIZE {
+            return Err(InvalidAction::OutOfRange);
+        }
+        if self.current_player.used_count(self) >= CASTLES_PER_PLAYER {
+            return Err(InvalidAction::NoCastlesRemaining);
+        }
+
+        let index = row * BOARD_SIZE + col;
+        if self.board[index] != Cell::Empty {
+            return Err(InvalidAction::OccupiedCell);
+        }
+
+        self.board[index] = self.current_player.cell();
+        self.increment_current_player_used();
+        self.previous_pass = false;
+        self.current_player = self.current_player.other();
+
+        Ok(None)
+    }
+
+    fn apply_pass(&mut self) -> Result<Option<GameOutcome>, InvalidAction> {
+        self.previous_pass = true;
+        self.current_player = self.current_player.other();
+
+        Ok(None)
+    }
+
+    fn increment_current_player_used(&mut self) {
+        match self.current_player {
+            Player::Blue => self.blue_used += 1,
+            Player::Orange => self.orange_used += 1,
+        }
     }
 }
 
@@ -256,5 +319,58 @@ mod tests {
         assert!(!state.is_terminal());
         assert_eq!(state.winner(), None);
         assert_eq!(state.end_reason(), None);
+    }
+
+    #[test]
+    fn place_action_updates_board_usage_and_turn() {
+        let mut state = GameState::new();
+
+        assert_eq!(state.apply(Action::Place { row: 0, col: 0 }), Ok(None));
+
+        assert_eq!(state.board[0], Cell::Blue);
+        assert_eq!(state.blue_used, 1);
+        assert_eq!(state.orange_used, 0);
+        assert_eq!(state.current_player, Player::Orange);
+        assert!(!state.previous_pass);
+        assert_eq!(state.legal_actions().len(), 80);
+        assert!(!state.legal_actions().contains(&0));
+        assert!(state.legal_actions().contains(&PASS_ACTION));
+    }
+
+    #[test]
+    fn place_action_rejects_occupied_center_and_out_of_range_cells() {
+        let mut state = GameState::new();
+
+        assert_eq!(
+            state.apply(Action::Place { row: 4, col: 4 }),
+            Err(InvalidAction::OccupiedCell)
+        );
+        assert_eq!(
+            state.apply(Action::Place { row: 9, col: 0 }),
+            Err(InvalidAction::OutOfRange)
+        );
+        assert_eq!(state.current_player, Player::Blue);
+        assert_eq!(state.blue_used, 0);
+    }
+
+    #[test]
+    fn player_with_no_castles_remaining_can_only_pass() {
+        let mut state = GameState::new();
+
+        for index in 0..BOARD_CELLS {
+            if index == CENTER_INDEX {
+                continue;
+            }
+            assert_eq!(state.apply(Action::from_index(index).unwrap()), Ok(None));
+        }
+
+        assert_eq!(state.blue_used, CASTLES_PER_PLAYER);
+        assert_eq!(state.orange_used, CASTLES_PER_PLAYER);
+        assert_eq!(state.current_player, Player::Blue);
+        assert_eq!(state.legal_actions(), vec![PASS_ACTION]);
+        assert_eq!(
+            state.apply(Action::Place { row: 0, col: 0 }),
+            Err(InvalidAction::NoCastlesRemaining)
+        );
     }
 }
