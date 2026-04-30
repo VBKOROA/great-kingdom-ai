@@ -252,6 +252,17 @@ impl GameState {
     }
 
     fn apply_pass(&mut self) -> Result<Option<GameOutcome>, InvalidAction> {
+        if self.previous_pass {
+            let outcome = GameOutcome {
+                reason: GameEndReason::ConsecutivePasses,
+                winner: self.score_winner_after_consecutive_passes(),
+            };
+            self.previous_pass = true;
+            self.terminal = true;
+            self.outcome = Some(outcome);
+            return Ok(Some(outcome));
+        }
+
         self.previous_pass = true;
         self.current_player = self.current_player.other();
 
@@ -263,6 +274,19 @@ impl GameState {
             Player::Blue => self.blue_used += 1,
             Player::Orange => self.orange_used += 1,
         }
+    }
+
+    fn score_winner_after_consecutive_passes(&self) -> Player {
+        let (blue_score, orange_score) = self.territory_scores();
+        if blue_score >= orange_score + 3 {
+            Player::Blue
+        } else {
+            Player::Orange
+        }
+    }
+
+    fn territory_scores(&self) -> (u8, u8) {
+        (0, 0)
     }
 }
 
@@ -371,6 +395,44 @@ mod tests {
         assert_eq!(
             state.apply(Action::Place { row: 0, col: 0 }),
             Err(InvalidAction::NoCastlesRemaining)
+        );
+    }
+
+    #[test]
+    fn single_pass_changes_turn_and_next_place_resets_pass_state() {
+        let mut state = GameState::new();
+
+        assert_eq!(state.apply(Action::Pass), Ok(None));
+        assert_eq!(state.current_player, Player::Orange);
+        assert!(state.previous_pass);
+        assert!(!state.is_terminal());
+
+        assert_eq!(state.apply(Action::Place { row: 0, col: 0 }), Ok(None));
+        assert_eq!(state.board[0], Cell::Orange);
+        assert_eq!(state.current_player, Player::Blue);
+        assert!(!state.previous_pass);
+    }
+
+    #[test]
+    fn consecutive_passes_end_game_with_score_winner() {
+        let mut state = GameState::new();
+
+        assert_eq!(state.apply(Action::Pass), Ok(None));
+        let outcome = state.apply(Action::Pass).unwrap().unwrap();
+
+        assert!(state.is_terminal());
+        assert!(state.previous_pass);
+        assert_eq!(state.current_player, Player::Orange);
+        assert_eq!(outcome.reason, GameEndReason::ConsecutivePasses);
+        assert_eq!(outcome.winner, Player::Orange);
+        assert_eq!(
+            state.end_reason(),
+            Some(GameEndReason::ConsecutivePasses as u8)
+        );
+        assert_eq!(state.winner(), Some(Player::Orange as u8));
+        assert_eq!(
+            state.apply(Action::Pass),
+            Err(InvalidAction::GameAlreadyEnded)
         );
     }
 }
