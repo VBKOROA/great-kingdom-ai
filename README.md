@@ -76,6 +76,7 @@ Python과 Rust 연결은 PyO3와 maturin을 사용하는 방향으로 설계되�
 - [docs/rule-spec.md](docs/rule-spec.md): Great Kingdom 재현용 규칙 명세
 - [docs/alphazero-lite.md](docs/alphazero-lite.md): AlphaZero-lite 학습 구조 명세
 - [docs/python-rust-architecture.md](docs/python-rust-architecture.md): Python + Rust 구현 구조 명세
+- [docs/development-plan.md](docs/development-plan.md): 단계별 개발 계획표
 
 ## 현재 상태
 
