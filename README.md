@@ -2,7 +2,7 @@
 
 Great Kingdom AI는 9x9 추상 전략 게임 **Great Kingdom**을 재현하고, 자가대국 기반 학습으로 강해지는 AI 플레이어를 만들기 위한 프로젝트입니다.
 
-현재 저장소는 구현 전 설계 단계이며, 핵심 규칙과 학습 구조, Python/Rust 분리 아키텍처를 문서로 정리해 둔 상태입니다.
+현재 저장소는 초기 개발 환경과 최소 패키지 스캐폴드를 포함합니다. 핵심 규칙과 학습 구조, Python/Rust 분리 아키텍처는 문서로 정리해 둔 상태입니다.
 
 ## 목표
 
@@ -79,14 +79,34 @@ Python과 Rust 연결은 PyO3와 maturin을 사용하는 방향으로 설계되�
 
 ## 현재 상태
 
-아직 실행 가능한 게임 엔진, 학습 코드, 패키지 설정은 포함되어 있지 않습니다.
+아직 완성된 게임 엔진과 학습 코드는 포함되어 있지 않습니다.
 
 현재 단계에서 이 저장소는 다음을 제공합니다.
 
 - 게임 규칙의 기준 문서
 - AI 학습 방식의 설계 문서
-- 향후 구현할 Python/Rust 모듈 구조
+- 초기 Python 패키지와 Rust/PyO3 crate 구조
 - 개발 순서와 책임 분리 기준
+
+## 개발 환경
+
+Python 3.13과 Rust 1.85 이상을 기준으로 합니다.
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -e '.[dev]'
+cd rust/great_kingdom_core
+../../.venv/bin/python -m maturin develop
+cargo test
+cd ../..
+.venv/bin/python -m pytest
+```
+
+Rust 포맷터와 린터는 Ubuntu/Debian 기준으로 다음 패키지가 필요합니다.
+
+```bash
+sudo apt install -y rustfmt rust-clippy
+```
 
 ## 예정 디렉터리 구조
 
