@@ -279,7 +279,7 @@ def test_runpod_training_configs_load() -> None:
     assert pipeline.leaf_batch_size > pipeline.self_play_batch_size
     assert pipeline.min_replay_samples >= train.batch_size
     assert train.device == "cuda"
-    assert train.model_preset == "medium"
+    assert train.model_preset == "large"
     assert arena.device == "cuda"
     assert arena.games > 0
 

@@ -365,29 +365,47 @@ impl MctsSelfPlayBatch {
             .iter()
             .any(|index| completed[*index] < self.searches[*index].config.simulations)
         {
-            let pending_leaves: Vec<_> = self.states.par_iter()
+            let pending_by_game: Vec<Vec<_>> = self
+                .states
+                .par_iter()
                 .zip(self.searches.par_iter_mut())
                 .zip(completed.par_iter_mut())
                 .zip(root_indexes.par_iter())
                 .enumerate()
-                .filter_map(|(game_index, (((state, search), comp), root_index))| {
-                    let root_index = (*root_index)?;
-                    let mut local_pending = None;
+                .map(|(game_index, (((state, search), comp), root_index))| {
+                    let Some(root_index) = *root_index else {
+                        return Vec::new();
+                    };
+                    let batch_target =
+                        (search.config.simulations - *comp).min(leaf_batch_size as u32) as usize;
+                    let mut local_pending = Vec::with_capacity(batch_target);
 
-                    while *comp < search.config.simulations {
+                    for _ in 0..batch_target {
+                        if *comp + local_pending.len() as u32 >= search.config.simulations {
+                            break;
+                        }
                         let mut simulation_state = state.clone();
                         match search.select_eval_leaf(root_index, &mut simulation_state) {
-                            PendingSimulation::NeedsEvaluation { path, state: leaf_state } => {
+                            PendingSimulation::NeedsEvaluation {
+                                path,
+                                state: leaf_state,
+                            } => {
                                 reserve_path(&mut search.nodes, &path);
-                                local_pending = Some(PendingGameLeaf {
+                                local_pending.push(PendingGameLeaf {
                                     game_index,
                                     path,
                                     state: leaf_state,
                                 });
-                                break;
                             }
-                            PendingSimulation::Terminal { path, last_edge_value } => {
-                                backup_path_from_last_edge(&mut search.nodes, &path, last_edge_value);
+                            PendingSimulation::Terminal {
+                                path,
+                                last_edge_value,
+                            } => {
+                                backup_path_from_last_edge(
+                                    &mut search.nodes,
+                                    &path,
+                                    last_edge_value,
+                                );
                                 *comp += 1;
                             }
                             PendingSimulation::RootTerminal => {
@@ -398,18 +416,23 @@ impl MctsSelfPlayBatch {
                     local_pending
                 })
                 .collect();
+            let pending_leaves = pending_by_game.into_iter().flatten().collect::<Vec<_>>();
 
             if pending_leaves.is_empty() {
                 continue;
             }
 
             for chunk in pending_leaves.chunks(leaf_batch_size) {
-                let request_states = chunk.iter().map(|leaf| leaf.state.clone()).collect::<Vec<_>>();
+                let request_states = chunk
+                    .iter()
+                    .map(|leaf| leaf.state.clone())
+                    .collect::<Vec<_>>();
                 let response = evaluator.call1((EvalRequest::new(request_states),))?;
                 let eval = parse_eval_response(&response)?;
                 eval.validate_len(chunk.len())?;
 
-                for (leaf, (policy, value)) in chunk.iter()
+                for (leaf, (policy, value)) in chunk
+                    .iter()
                     .zip(eval.policies.into_iter().zip(eval.values.into_iter()))
                 {
                     let search = &mut self.searches[leaf.game_index];
