@@ -58,6 +58,14 @@ class MctsSearchLike(Protocol):
         priors: list[float],
     ) -> MctsResultLike: ...
 
+    def search_with_priors_and_evaluator(
+        self,
+        state: SelfPlayState,
+        priors: list[float],
+        evaluator: Callable[[Any], tuple[list[list[float]], list[float]]],
+        leaf_batch_size: int = 8,
+    ) -> MctsResultLike: ...
+
     def set_simulations(self, simulations: int) -> None: ...
 
 
@@ -141,6 +149,7 @@ class MctsSelfPlayConfig:
     playout_cap_full_search_fraction: float = 0.25
     playout_cap_full_simulations: int = 50
     playout_cap_fast_simulations: int = 16
+    leaf_batch_size: int = 8
 
     def __post_init__(self) -> None:
         if self.max_turns <= 0:
@@ -161,6 +170,8 @@ class MctsSelfPlayConfig:
             raise ValueError("playout_cap_full_simulations must be positive")
         if self.playout_cap_fast_simulations <= 0:
             raise ValueError("playout_cap_fast_simulations must be positive")
+        if self.leaf_batch_size <= 0:
+            raise ValueError("leaf_batch_size must be positive")
 
 
 def choose_random_legal_action(
@@ -237,6 +248,11 @@ def play_mcts_game(
     search: MctsSearchLike | None = None,
     config: MctsSelfPlayConfig | None = None,
     prior_provider: Callable[[SelfPlayState], Sequence[float]] | None = None,
+    evaluator_provider: Callable[
+        [Sequence[SelfPlayState]],
+        tuple[Sequence[Sequence[float]], Sequence[float]],
+    ]
+    | None = None,
 ) -> tuple[GameLog, list[ReplaySample]]:
     """Run one MCTS self-play game and return replay samples with final value targets."""
     config = config if config is not None else MctsSelfPlayConfig()
@@ -267,6 +283,7 @@ def play_mcts_game(
             rng,
             config,
             root_priors=root_priors,
+            evaluator_provider=evaluator_provider,
         )
         visit_counts = result.visit_counts()
         policy = policy_target_from_visit_counts(visit_counts)
@@ -363,6 +380,7 @@ def play_mcts_games_batched(
                 turn,
                 config,
                 root_priors=root_priors,
+                evaluator_provider=evaluator_provider,
             )
     else:
         unfinished = [game.seed for game in games if not game.state.is_terminal()]
@@ -438,7 +456,20 @@ def _run_self_play_search(
     config: MctsSelfPlayConfig,
     *,
     root_priors: Sequence[float] | None = None,
+    evaluator_provider: Callable[
+        [Sequence[SelfPlayState]],
+        tuple[Sequence[Sequence[float]], Sequence[float]],
+    ]
+    | None = None,
 ) -> MctsResultLike:
+    if root_priors is None and evaluator_provider is not None:
+        root_policies, _root_values = evaluator_provider([state])
+        if len(root_policies) != 1:
+            raise ValueError(
+                f"expected 1 root policy row from evaluator, got {len(root_policies)}"
+            )
+        root_priors = root_policies[0]
+
     if root_priors is None and not config.root_noise:
         return search.search(state)
 
@@ -450,9 +481,19 @@ def _run_self_play_search(
         alpha=config.root_dirichlet_alpha,
         epsilon=config.root_exploration_fraction,
     )
-    if config.root_noise:
-        return search.search_with_priors(state, noisy_priors.tolist())
-    return search.search_with_priors(state, priors)
+    search_priors = noisy_priors.tolist() if config.root_noise else priors
+    if evaluator_provider is None:
+        return search.search_with_priors(state, search_priors)
+
+    def evaluator(request: Any) -> tuple[list[list[float]], list[float]]:
+        return _evaluate_core_batch_policy_values(evaluator_provider, request)
+
+    return search.search_with_priors_and_evaluator(
+        state,
+        search_priors,
+        evaluator,
+        config.leaf_batch_size,
+    )
 
 
 @dataclass
@@ -665,9 +706,10 @@ def _evaluate_core_batch_policy_values(
 
 def _request_states(request: Any) -> list[Any]:
     class _RequestState:
-        def __init__(self, features: list[float], mask: list[bool]) -> None:
+        def __init__(self, features: list[float], mask: list[bool], player: int | None) -> None:
             self._features = features
             self._mask = mask
+            self._player = player
 
         def feature_planes(self) -> list[float]:
             return self._features
@@ -675,11 +717,23 @@ def _request_states(request: Any) -> list[Any]:
         def legal_mask(self) -> list[bool]:
             return self._mask
 
+        def current_player(self) -> int:
+            if self._player is None:
+                raise RuntimeError("eval request did not include current player metadata")
+            return self._player
+
+    features = request.feature_planes()
+    players = (
+        [int(player) for player in request.current_players()]
+        if hasattr(request, "current_players")
+        else [None] * len(features)
+    )
     return [
-        _RequestState(features, mask)
-        for features, mask in zip(
-            request.feature_planes(),
+        _RequestState(feature_planes, mask, player)
+        for feature_planes, mask, player in zip(
+            features,
             request.legal_masks(),
+            players,
             strict=True,
         )
     ]
@@ -711,6 +765,11 @@ def _play_batched_mcts_turn(
     config: MctsSelfPlayConfig,
     *,
     root_priors: Sequence[float] | None,
+    evaluator_provider: Callable[
+        [Sequence[SelfPlayState]],
+        tuple[Sequence[Sequence[float]], Sequence[float]],
+    ]
+    | None = None,
 ) -> None:
     player = game.state.current_player()
     features = _state_features_for_replay(game.state)
@@ -729,6 +788,7 @@ def _play_batched_mcts_turn(
         game.rng,
         config,
         root_priors=root_priors,
+        evaluator_provider=evaluator_provider,
     )
     visit_counts = result.visit_counts()
     policy = policy_target_from_visit_counts(visit_counts)

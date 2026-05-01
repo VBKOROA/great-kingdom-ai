@@ -90,6 +90,16 @@ class PriorSearch:
         visits[action] = 1
         return PriorSearchResult(visits)
 
+    def search_with_priors_and_evaluator(
+        self,
+        state: OneMoveState,
+        priors: list[float],
+        evaluator: Any,
+        leaf_batch_size: int = 8,
+    ) -> PriorSearchResult:
+        del evaluator, leaf_batch_size
+        return self.search_with_priors(state, priors)
+
 
 def fake_evaluate_feature_batch(
     model: FakeNetwork,

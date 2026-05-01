@@ -35,6 +35,11 @@ impl EvalRequest {
             .map(GameState::legal_mask)
             .collect::<Vec<_>>()
     }
+
+    #[must_use]
+    pub fn current_players(&self) -> Vec<u8> {
+        self.states.iter().map(GameState::current_player).collect()
+    }
 }
 
 impl EvalRequest {
@@ -183,6 +188,29 @@ impl MctsSearch {
             let response = evaluator.call1((request,))?;
             parse_eval_response(&response)
         })
+    }
+
+    #[pyo3(signature = (state, priors, evaluator, leaf_batch_size = 8))]
+    pub fn search_with_priors_and_evaluator(
+        &mut self,
+        state: &GameState,
+        priors: Vec<f32>,
+        evaluator: &Bound<'_, PyAny>,
+        leaf_batch_size: usize,
+    ) -> PyResult<MctsResult> {
+        if leaf_batch_size == 0 {
+            return Err(PyValueError::new_err("leaf_batch_size must be positive"));
+        }
+        let prior_array = parse_policy_row(priors, 0)?;
+        self.run_with_root_priors_and_leaf_evaluator(
+            state,
+            &prior_array,
+            leaf_batch_size,
+            |request| {
+                let response = evaluator.call1((request,))?;
+                parse_eval_response(&response)
+            },
+        )
     }
 }
 

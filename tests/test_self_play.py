@@ -164,6 +164,20 @@ class FakeMctsSearch:
         self.noisy_priors = priors
         return FakeMctsResult(self.visits)
 
+    def search_with_priors_and_evaluator(
+        self,
+        state: ScriptedMctsState,
+        priors: list[float],
+        evaluator,
+        leaf_batch_size: int = 8,
+    ) -> FakeMctsResult:
+        self.noisy_priors = priors
+        policies, values = evaluator(_SingleStateEvalRequest(state))
+        assert len(policies) == 1
+        assert len(values) == 1
+        assert leaf_batch_size == 8
+        return FakeMctsResult(self.visits)
+
     def set_simulations(self, simulations: int) -> None:
         del simulations
 
@@ -258,6 +272,20 @@ class FakeCoreBatch:
 
     def set_simulations(self, simulations: list[int | None]) -> None:
         del simulations
+
+
+class _SingleStateEvalRequest:
+    def __init__(self, state: ScriptedMctsState) -> None:
+        self._state = state
+
+    def feature_planes(self) -> list[list[float]]:
+        return [self._state.feature_planes()]
+
+    def legal_masks(self) -> list[list[bool]]:
+        return [self._state.legal_mask()]
+
+    def current_players(self) -> list[int]:
+        return [self._state.current_player()]
 
 
 def test_random_selector_only_returns_legal_actions() -> None:
@@ -537,6 +565,33 @@ def test_play_mcts_game_can_use_model_root_priors_without_noise() -> None:
     )
 
     assert search.noisy_priors == priors
+    assert search.search_calls == 0
+
+
+def test_play_mcts_game_passes_leaf_evaluator_when_available() -> None:
+    visits = [0] * 82
+    visits[1] = 1
+    state = ScriptedMctsState()
+    search = FakeMctsSearch(visits)
+    seen_players: list[int] = []
+
+    def evaluator_provider(states) -> tuple[list[list[float]], list[float]]:
+        seen_players.extend(state.current_player() for state in states)
+        policy = [0.0] * 82
+        policy[1] = 1.0
+        return [policy for _state in states], [0.5 for _state in states]
+
+    play_mcts_game(
+        seed=49,
+        state=state,
+        search=search,
+        config=MctsSelfPlayConfig(root_noise=False),
+        prior_provider=lambda current_state: [1.0 / 82.0] * 82,
+        evaluator_provider=evaluator_provider,
+    )
+
+    assert seen_players == [1]
+    assert search.noisy_priors == [1.0 / 82.0] * 82
     assert search.search_calls == 0
 
 

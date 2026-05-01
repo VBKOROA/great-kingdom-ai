@@ -8,7 +8,7 @@ import shutil
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, NoReturn, cast
+from typing import Any, NoReturn
 
 from great_kingdom_ai.evaluate import (
     ArenaConfig,
@@ -198,11 +198,11 @@ def run_pipeline(
         if self_play_model is not None:
 
             def _prior_provider(state: Any, model: Any = self_play_model) -> list[float]:
-                return cast(list[float], evaluate_state_policy(
+                return evaluate_state_policy(
                     model,
                     state,
                     device=train_config.device,
-                ))
+                )
 
             prior_provider = _prior_provider
 
@@ -210,11 +210,11 @@ def run_pipeline(
                 states: Sequence[Any],
                 model: Any = self_play_model,
             ) -> list[list[float]]:
-                return cast(list[list[float]], evaluate_state_policies(
+                return evaluate_state_policies(
                     model,
                     states,
                     device=train_config.device,
-                ))
+                )
 
             batch_prior_provider = _batch_prior_provider
 
@@ -368,6 +368,7 @@ def generate_self_play_samples(
             search=search,
             config=game_config,
             prior_provider=prior_provider,
+            evaluator_provider=batch_evaluator_provider,
         )
 
     run_one = runner if runner is not None else default_runner
