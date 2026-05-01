@@ -161,7 +161,7 @@ def test_mcts_self_play_batch_rejects_prior_count_mismatch() -> None:
 def test_mcts_self_play_batch_combines_leaf_evaluator_requests_across_games() -> None:
     import great_kingdom_core as core  # type: ignore[import-untyped]
 
-    batch = core.MctsSelfPlayBatch(game_count=2, simulations=2, c_puct=1.5)
+    batch = core.MctsSelfPlayBatch(game_count=2, simulations=4, c_puct=1.5)
     request = batch.active_eval_request()
     priors = [
         [1.0 if is_legal else 0.0 for is_legal in mask]
@@ -185,4 +185,5 @@ def test_mcts_self_play_batch_combines_leaf_evaluator_requests_across_games() ->
     )
 
     assert all(result is not None for result in results)
-    assert max(evaluator_batch_sizes) >= 2
+    assert max(evaluator_batch_sizes) > 2
+    assert max(evaluator_batch_sizes) <= 8

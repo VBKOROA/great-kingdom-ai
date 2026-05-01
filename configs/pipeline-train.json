@@ -1,6 +1,7 @@
 {
   "iterations": 20,
   "max_self_play_games": null,
+  "leaf_batch_size": 128,
   "mcts_c_puct": 1.5,
   "mcts_simulations": 64,
   "min_replay_samples": 4096,

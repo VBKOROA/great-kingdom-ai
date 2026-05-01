@@ -365,66 +365,58 @@ impl MctsSelfPlayBatch {
             .any(|index| completed[*index] < self.searches[*index].config.simulations)
         {
             let mut pending = Vec::with_capacity(leaf_batch_size);
-            let selection_indexes = active_indexes
-                .iter()
-                .copied()
-                .filter(|game_index| {
-                    completed[*game_index] < self.searches[*game_index].config.simulations
-                })
-                .take(leaf_batch_size)
-                .collect::<Vec<_>>();
+            let mut scheduled = vec![0; self.states.len()];
 
-            let selections = std::thread::scope(|scope| {
-                let mut handles = Vec::with_capacity(selection_indexes.len());
-                for game_index in selection_indexes {
+            while pending.len() < leaf_batch_size {
+                let mut made_progress = false;
+
+                for game_index in active_indexes.iter().copied() {
+                    if pending.len() >= leaf_batch_size {
+                        break;
+                    }
+                    if completed[game_index] + scheduled[game_index]
+                        >= self.searches[game_index].config.simulations
+                    {
+                        continue;
+                    }
+
                     let root_index = root_indexes[game_index]
                         .expect("active game root must be initialized before simulation");
-                    let config = self.searches[game_index].config;
-                    let search =
-                        std::mem::replace(&mut self.searches[game_index], MctsSearch::new(config));
-                    let state = self.states[game_index].clone();
-                    handles.push(scope.spawn(move || {
-                        let mut simulation_state = state;
-                        let simulation = search.select_eval_leaf(root_index, &mut simulation_state);
-                        PendingGameSelection {
-                            game_index,
-                            search,
-                            simulation,
+                    let mut simulation_state = self.states[game_index].clone();
+                    match self.searches[game_index]
+                        .select_eval_leaf(root_index, &mut simulation_state)
+                    {
+                        PendingSimulation::NeedsEvaluation { path, state } => {
+                            reserve_path(&mut self.searches[game_index].nodes, &path);
+                            scheduled[game_index] += 1;
+                            pending.push(PendingGameLeaf {
+                                game_index,
+                                path,
+                                state,
+                            });
+                            made_progress = true;
                         }
-                    }));
-                }
-                handles
-                    .into_iter()
-                    .map(|handle| handle.join().expect("MCTS worker thread panicked"))
-                    .collect::<Vec<_>>()
-            });
-
-            for selection in selections {
-                let game_index = selection.game_index;
-                self.searches[game_index] = selection.search;
-                match selection.simulation {
-                    PendingSimulation::NeedsEvaluation { path, state } => {
-                        reserve_path(&mut self.searches[game_index].nodes, &path);
-                        pending.push(PendingGameLeaf {
-                            game_index,
+                        PendingSimulation::Terminal {
                             path,
-                            state,
-                        });
-                    }
-                    PendingSimulation::Terminal {
-                        path,
-                        last_edge_value,
-                    } => {
-                        backup_path_from_last_edge(
-                            &mut self.searches[game_index].nodes,
-                            &path,
                             last_edge_value,
-                        );
-                        completed[game_index] += 1;
+                        } => {
+                            backup_path_from_last_edge(
+                                &mut self.searches[game_index].nodes,
+                                &path,
+                                last_edge_value,
+                            );
+                            completed[game_index] += 1;
+                            made_progress = true;
+                        }
+                        PendingSimulation::RootTerminal => {
+                            completed[game_index] += 1;
+                            made_progress = true;
+                        }
                     }
-                    PendingSimulation::RootTerminal => {
-                        completed[game_index] += 1;
-                    }
+                }
+
+                if !made_progress {
+                    break;
                 }
             }
 
@@ -935,13 +927,6 @@ struct PendingGameLeaf {
     game_index: usize,
     path: Vec<(usize, usize)>,
     state: GameState,
-}
-
-#[derive(Clone, Debug)]
-struct PendingGameSelection {
-    game_index: usize,
-    search: MctsSearch,
-    simulation: PendingSimulation,
 }
 
 #[derive(Clone, Debug)]

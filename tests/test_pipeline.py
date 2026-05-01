@@ -251,6 +251,7 @@ def test_runpod_training_configs_load() -> None:
     assert pipeline.iterations > 1
     assert pipeline.self_play_games > 0
     assert pipeline.max_self_play_games is None
+    assert pipeline.leaf_batch_size > pipeline.self_play_batch_size
     assert pipeline.min_replay_samples >= train.batch_size
     assert train.device == "cuda"
     assert train.model_preset == "medium"

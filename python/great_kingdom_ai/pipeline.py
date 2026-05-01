@@ -51,6 +51,7 @@ class PipelineConfig:
     replay_capacity: int = 10000
     mcts_simulations: int = 8
     mcts_c_puct: float = 1.5
+    leaf_batch_size: int = 8
     self_play_max_turns: int = 200
     temperature_turns: int = 10
     sampling_temperature: float = 1.0
@@ -353,6 +354,7 @@ def generate_self_play_samples(
         playout_cap_full_search_fraction=pipeline_config.playout_cap_full_search_fraction,
         playout_cap_full_simulations=pipeline_config.mcts_simulations,
         playout_cap_fast_simulations=pipeline_config.playout_cap_fast_simulations,
+        leaf_batch_size=pipeline_config.leaf_batch_size,
     )
 
     def default_runner(
@@ -473,6 +475,8 @@ def _validate_pipeline_config(config: PipelineConfig) -> None:
         raise ValueError("replay_capacity must be positive")
     if config.mcts_simulations <= 0:
         raise ValueError("mcts_simulations must be positive")
+    if config.leaf_batch_size <= 0:
+        raise ValueError("leaf_batch_size must be positive")
     if not 0.0 < config.playout_cap_full_search_fraction <= 1.0:
         raise ValueError("playout_cap_full_search_fraction must be in (0, 1]")
     if config.playout_cap_fast_simulations <= 0:
@@ -603,6 +607,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="parallel self-play games for batched model inference",
     )
     self_play_group.add_argument(
+        "--leaf-batch-size",
+        type=int,
+        default=None,
+        help="neural leaf evaluations to batch per Rust MCTS callback",
+    )
+    self_play_group.add_argument(
         "--playout-cap-randomization",
         action="store_true",
         help="use full search only on sampled self-play turns",
@@ -650,6 +660,7 @@ def _configs_from_args(
         "min_replay_samples": args.min_replay_samples,
         "mcts_simulations": args.mcts_simulations,
         "self_play_batch_size": args.self_play_batch_size,
+        "leaf_batch_size": args.leaf_batch_size,
         "playout_cap_randomization": True if args.playout_cap_randomization else None,
         "playout_cap_full_search_fraction": args.playout_cap_full_search_fraction,
         "playout_cap_fast_simulations": args.playout_cap_fast_simulations,
