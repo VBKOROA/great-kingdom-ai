@@ -334,15 +334,44 @@ impl MctsSelfPlayBatch {
             .any(|index| completed[*index] < self.searches[*index].config.simulations)
         {
             let mut pending = Vec::with_capacity(leaf_batch_size);
-            for game_index in active_indexes.iter().copied() {
-                if completed[game_index] >= self.searches[game_index].config.simulations {
-                    continue;
+            let selection_indexes = active_indexes
+                .iter()
+                .copied()
+                .filter(|game_index| {
+                    completed[*game_index] < self.searches[*game_index].config.simulations
+                })
+                .take(leaf_batch_size)
+                .collect::<Vec<_>>();
+
+            let selections = std::thread::scope(|scope| {
+                let mut handles = Vec::with_capacity(selection_indexes.len());
+                for game_index in selection_indexes {
+                    let root_index = root_indexes[game_index]
+                        .expect("active game root must be initialized before simulation");
+                    let config = self.searches[game_index].config;
+                    let search =
+                        std::mem::replace(&mut self.searches[game_index], MctsSearch::new(config));
+                    let state = self.states[game_index].clone();
+                    handles.push(scope.spawn(move || {
+                        let mut simulation_state = state;
+                        let simulation = search.select_eval_leaf(root_index, &mut simulation_state);
+                        PendingGameSelection {
+                            game_index,
+                            search,
+                            simulation,
+                        }
+                    }));
                 }
-                let root_index = root_indexes[game_index]
-                    .expect("active game root must be initialized before simulation");
-                let mut simulation_state = self.states[game_index].clone();
-                match self.searches[game_index].select_eval_leaf(root_index, &mut simulation_state)
-                {
+                handles
+                    .into_iter()
+                    .map(|handle| handle.join().expect("MCTS worker thread panicked"))
+                    .collect::<Vec<_>>()
+            });
+
+            for selection in selections {
+                let game_index = selection.game_index;
+                self.searches[game_index] = selection.search;
+                match selection.simulation {
                     PendingSimulation::NeedsEvaluation { path, state } => {
                         reserve_path(&mut self.searches[game_index].nodes, &path);
                         pending.push(PendingGameLeaf {
@@ -365,9 +394,6 @@ impl MctsSelfPlayBatch {
                     PendingSimulation::RootTerminal => {
                         completed[game_index] += 1;
                     }
-                }
-                if pending.len() >= leaf_batch_size {
-                    break;
                 }
             }
 
@@ -878,6 +904,13 @@ struct PendingGameLeaf {
     game_index: usize,
     path: Vec<(usize, usize)>,
     state: GameState,
+}
+
+#[derive(Clone, Debug)]
+struct PendingGameSelection {
+    game_index: usize,
+    search: MctsSearch,
+    simulation: PendingSimulation,
 }
 
 #[derive(Clone, Debug)]
