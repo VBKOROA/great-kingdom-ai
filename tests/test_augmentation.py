@@ -1,5 +1,13 @@
+import random
+
 import numpy as np
-from great_kingdom_ai.augmentation import ALL_SYMMETRIES, augment_all_symmetries, augment_sample
+import pytest
+from great_kingdom_ai.augmentation import (
+    ALL_SYMMETRIES,
+    augment_all_symmetries,
+    augment_sample,
+    augment_samples_randomly,
+)
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.replay_buffer import ReplaySample
 
@@ -44,3 +52,22 @@ def test_augment_all_symmetries_returns_configured_transforms() -> None:
 
     assert len(augmented) == len(ALL_SYMMETRIES)
     assert all(item.features.shape == sample.features.shape for item in augmented)
+
+
+def test_augment_samples_randomly_applies_configured_symmetries() -> None:
+    sample = make_sample(action=1 * BOARD_SIZE + 2)
+
+    augmented = augment_samples_randomly(
+        [sample],
+        random.Random(1),
+        symmetries=("rot90",),
+    )
+
+    assert len(augmented) == 1
+    assert augmented[0].features[0, 6, 1] == 1.0
+    assert augmented[0].policy[6 * BOARD_SIZE + 1] == 0.75
+
+
+def test_augment_samples_randomly_rejects_empty_symmetry_set() -> None:
+    with pytest.raises(ValueError, match="at least one"):
+        augment_samples_randomly([make_sample(action=10)], random.Random(1), symmetries=())

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from collections.abc import Iterable
 from typing import Literal
 
@@ -63,6 +64,18 @@ def augment_all_symmetries(
     symmetries: Iterable[Symmetry] = ALL_SYMMETRIES,
 ) -> list[ReplaySample]:
     return [augment_sample(sample, symmetry) for symmetry in symmetries]
+
+
+def augment_samples_randomly(
+    samples: Iterable[ReplaySample],
+    rng: random.Random,
+    *,
+    symmetries: Iterable[Symmetry] = ALL_SYMMETRIES,
+) -> list[ReplaySample]:
+    choices = tuple(symmetries)
+    if not choices:
+        raise ValueError("symmetries must contain at least one transform")
+    return [augment_sample(sample, rng.choice(choices)) for sample in samples]
 
 
 def _transform_spatial(array: np.ndarray, symmetry: Symmetry) -> np.ndarray:

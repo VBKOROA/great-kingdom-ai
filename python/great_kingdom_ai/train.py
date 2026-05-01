@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, NoReturn
 
 import numpy as np
 
+from great_kingdom_ai.augmentation import augment_samples_randomly
 from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
 
 if TYPE_CHECKING:
@@ -37,6 +38,7 @@ class TrainingConfig:
     seed: int = 0
     device: str = "cpu"
     model_preset: str = "small"
+    symmetry_augmentation: bool = True
 
 
 @dataclass(frozen=True)
@@ -249,6 +251,8 @@ def train_from_replay(
     losses: list[dict[str, float]] = []
     for step in range(start_step, start_step + config.steps):
         samples = replay.sample(config.batch_size, rng)
+        if config.symmetry_augmentation:
+            samples = augment_samples_randomly(samples, rng)
         batch = samples_to_batch(samples, device=config.device)
         loss = train_step(state, batch, config)
         state = TrainState(
@@ -312,6 +316,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--steps", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--model-preset", choices=["small", "medium", "large"], default=None)
+    parser.add_argument(
+        "--no-symmetry-augmentation",
+        action="store_true",
+        help="disable random board symmetry augmentation during batch sampling",
+    )
     return parser
 
 
@@ -322,6 +331,7 @@ def _config_from_args(args: argparse.Namespace) -> TrainingConfig:
         "steps": args.steps,
         "batch_size": args.batch_size,
         "model_preset": args.model_preset,
+        "symmetry_augmentation": False if args.no_symmetry_augmentation else None,
     }
     data = asdict(config)
     data.update({key: value for key, value in overrides.items() if value is not None})
