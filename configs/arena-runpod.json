@@ -1,9 +1,9 @@
 {
   "c_puct": 1.5,
   "device": "cuda",
-  "games": 40,
+  "games": 100,
   "max_turns": 200,
   "promotion_threshold": 0.55,
   "seed_start": 100000,
-  "simulations": 128
+  "simulations": 200
 }
