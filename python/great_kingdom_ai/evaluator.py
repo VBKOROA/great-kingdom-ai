@@ -74,11 +74,11 @@ def evaluate_request_bytes(
         FEATURE_CHANNELS,
         BOARD_SIZE,
         BOARD_SIZE,
-    )
+    ).copy()
     masks = np.frombuffer(request.legal_mask_bytes(), dtype=np.bool_).reshape(
         batch_size,
         ACTION_SPACE,
-    )
+    ).copy()
     return evaluate_feature_arrays(model, features, masks, device=device)
 
 

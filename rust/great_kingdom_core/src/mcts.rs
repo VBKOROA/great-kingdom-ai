@@ -15,6 +15,8 @@ use crate::game::{
 #[derive(Clone, Debug)]
 pub struct EvalRequest {
     states: Vec<GameState>,
+    feature_bytes: Option<Vec<u8>>,
+    legal_mask_bytes: Option<Vec<u8>>,
 }
 
 #[pymethods]
@@ -39,6 +41,9 @@ impl EvalRequest {
 
     #[must_use]
     pub fn feature_plane_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        if let Some(feature_bytes) = &self.feature_bytes {
+            return PyBytes::new(py, feature_bytes);
+        }
         let mut features = Vec::with_capacity(self.states.len() * FEATURE_CHANNELS * BOARD_CELLS);
         for state in &self.states {
             features.extend(state.feature_planes());
@@ -56,6 +61,9 @@ impl EvalRequest {
 
     #[must_use]
     pub fn legal_mask_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        if let Some(legal_mask_bytes) = &self.legal_mask_bytes {
+            return PyBytes::new(py, legal_mask_bytes);
+        }
         let mut masks = Vec::with_capacity(self.states.len() * ACTION_SPACE);
         for state in &self.states {
             masks.extend(
@@ -77,7 +85,38 @@ impl EvalRequest {
 impl EvalRequest {
     #[must_use]
     pub(crate) fn new(states: Vec<GameState>) -> Self {
-        Self { states }
+        Self {
+            states,
+            feature_bytes: None,
+            legal_mask_bytes: None,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn new_with_precomputed_bytes(states: Vec<GameState>) -> Self {
+        let feature_rows = states
+            .par_iter()
+            .map(GameState::feature_planes)
+            .collect::<Vec<_>>();
+        let legal_mask_rows = states
+            .par_iter()
+            .map(GameState::legal_mask)
+            .collect::<Vec<_>>();
+
+        let mut features = Vec::with_capacity(states.len() * FEATURE_CHANNELS * BOARD_CELLS);
+        for row in feature_rows {
+            features.extend(row);
+        }
+        let mut masks = Vec::with_capacity(states.len() * ACTION_SPACE);
+        for row in legal_mask_rows {
+            masks.extend(row.into_iter().map(u8::from));
+        }
+
+        Self {
+            states,
+            feature_bytes: Some(f32_slice_as_bytes(&features).to_vec()),
+            legal_mask_bytes: Some(masks),
+        }
     }
 }
 
@@ -473,9 +512,10 @@ impl MctsSelfPlayBatch {
                 .iter()
                 .map(|leaf| leaf.state.clone())
                 .collect::<Vec<_>>();
+            let request = EvalRequest::new_with_precomputed_bytes(request_states);
             let request_elapsed = request_start.elapsed();
             let eval_start = Instant::now();
-            let response = evaluator.call1((EvalRequest::new(request_states),))?;
+            let response = evaluator.call1((request,))?;
             let eval_elapsed = eval_start.elapsed();
             let parse_start = Instant::now();
             let eval = parse_eval_response(&response)?;
@@ -666,9 +706,10 @@ impl MctsSelfPlayBatch {
                 .iter()
                 .map(|leaf| leaf.state.clone())
                 .collect::<Vec<_>>();
+            let request = EvalRequest::new_with_precomputed_bytes(request_states);
             let request_elapsed = request_start.elapsed();
             let eval_start = Instant::now();
-            let response = evaluator.call1((EvalRequest::new(request_states),))?;
+            let response = evaluator.call1((request,))?;
             let eval_elapsed = eval_start.elapsed();
             let parse_start = Instant::now();
             let eval = parse_eval_response(&response)?;
@@ -859,7 +900,7 @@ impl MctsSearch {
                 .iter()
                 .map(|leaf| leaf.state.clone())
                 .collect::<Vec<_>>();
-            let eval = evaluator(EvalRequest::new(request_states))?;
+            let eval = evaluator(EvalRequest::new_with_precomputed_bytes(request_states))?;
             eval.validate_len(pending.len())?;
             for (leaf, (policy, value)) in pending
                 .into_iter()
@@ -952,7 +993,7 @@ impl MctsSearch {
                 .iter()
                 .map(|leaf| leaf.state.clone())
                 .collect::<Vec<_>>();
-            let eval = evaluator(EvalRequest::new(request_states))?;
+            let eval = evaluator(EvalRequest::new_with_precomputed_bytes(request_states))?;
             eval.validate_len(pending.len())?;
             for (leaf, (policy, value)) in pending
                 .into_iter()
