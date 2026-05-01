@@ -21,6 +21,7 @@ from great_kingdom_ai.train import (  # noqa: E402
     compute_losses,
     create_train_state,
     load_checkpoint,
+    print_training_startup_config,
     samples_to_batch,
     save_checkpoint,
     train_from_replay,
@@ -121,3 +122,28 @@ def test_train_from_replay_saves_checkpoint_and_resume_advances_step(tmp_path) -
     assert resumed.end_step == 3
     assert second_checkpoint.is_file()
     assert resumed.losses[-1]["total"] > 0.0
+
+
+def test_print_training_startup_config_outputs_effective_settings(tmp_path, capsys) -> None:
+    replay = make_replay(size=3)
+    config = TrainingConfig(
+        batch_size=2,
+        steps=5,
+        device="cuda",
+        symmetry_augmentation=False,
+    )
+
+    print_training_startup_config(
+        config=config,
+        replay=replay,
+        replay_path=tmp_path / "replay.npz",
+        checkpoint_path=tmp_path / "checkpoint.pt",
+        resume_path=None,
+    )
+
+    output = capsys.readouterr().out
+    assert '"event": "train_config"' in output
+    assert '"batch_size": 2' in output
+    assert '"device": "cuda"' in output
+    assert '"symmetry_augmentation": false' in output
+    assert '"samples": 3' in output

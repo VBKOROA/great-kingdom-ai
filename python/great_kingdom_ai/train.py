@@ -338,10 +338,43 @@ def _config_from_args(args: argparse.Namespace) -> TrainingConfig:
     return TrainingConfig(**data)
 
 
+def print_training_startup_config(
+    *,
+    config: TrainingConfig,
+    replay: ReplayBuffer,
+    replay_path: Path,
+    checkpoint_path: Path,
+    resume_path: Path | None,
+) -> None:
+    print(
+        json.dumps(
+            {
+                "event": "train_config",
+                "config": asdict(config),
+                "replay": {
+                    "path": str(replay_path),
+                    "samples": len(replay),
+                    "capacity": replay.capacity,
+                },
+                "checkpoint": str(checkpoint_path),
+                "resume": str(resume_path) if resume_path is not None else None,
+            },
+            sort_keys=True,
+        )
+    )
+
+
 def main() -> NoReturn:
     args = build_parser().parse_args()
     config = _config_from_args(args)
     replay = ReplayBuffer.load(args.replay)
+    print_training_startup_config(
+        config=config,
+        replay=replay,
+        replay_path=args.replay,
+        checkpoint_path=args.checkpoint,
+        resume_path=args.resume,
+    )
     summary = train_from_replay(
         replay,
         config,
@@ -352,6 +385,7 @@ def main() -> NoReturn:
     print(
         json.dumps(
             {
+                "event": "train_summary",
                 "start_step": summary.start_step,
                 "end_step": summary.end_step,
                 "checkpoint": str(summary.checkpoint_path) if summary.checkpoint_path else None,
@@ -377,6 +411,7 @@ __all__ = [
     "create_train_state",
     "load_checkpoint",
     "load_training_config",
+    "print_training_startup_config",
     "samples_to_batch",
     "save_checkpoint",
     "train_from_replay",
