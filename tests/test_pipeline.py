@@ -278,7 +278,7 @@ def test_runpod_training_configs_load() -> None:
     assert pipeline.max_self_play_games is None
     assert pipeline.leaf_batch_size > 0
     assert pipeline.self_play_games >= pipeline.self_play_batch_size
-    assert pipeline.playout_cap_randomization
+    assert not pipeline.playout_cap_randomization
     assert pipeline.playout_cap_fast_simulations < pipeline.mcts_simulations
     assert pipeline.min_replay_samples >= train.batch_size
     assert train.device == "cuda"
