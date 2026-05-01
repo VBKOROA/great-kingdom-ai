@@ -10,7 +10,7 @@ pub use game::{
     ACTION_SPACE, Action, BOARD_CELLS, BOARD_SIZE, CASTLES_PER_PLAYER, CENTER_INDEX, Cell,
     FEATURE_CHANNELS, GameEndReason, GameOutcome, GameState, InvalidAction, PASS_ACTION, Player,
 };
-pub use mcts::{MctsConfig, MctsResult, MctsSearch};
+pub use mcts::{EvalRequest, MctsConfig, MctsResult, MctsSearch};
 
 #[pyfunction]
 #[must_use]
@@ -21,6 +21,7 @@ pub fn action_space() -> usize {
 #[pymodule]
 fn great_kingdom_core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<GameState>()?;
+    module.add_class::<EvalRequest>()?;
     module.add_class::<MctsResult>()?;
     module.add_class::<MctsSearch>()?;
     module.add_function(wrap_pyfunction!(action_space, module)?)?;

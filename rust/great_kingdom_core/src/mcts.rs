@@ -2,6 +2,48 @@ use pyo3::{exceptions::PyValueError, prelude::*};
 
 use crate::game::{ACTION_SPACE, Action, GameOutcome, GameState, Player};
 
+#[pyclass]
+#[derive(Clone, Debug)]
+pub struct EvalRequest {
+    states: Vec<GameState>,
+}
+
+#[pymethods]
+impl EvalRequest {
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.states.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.states.is_empty()
+    }
+
+    #[must_use]
+    pub fn feature_planes(&self) -> Vec<Vec<f32>> {
+        self.states
+            .iter()
+            .map(GameState::feature_planes)
+            .collect::<Vec<_>>()
+    }
+
+    #[must_use]
+    pub fn legal_masks(&self) -> Vec<Vec<bool>> {
+        self.states
+            .iter()
+            .map(GameState::legal_mask)
+            .collect::<Vec<_>>()
+    }
+}
+
+impl EvalRequest {
+    #[must_use]
+    pub(crate) fn new(states: Vec<GameState>) -> Self {
+        Self { states }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MctsConfig {
     pub simulations: u32,
@@ -80,6 +122,10 @@ impl MctsSearch {
 
     pub fn search(&mut self, state: &GameState) -> MctsResult {
         self.run(state)
+    }
+
+    pub fn root_eval_request(&self, state: &GameState) -> EvalRequest {
+        EvalRequest::new(vec![state.clone()])
     }
 }
 
@@ -383,5 +429,21 @@ mod tests {
         assert_eq!(value, 1.0);
         assert_eq!(search.nodes[0].visit_count, 1);
         assert_eq!(search.nodes[0].visit_counts()[0], 1);
+    }
+
+    #[test]
+    fn root_eval_request_returns_feature_and_mask_batch() {
+        let state = GameState::new();
+        let search = MctsSearch::new(MctsConfig::new(1, 1.5));
+        let request = search.root_eval_request(&state);
+
+        assert_eq!(request.len(), 1);
+        assert!(!request.is_empty());
+        assert_eq!(
+            request.feature_planes()[0].len(),
+            crate::game::FEATURE_CHANNELS * crate::game::BOARD_CELLS
+        );
+        assert_eq!(request.legal_masks()[0].len(), ACTION_SPACE);
+        assert_eq!(request.legal_masks()[0][crate::game::PASS_ACTION], true);
     }
 }
