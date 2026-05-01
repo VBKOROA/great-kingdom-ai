@@ -2,6 +2,7 @@
   "c_puct": 1.5,
   "device": "cpu",
   "games": 2,
+  "leaf_batch_size": 4,
   "max_turns": 200,
   "promotion_threshold": 0.55,
   "seed_start": 0,

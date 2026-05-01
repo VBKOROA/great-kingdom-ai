@@ -122,7 +122,7 @@ Runpod 학습 환경은 다음 템플릿을 기준으로 합니다.
 runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 ```
 
-학습 코드는 Python 3.11에서 동작해야 하며, 로컬과 CI의 기본 테스트는 GPU 없이 통과해야 합니다. Runpod에서는 `medium` 모델 preset을 초기 학습 기준으로 삼고, `large` preset은 self-play, 학습, 평가 루프가 안정된 뒤 처리량과 승률을 보고 올립니다.
+학습 코드는 Python 3.11에서 동작해야 하며, 로컬과 CI의 기본 테스트는 GPU 없이 통과해야 합니다. 현재 Runpod 정식 학습 설정은 RTX 4090 24GB 기준 `large` 모델 preset을 사용하고, 처리량 확인이 필요할 때만 `medium`으로 낮춰 비교합니다.
 
 Runpod에서는 이미지에 포함된 PyTorch/CUDA 조합을 유지하기 위해 venv를 system site packages로 만들고, `ai` extra를 설치하지 않습니다. 새 pod에서는 다음 스크립트로 개발 의존성 설치, Rust extension 빌드, Rust/Python 테스트를 한 번에 실행할 수 있습니다.
 
@@ -182,11 +182,7 @@ source .venv/bin/activate
 great-kingdom-pipeline \
   --pipeline-config configs/pipeline-train.json \
   --train-config configs/train-runpod.json \
-  --arena-config configs/arena-runpod.json \
-  --device cuda \
-  --playout-cap-randomization \
-  --playout-cap-full-search-fraction 0.25 \
-  --playout-cap-fast-simulations 16
+  --arena-config configs/arena-runpod.json
 ```
 
 완전히 새 run을 시작하려면 기존 replay를 무시하도록 `--fresh`와 별도 `work_dir`를 함께 지정합니다.

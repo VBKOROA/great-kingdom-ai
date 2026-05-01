@@ -1,5 +1,6 @@
 {
   "iterations": 2,
+  "leaf_batch_size": 4,
   "max_self_play_games": 8,
   "mcts_c_puct": 1.5,
   "mcts_simulations": 8,
