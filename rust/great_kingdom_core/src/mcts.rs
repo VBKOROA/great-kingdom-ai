@@ -115,6 +115,14 @@ impl MctsSearch {
         self.config.simulations
     }
 
+    pub fn set_simulations(&mut self, simulations: u32) -> PyResult<()> {
+        if simulations == 0 {
+            return Err(PyValueError::new_err("simulations must be positive"));
+        }
+        self.config.simulations = simulations;
+        Ok(())
+    }
+
     #[must_use]
     pub fn c_puct(&self) -> f32 {
         self.config.c_puct
@@ -405,6 +413,18 @@ mod tests {
         assert_eq!(config.simulations, 50);
         assert!((config.c_puct - 1.5).abs() < f32::EPSILON);
         assert_eq!(MctsConfig::new(8, 2.0).simulations, 8);
+    }
+
+    #[test]
+    fn mcts_search_can_update_simulation_budget() {
+        let mut search = MctsSearch::new(MctsConfig::new(8, 1.5));
+
+        search.set_simulations(3).unwrap();
+        let result = search.run(&GameState::new());
+
+        assert_eq!(search.simulations(), 3);
+        assert_eq!(result.visit_counts.iter().sum::<u32>(), 3);
+        assert!(search.set_simulations(0).is_err());
     }
 
     #[test]

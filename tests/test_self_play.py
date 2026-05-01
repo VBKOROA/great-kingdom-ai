@@ -122,6 +122,17 @@ class ScriptedMctsState:
         return (0, 0)
 
 
+class MultiTurnMctsState(ScriptedMctsState):
+    def __init__(self, terminal_after: int) -> None:
+        super().__init__()
+        self._terminal_after = terminal_after
+
+    def apply_action(self, action_index: int) -> int | None:
+        self.applied_actions.append(action_index)
+        self._terminal = len(self.applied_actions) >= self._terminal_after
+        return 1 if self._terminal else None
+
+
 class FakeMctsResult:
     def __init__(self, visits: list[int]) -> None:
         self._visits = visits
@@ -150,6 +161,18 @@ class FakeMctsSearch:
     ) -> FakeMctsResult:
         self.noisy_priors = priors
         return FakeMctsResult(self.visits)
+
+    def set_simulations(self, simulations: int) -> None:
+        del simulations
+
+
+class BudgetRecordingMctsSearch(FakeMctsSearch):
+    def __init__(self, visits: list[int]) -> None:
+        super().__init__(visits)
+        self.simulation_budgets: list[int] = []
+
+    def set_simulations(self, simulations: int) -> None:
+        self.simulation_budgets.append(simulations)
 
 
 def test_random_selector_only_returns_legal_actions() -> None:
@@ -230,6 +253,58 @@ def test_play_mcts_game_records_policy_and_final_value_targets() -> None:
 
 def test_mcts_self_play_config_samples_only_opening_turns_by_default() -> None:
     assert MctsSelfPlayConfig().temperature_turns == 10
+
+
+def test_play_mcts_game_can_skip_fast_playout_cap_turns() -> None:
+    visits = [0] * 82
+    visits[1] = 1
+    state = MultiTurnMctsState(terminal_after=3)
+    search = BudgetRecordingMctsSearch(visits)
+
+    log, samples = play_mcts_game(
+        seed=1,
+        state=state,
+        search=search,
+        config=MctsSelfPlayConfig(
+            max_turns=5,
+            temperature_turns=0,
+            root_noise=False,
+            playout_cap_randomization=True,
+            playout_cap_full_search_fraction=0.01,
+            playout_cap_full_simulations=100,
+            playout_cap_fast_simulations=16,
+        ),
+    )
+
+    assert len(log.moves) == 3
+    assert samples == []
+    assert search.simulation_budgets == [16, 16, 16]
+
+
+def test_play_mcts_game_keeps_full_playout_cap_turns_as_samples() -> None:
+    visits = [0] * 82
+    visits[1] = 1
+    state = MultiTurnMctsState(terminal_after=2)
+    search = BudgetRecordingMctsSearch(visits)
+
+    log, samples = play_mcts_game(
+        seed=3,
+        state=state,
+        search=search,
+        config=MctsSelfPlayConfig(
+            max_turns=5,
+            temperature_turns=0,
+            root_noise=False,
+            playout_cap_randomization=True,
+            playout_cap_full_search_fraction=1.0,
+            playout_cap_full_simulations=100,
+            playout_cap_fast_simulations=16,
+        ),
+    )
+
+    assert len(log.moves) == 2
+    assert len(samples) == 2
+    assert search.simulation_budgets == [100, 100]
 
 
 def test_play_mcts_game_applies_root_noise_only_when_enabled() -> None:

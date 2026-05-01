@@ -51,6 +51,9 @@ class PipelineConfig:
     temperature_turns: int = 10
     sampling_temperature: float = 1.0
     root_noise: bool = True
+    playout_cap_randomization: bool = False
+    playout_cap_full_search_fraction: float = 0.25
+    playout_cap_fast_simulations: int = 16
     promote: bool = True
     skip_arena: bool = False
     resume: bool = True
@@ -297,7 +300,12 @@ def generate_self_play_samples(
         temperature_turns=pipeline_config.temperature_turns,
         sampling_temperature=pipeline_config.sampling_temperature,
         root_noise=pipeline_config.root_noise,
+        playout_cap_randomization=pipeline_config.playout_cap_randomization,
+        playout_cap_full_search_fraction=pipeline_config.playout_cap_full_search_fraction,
+        playout_cap_full_simulations=pipeline_config.mcts_simulations,
+        playout_cap_fast_simulations=pipeline_config.playout_cap_fast_simulations,
     )
+
     def default_runner(
         seed: int,
         game_config: MctsSelfPlayConfig,
@@ -380,6 +388,10 @@ def _validate_pipeline_config(config: PipelineConfig) -> None:
         raise ValueError("replay_capacity must be positive")
     if config.mcts_simulations <= 0:
         raise ValueError("mcts_simulations must be positive")
+    if not 0.0 < config.playout_cap_full_search_fraction <= 1.0:
+        raise ValueError("playout_cap_full_search_fraction must be in (0, 1]")
+    if config.playout_cap_fast_simulations <= 0:
+        raise ValueError("playout_cap_fast_simulations must be positive")
 
 
 def _load_or_create_replay(path: Path, config: PipelineConfig) -> ReplayBuffer:
@@ -499,6 +511,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="MCTS simulations per self-play move",
     )
+    self_play_group.add_argument(
+        "--playout-cap-randomization",
+        action="store_true",
+        help="use full search only on sampled self-play turns",
+    )
+    self_play_group.add_argument(
+        "--playout-cap-full-search-fraction",
+        type=float,
+        default=None,
+        help="fraction of self-play turns kept as full-search replay samples",
+    )
+    self_play_group.add_argument(
+        "--playout-cap-fast-simulations",
+        type=int,
+        default=None,
+        help="MCTS simulations for fast self-play turns",
+    )
 
     train_group = parser.add_argument_group("training and arena")
     train_group.add_argument("--train-steps", type=int, default=None, help="steps per iteration")
@@ -529,6 +558,9 @@ def _configs_from_args(
         "self_play_games": args.self_play_games,
         "min_replay_samples": args.min_replay_samples,
         "mcts_simulations": args.mcts_simulations,
+        "playout_cap_randomization": True if args.playout_cap_randomization else None,
+        "playout_cap_full_search_fraction": args.playout_cap_full_search_fraction,
+        "playout_cap_fast_simulations": args.playout_cap_fast_simulations,
         "promote": False if args.no_promote else None,
         "skip_arena": True if args.skip_arena else None,
         "resume": False if args.fresh else None,

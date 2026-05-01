@@ -58,6 +58,8 @@ class MctsSearchLike(Protocol):
         priors: list[float],
     ) -> MctsResultLike: ...
 
+    def set_simulations(self, simulations: int) -> None: ...
+
 
 @dataclass(frozen=True)
 class MoveLog:
@@ -98,6 +100,28 @@ class MctsSelfPlayConfig:
     root_noise: bool = True
     root_dirichlet_alpha: float = 0.3
     root_exploration_fraction: float = 0.25
+    playout_cap_randomization: bool = False
+    playout_cap_full_search_fraction: float = 0.25
+    playout_cap_full_simulations: int = 50
+    playout_cap_fast_simulations: int = 16
+
+    def __post_init__(self) -> None:
+        if self.max_turns <= 0:
+            raise ValueError("max_turns must be positive")
+        if self.temperature_turns < 0:
+            raise ValueError("temperature_turns must be non-negative")
+        if self.sampling_temperature < 0.0:
+            raise ValueError("sampling_temperature must be non-negative")
+        if not 0.0 <= self.root_exploration_fraction <= 1.0:
+            raise ValueError("root_exploration_fraction must be between 0 and 1")
+        if self.root_dirichlet_alpha <= 0.0:
+            raise ValueError("root_dirichlet_alpha must be positive")
+        if not 0.0 < self.playout_cap_full_search_fraction <= 1.0:
+            raise ValueError("playout_cap_full_search_fraction must be in (0, 1]")
+        if self.playout_cap_full_simulations <= 0:
+            raise ValueError("playout_cap_full_simulations must be positive")
+        if self.playout_cap_fast_simulations <= 0:
+            raise ValueError("playout_cap_fast_simulations must be positive")
 
 
 def choose_random_legal_action(
@@ -190,7 +214,21 @@ def play_mcts_game(
         player = game_state.current_player()
         features = _state_features_for_replay(game_state)
         root_priors = prior_provider(game_state) if prior_provider is not None else None
-        result = _run_self_play_search(game_state, mcts, rng, config, root_priors=root_priors)
+        use_full_search = _use_full_search_turn(rng, config)
+        if config.playout_cap_randomization:
+            simulations = (
+                config.playout_cap_full_simulations
+                if use_full_search
+                else config.playout_cap_fast_simulations
+            )
+            _set_search_simulations(mcts, simulations)
+        result = _run_self_play_search(
+            game_state,
+            mcts,
+            rng,
+            config,
+            root_priors=root_priors,
+        )
         visit_counts = result.visit_counts()
         policy = policy_target_from_visit_counts(visit_counts)
         temperature = (
@@ -202,7 +240,8 @@ def play_mcts_game(
             temperature=temperature,
         )
 
-        pending_samples.append((player, features, policy))
+        if use_full_search:
+            pending_samples.append((player, features, policy))
         moves.append(MoveLog(turn=turn, player=player, action=action))
         game_state.apply_action(action)
     else:
@@ -288,6 +327,16 @@ def _run_self_play_search(
     if config.root_noise:
         return search.search_with_priors(state, noisy_priors.tolist())
     return search.search_with_priors(state, priors)
+
+
+def _use_full_search_turn(rng: random.Random, config: MctsSelfPlayConfig) -> bool:
+    if not config.playout_cap_randomization:
+        return True
+    return rng.random() < config.playout_cap_full_search_fraction
+
+
+def _set_search_simulations(search: MctsSearchLike, simulations: int) -> None:
+    search.set_simulations(simulations)
 
 
 def _state_features_for_replay(state: SelfPlayState) -> np.ndarray:

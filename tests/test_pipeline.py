@@ -6,6 +6,7 @@ from typing import Any
 
 import great_kingdom_ai.pipeline as pipeline_module
 import numpy as np
+import pytest
 from great_kingdom_ai.evaluate import ArenaConfig, ArenaReport, summarize_arena
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.pipeline import (
@@ -64,6 +65,35 @@ def test_generate_self_play_samples_runs_until_game_and_sample_targets() -> None
     assert len(logs) == 3
     assert len(samples) == 6
     assert [log.seed for log in logs] == [0, 1, 2]
+
+
+def test_generate_self_play_samples_passes_playout_cap_config() -> None:
+    seen_configs: list[MctsSelfPlayConfig] = []
+
+    def recording_runner(
+        seed: int,
+        config: MctsSelfPlayConfig,
+    ) -> tuple[GameLog, list[ReplaySample]]:
+        seen_configs.append(config)
+        return fake_self_play_runner(seed, config)
+
+    generate_self_play_samples(
+        pipeline_config=PipelineConfig(
+            self_play_games=1,
+            min_replay_samples=1,
+            mcts_simulations=100,
+            playout_cap_randomization=True,
+            playout_cap_full_search_fraction=0.25,
+            playout_cap_fast_simulations=16,
+        ),
+        runner=recording_runner,
+        printer=PipelinePrinter(enabled=False),
+    )
+
+    assert seen_configs[0].playout_cap_randomization is True
+    assert seen_configs[0].playout_cap_full_search_fraction == pytest.approx(0.25)
+    assert seen_configs[0].playout_cap_full_simulations == 100
+    assert seen_configs[0].playout_cap_fast_simulations == 16
 
 
 def test_run_pipeline_saves_artifacts_and_promotes_candidate(
