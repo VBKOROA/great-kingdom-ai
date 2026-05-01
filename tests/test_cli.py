@@ -5,9 +5,34 @@ from great_kingdom_ai.cli import (
     CliExit,
     format_legal_actions,
     index_to_coordinate,
+    outcome_line,
     parse_command,
     render_board,
+    status_line,
 )
+
+
+class FakeState:
+    def current_player(self) -> int:
+        return 1
+
+    def blue_used(self) -> int:
+        return 4
+
+    def orange_used(self) -> int:
+        return 3
+
+    def previous_pass(self) -> bool:
+        return False
+
+    def territory_scores(self) -> tuple[int, int]:
+        return (5, 2)
+
+    def winner(self) -> int | None:
+        return 1
+
+    def end_reason(self) -> int | None:
+        return 3
 
 
 def test_parse_coordinate_commands() -> None:
@@ -59,3 +84,15 @@ def test_format_legal_actions_groups_coordinates_and_pass() -> None:
     assert index_to_coordinate(80) == "I9"
     assert format_legal_actions([0, 1, PASS_ACTION]) == "A1 B1\nPASS"
 
+
+def test_status_line_shows_territory_scores() -> None:
+    assert status_line(FakeState()) == (
+        "Turn: Blue | Blue used: 4/40 | Orange used: 3/40 | "
+        "Territory: Blue 5, Orange 2 | Previous pass: False"
+    )
+
+
+def test_outcome_line_shows_final_territory_scores() -> None:
+    assert outcome_line(FakeState()) == (
+        "Game over: Blue wins by consecutive passes. Territory: Blue 5, Orange 2."
+    )

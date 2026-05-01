@@ -7,7 +7,7 @@ use crate::{
 
 impl GameState {
     pub(crate) fn score_winner_after_consecutive_passes(&self) -> Player {
-        let (blue_score, orange_score) = self.territory_scores();
+        let (blue_score, orange_score) = self.calculate_territory_scores();
         if blue_score >= orange_score + 3 {
             Player::Blue
         } else {
@@ -15,7 +15,7 @@ impl GameState {
         }
     }
 
-    pub(crate) fn territory_scores(&self) -> (u8, u8) {
+    pub(crate) fn calculate_territory_scores(&self) -> (u8, u8) {
         let mut visited = [false; BOARD_CELLS];
         let mut blue_score = 0;
         let mut orange_score = 0;
@@ -122,7 +122,7 @@ mod tests {
         let state = state_with_board(board, Player::Blue);
 
         assert!(state.is_territory_of(index(1, 1), Player::Blue));
-        assert_eq!(state.territory_scores(), (1, 0));
+        assert_eq!(state.calculate_territory_scores(), (1, 0));
     }
 
     #[test]
@@ -136,7 +136,7 @@ mod tests {
         let state = state_with_board(board, Player::Blue);
 
         assert!(state.is_territory_of(index(4, 3), Player::Blue));
-        assert_eq!(state.territory_scores(), (1, 0));
+        assert_eq!(state.calculate_territory_scores(), (1, 0));
     }
 
     #[test]
@@ -150,7 +150,7 @@ mod tests {
         let state = state_with_board(board, Player::Blue);
 
         assert!(state.is_territory_of(index(0, 1), Player::Blue));
-        assert_eq!(state.territory_scores(), (1, 0));
+        assert_eq!(state.calculate_territory_scores(), (1, 0));
     }
 
     #[test]
@@ -164,7 +164,7 @@ mod tests {
         let state = state_with_board(board, Player::Blue);
 
         assert!(!state.is_territory_of(index(1, 1), Player::Blue));
-        assert_eq!(state.territory_scores(), (0, 0));
+        assert_eq!(state.calculate_territory_scores(), (0, 0));
     }
 
     #[test]
@@ -173,7 +173,7 @@ mod tests {
         state.board[index(0, 0)] = Cell::Blue;
 
         assert!(!state.is_territory_of(index(0, 1), Player::Blue));
-        assert_eq!(state.territory_scores(), (0, 0));
+        assert_eq!(state.calculate_territory_scores(), (0, 0));
     }
 
     #[test]
@@ -189,7 +189,7 @@ mod tests {
         }
         let mut state = state_with_board(board, Player::Blue);
 
-        assert_eq!(state.territory_scores(), (3, 0));
+        assert_eq!(state.calculate_territory_scores(), (3, 0));
         assert_eq!(state.apply(Action::Pass), Ok(None));
         let outcome = state.apply(Action::Pass).unwrap().unwrap();
 
@@ -210,7 +210,7 @@ mod tests {
         }
         let mut state = state_with_board(board, Player::Blue);
 
-        assert_eq!(state.territory_scores(), (2, 0));
+        assert_eq!(state.calculate_territory_scores(), (2, 0));
         assert_eq!(state.apply(Action::Pass), Ok(None));
         let outcome = state.apply(Action::Pass).unwrap().unwrap();
 

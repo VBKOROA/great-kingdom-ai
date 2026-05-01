@@ -49,6 +49,8 @@ class GameStateProtocol(Protocol):
 
     def legal_actions(self) -> list[int]: ...
 
+    def territory_scores(self) -> tuple[int, int]: ...
+
     def apply_action(self, action_index: int) -> int | None: ...
 
     def is_terminal(self) -> bool: ...
@@ -179,10 +181,12 @@ def help_text() -> str:
 
 def status_line(state: GameStateProtocol) -> str:
     current_player = PLAYER_NAMES.get(state.current_player(), f"Player {state.current_player()}")
+    blue_territory, orange_territory = state.territory_scores()
     return (
         f"Turn: {current_player} | "
         f"Blue used: {state.blue_used()}/40 | "
         f"Orange used: {state.orange_used()}/40 | "
+        f"Territory: Blue {blue_territory}, Orange {orange_territory} | "
         f"Previous pass: {state.previous_pass()}"
     )
 
@@ -192,7 +196,11 @@ def outcome_line(state: GameStateProtocol) -> str:
     reason = state.end_reason()
     winner_name = PLAYER_NAMES[winner] if winner is not None else "Unknown"
     reason_name = END_REASON_NAMES[reason] if reason is not None else "unknown reason"
-    return f"Game over: {winner_name} wins by {reason_name}."
+    blue_territory, orange_territory = state.territory_scores()
+    return (
+        f"Game over: {winner_name} wins by {reason_name}. "
+        f"Territory: Blue {blue_territory}, Orange {orange_territory}."
+    )
 
 
 def run_repl(

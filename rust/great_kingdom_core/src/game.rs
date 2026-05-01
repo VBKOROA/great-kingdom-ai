@@ -169,6 +169,11 @@ impl GameState {
         self.legal_action_indexes()
     }
 
+    #[must_use]
+    pub fn territory_scores(&self) -> (u8, u8) {
+        self.calculate_territory_scores()
+    }
+
     pub fn apply_action(&mut self, action_index: usize) -> PyResult<Option<u8>> {
         self.apply(Action::from_index(action_index).ok_or_else(|| {
             PyValueError::new_err(format!("invalid action index: {action_index}"))
