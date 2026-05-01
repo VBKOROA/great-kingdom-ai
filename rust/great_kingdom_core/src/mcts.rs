@@ -318,19 +318,97 @@ impl MctsSelfPlayBatch {
             )));
         }
 
-        let mut results = vec![None; self.states.len()];
-        for (game_index, prior_row) in active_indexes.into_iter().zip(priors.into_iter()) {
+        let mut root_indexes = vec![None; self.states.len()];
+        let mut completed = vec![0; self.states.len()];
+        for (game_index, prior_row) in active_indexes.iter().copied().zip(priors.into_iter()) {
             let prior_array = parse_policy_row(prior_row, game_index)?;
-            let result = self.searches[game_index].run_with_root_priors_and_leaf_evaluator(
-                &self.states[game_index],
-                &prior_array,
-                leaf_batch_size,
-                |request| {
-                    let response = evaluator.call1((request,))?;
-                    parse_eval_response(&response)
-                },
-            )?;
-            results[game_index] = Some(result);
+            self.searches[game_index].nodes.clear();
+            root_indexes[game_index] = Some(
+                self.searches[game_index]
+                    .expand_node_with_priors(&self.states[game_index], &prior_array),
+            );
+        }
+
+        while active_indexes
+            .iter()
+            .any(|index| completed[*index] < self.searches[*index].config.simulations)
+        {
+            let mut pending = Vec::with_capacity(leaf_batch_size);
+            for game_index in active_indexes.iter().copied() {
+                if completed[game_index] >= self.searches[game_index].config.simulations {
+                    continue;
+                }
+                let root_index = root_indexes[game_index]
+                    .expect("active game root must be initialized before simulation");
+                let mut simulation_state = self.states[game_index].clone();
+                match self.searches[game_index].select_eval_leaf(root_index, &mut simulation_state)
+                {
+                    PendingSimulation::NeedsEvaluation { path, state } => {
+                        pending.push(PendingGameLeaf {
+                            game_index,
+                            path,
+                            state,
+                        });
+                    }
+                    PendingSimulation::Terminal {
+                        path,
+                        last_edge_value,
+                    } => {
+                        backup_path_from_last_edge(
+                            &mut self.searches[game_index].nodes,
+                            &path,
+                            last_edge_value,
+                        );
+                        completed[game_index] += 1;
+                    }
+                    PendingSimulation::RootTerminal => {
+                        completed[game_index] += 1;
+                    }
+                }
+                if pending.len() >= leaf_batch_size {
+                    break;
+                }
+            }
+
+            if pending.is_empty() {
+                continue;
+            }
+
+            let request_states = pending
+                .iter()
+                .map(|leaf| leaf.state.clone())
+                .collect::<Vec<_>>();
+            let response = evaluator.call1((EvalRequest::new(request_states),))?;
+            let eval = parse_eval_response(&response)?;
+            eval.validate_len(pending.len())?;
+            for (leaf, (policy, value)) in pending
+                .into_iter()
+                .zip(eval.policies.into_iter().zip(eval.values.into_iter()))
+            {
+                let child_index =
+                    self.searches[leaf.game_index].expand_node_with_priors(&leaf.state, &policy);
+                if let Some((parent_index, edge_index)) = leaf.path.last().copied() {
+                    self.searches[leaf.game_index].nodes[parent_index].edges[edge_index].child =
+                        Some(child_index);
+                }
+                backup_path_from_leaf_value(
+                    &mut self.searches[leaf.game_index].nodes,
+                    &leaf.path,
+                    value,
+                );
+                completed[leaf.game_index] += 1;
+            }
+        }
+
+        let mut results = vec![None; self.states.len()];
+        for game_index in active_indexes {
+            let root_index = root_indexes[game_index]
+                .expect("active game root must be initialized before result export");
+            let root = &self.searches[game_index].nodes[root_index];
+            results[game_index] = Some(MctsResult {
+                selected_action: root.most_visited_action(),
+                visit_counts: root.visit_counts(),
+            });
         }
         Ok(results)
     }
@@ -784,6 +862,13 @@ impl EvalBatch {
 
 #[derive(Clone, Debug)]
 struct PendingLeaf {
+    path: Vec<(usize, usize)>,
+    state: GameState,
+}
+
+#[derive(Clone, Debug)]
+struct PendingGameLeaf {
+    game_index: usize,
     path: Vec<(usize, usize)>,
     state: GameState,
 }

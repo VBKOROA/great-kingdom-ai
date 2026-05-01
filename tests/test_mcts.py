@@ -114,3 +114,37 @@ def test_mcts_self_play_batch_rejects_prior_count_mismatch() -> None:
 
     with pytest.raises(ValueError, match="prior rows"):
         batch.play_turns_with_priors([[1.0] * core.action_space()])
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("great_kingdom_core") is None,
+    reason="great_kingdom_core extension is not installed",
+)
+def test_mcts_self_play_batch_combines_leaf_evaluator_requests_across_games() -> None:
+    import great_kingdom_core as core  # type: ignore[import-untyped]
+
+    batch = core.MctsSelfPlayBatch(game_count=2, simulations=2, c_puct=1.5)
+    request = batch.active_eval_request()
+    priors = [
+        [1.0 if is_legal else 0.0 for is_legal in mask]
+        for mask in request.legal_masks()
+    ]
+    evaluator_batch_sizes: list[int] = []
+
+    def evaluator(eval_request):
+        evaluator_batch_sizes.append(eval_request.len())
+        policies = []
+        values = []
+        for mask in eval_request.legal_masks():
+            policies.append([1.0 if is_legal else 0.0 for is_legal in mask])
+            values.append(0.0)
+        return policies, values
+
+    results = batch.search_active_with_priors_and_evaluator(
+        priors,
+        evaluator,
+        leaf_batch_size=8,
+    )
+
+    assert all(result is not None for result in results)
+    assert max(evaluator_batch_sizes) >= 2
