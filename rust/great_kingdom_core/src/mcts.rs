@@ -96,6 +96,13 @@ pub struct MctsSearch {
     nodes: Vec<Node>,
 }
 
+#[pyclass]
+#[derive(Clone, Debug)]
+pub struct MctsSelfPlayBatch {
+    states: Vec<GameState>,
+    searches: Vec<MctsSearch>,
+}
+
 #[pymethods]
 impl MctsSearch {
     #[new]
@@ -179,6 +186,154 @@ impl MctsSearch {
     }
 }
 
+#[pymethods]
+impl MctsSelfPlayBatch {
+    #[new]
+    #[pyo3(signature = (game_count, simulations = 50, c_puct = 1.5))]
+    pub fn py_new(game_count: usize, simulations: u32, c_puct: f32) -> PyResult<Self> {
+        if game_count == 0 {
+            return Err(PyValueError::new_err("game_count must be positive"));
+        }
+        if simulations == 0 {
+            return Err(PyValueError::new_err("simulations must be positive"));
+        }
+        if !c_puct.is_finite() || c_puct < 0.0 {
+            return Err(PyValueError::new_err(
+                "c_puct must be a finite non-negative value",
+            ));
+        }
+        Ok(Self::new(game_count, MctsConfig::new(simulations, c_puct)))
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.states.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.states.is_empty()
+    }
+
+    #[must_use]
+    pub fn active_count(&self) -> usize {
+        self.active_indexes().len()
+    }
+
+    #[must_use]
+    pub fn is_terminal(&self) -> Vec<bool> {
+        self.states.iter().map(GameState::is_terminal).collect()
+    }
+
+    #[must_use]
+    pub fn winners(&self) -> Vec<Option<u8>> {
+        self.states.iter().map(GameState::winner).collect()
+    }
+
+    #[must_use]
+    pub fn end_reasons(&self) -> Vec<Option<u8>> {
+        self.states.iter().map(GameState::end_reason).collect()
+    }
+
+    #[must_use]
+    pub fn current_players(&self) -> Vec<u8> {
+        self.states.iter().map(GameState::current_player).collect()
+    }
+
+    #[must_use]
+    pub fn active_eval_request(&self) -> EvalRequest {
+        EvalRequest::new(
+            self.active_indexes()
+                .into_iter()
+                .map(|index| self.states[index].clone())
+                .collect(),
+        )
+    }
+
+    pub fn play_turns_with_priors(
+        &mut self,
+        priors: Vec<Vec<f32>>,
+    ) -> PyResult<Vec<Option<MctsResult>>> {
+        let active_indexes = self.active_indexes();
+        if priors.len() != active_indexes.len() {
+            return Err(PyValueError::new_err(format!(
+                "expected {} prior rows for active games, got {}",
+                active_indexes.len(),
+                priors.len()
+            )));
+        }
+
+        let mut results = vec![None; self.states.len()];
+        for (game_index, prior_row) in active_indexes.into_iter().zip(priors.into_iter()) {
+            let prior_array = parse_policy_row(prior_row, game_index)?;
+            let result = self.searches[game_index]
+                .run_with_root_priors(&self.states[game_index], &prior_array);
+            if let Some(action_index) = result.selected_action {
+                let action = Action::from_index(action_index).ok_or_else(|| {
+                    PyValueError::new_err(format!("invalid action index: {action_index}"))
+                })?;
+                self.states[game_index]
+                    .apply(action)
+                    .map_err(|err| PyValueError::new_err(format!("invalid action: {err:?}")))?;
+            }
+            results[game_index] = Some(result);
+        }
+        Ok(results)
+    }
+
+    #[pyo3(signature = (evaluator, leaf_batch_size = 8))]
+    pub fn play_turns_with_evaluator(
+        &mut self,
+        evaluator: &Bound<'_, PyAny>,
+        leaf_batch_size: usize,
+    ) -> PyResult<Vec<Option<MctsResult>>> {
+        if leaf_batch_size == 0 {
+            return Err(PyValueError::new_err("leaf_batch_size must be positive"));
+        }
+
+        let active_indexes = self.active_indexes();
+        let mut results = vec![None; self.states.len()];
+        for game_index in active_indexes {
+            let result = self.searches[game_index].run_with_leaf_evaluator(
+                &self.states[game_index],
+                leaf_batch_size,
+                |request| {
+                    let response = evaluator.call1((request,))?;
+                    parse_eval_response(&response)
+                },
+            )?;
+            if let Some(action_index) = result.selected_action {
+                let action = Action::from_index(action_index).ok_or_else(|| {
+                    PyValueError::new_err(format!("invalid action index: {action_index}"))
+                })?;
+                self.states[game_index]
+                    .apply(action)
+                    .map_err(|err| PyValueError::new_err(format!("invalid action: {err:?}")))?;
+            }
+            results[game_index] = Some(result);
+        }
+        Ok(results)
+    }
+}
+
+impl MctsSelfPlayBatch {
+    #[must_use]
+    pub fn new(game_count: usize, config: MctsConfig) -> Self {
+        Self {
+            states: vec![GameState::new(); game_count],
+            searches: vec![MctsSearch::new(config); game_count],
+        }
+    }
+
+    fn active_indexes(&self) -> Vec<usize> {
+        self.states
+            .iter()
+            .enumerate()
+            .filter_map(|(index, state)| (!state.is_terminal()).then_some(index))
+            .collect()
+    }
+}
+
 impl MctsSearch {
     #[must_use]
     pub const fn new(config: MctsConfig) -> Self {
@@ -227,8 +382,8 @@ impl MctsSearch {
 
         let mut completed = 0;
         while completed < self.config.simulations {
-            let batch_target = (self.config.simulations - completed)
-                .min(leaf_batch_size as u32) as usize;
+            let batch_target =
+                (self.config.simulations - completed).min(leaf_batch_size as u32) as usize;
             let mut pending = Vec::with_capacity(batch_target);
 
             for _ in 0..batch_target {
@@ -360,11 +515,7 @@ impl MctsSearch {
             .expect("expanded MCTS node must contain at least one edge")
     }
 
-    fn select_eval_leaf(
-        &self,
-        root_index: usize,
-        state: &mut GameState,
-    ) -> PendingSimulation {
+    fn select_eval_leaf(&self, root_index: usize, state: &mut GameState) -> PendingSimulation {
         if state.outcome_value().is_some() {
             return PendingSimulation::RootTerminal;
         }
@@ -587,11 +738,7 @@ fn value_for_player(outcome: GameOutcome, player: Player) -> f32 {
     if outcome.winner == player { 1.0 } else { -1.0 }
 }
 
-fn backup_path_from_leaf_value(
-    nodes: &mut [Node],
-    path: &[(usize, usize)],
-    leaf_value: f32,
-) {
+fn backup_path_from_leaf_value(nodes: &mut [Node], path: &[(usize, usize)], leaf_value: f32) {
     let mut value = leaf_value;
     for (node_index, edge_index) in path.iter().rev().copied() {
         value = -value;
@@ -600,11 +747,7 @@ fn backup_path_from_leaf_value(
     }
 }
 
-fn backup_path_from_last_edge(
-    nodes: &mut [Node],
-    path: &[(usize, usize)],
-    last_edge_value: f32,
-) {
+fn backup_path_from_last_edge(nodes: &mut [Node], path: &[(usize, usize)], last_edge_value: f32) {
     let mut value = last_edge_value;
     for (node_index, edge_index) in path.iter().rev().copied() {
         nodes[node_index].visit_count += 1;
@@ -617,25 +760,29 @@ fn parse_eval_response(response: &Bound<'_, PyAny>) -> PyResult<EvalBatch> {
     let (policy_rows, values): (Vec<Vec<f32>>, Vec<f32>) = response.extract()?;
     let mut policies = Vec::with_capacity(policy_rows.len());
     for (row_index, row) in policy_rows.into_iter().enumerate() {
-        if row.len() != ACTION_SPACE {
-            return Err(PyValueError::new_err(format!(
-                "policy row {row_index} must have length {ACTION_SPACE}, got {}",
-                row.len()
-            )));
-        }
-        if row.iter().any(|prior| !prior.is_finite() || *prior < 0.0) {
-            return Err(PyValueError::new_err(
-                "policy priors must be finite non-negative values",
-            ));
-        }
-        let mut policy = [0.0; ACTION_SPACE];
-        policy.copy_from_slice(&row);
-        policies.push(policy);
+        policies.push(parse_policy_row(row, row_index)?);
     }
     if values.iter().any(|value| !value.is_finite()) {
         return Err(PyValueError::new_err("values must be finite"));
     }
     Ok(EvalBatch::new(policies, values))
+}
+
+fn parse_policy_row(row: Vec<f32>, row_index: usize) -> PyResult<[f32; ACTION_SPACE]> {
+    if row.len() != ACTION_SPACE {
+        return Err(PyValueError::new_err(format!(
+            "policy row {row_index} must have length {ACTION_SPACE}, got {}",
+            row.len()
+        )));
+    }
+    if row.iter().any(|prior| !prior.is_finite() || *prior < 0.0) {
+        return Err(PyValueError::new_err(
+            "policy priors must be finite non-negative values",
+        ));
+    }
+    let mut policy = [0.0; ACTION_SPACE];
+    policy.copy_from_slice(&row);
+    Ok(policy)
 }
 
 #[cfg(test)]
@@ -881,5 +1028,41 @@ mod tests {
                 .contains(&result.selected_action.unwrap())
         );
         assert_eq!(result.visit_counts[crate::game::CENTER_INDEX], 0);
+    }
+
+    #[test]
+    fn mcts_self_play_batch_exposes_active_eval_request_and_advances_turns() {
+        let mut batch = MctsSelfPlayBatch::new(2, MctsConfig::new(2, 1.5));
+
+        let request = batch.active_eval_request();
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch.active_count(), 2);
+        assert_eq!(request.len(), 2);
+        assert_eq!(request.legal_masks().len(), 2);
+
+        let priors = request
+            .legal_masks()
+            .into_iter()
+            .map(|mask| {
+                mask.into_iter()
+                    .map(|is_legal| if is_legal { 1.0 } else { 0.0 })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let results = batch.play_turns_with_priors(priors).unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(Option::is_some));
+        assert_eq!(batch.current_players(), vec![Player::Orange as u8; 2]);
+        assert_eq!(batch.active_count(), 2);
+    }
+
+    #[test]
+    fn mcts_self_play_batch_rejects_mismatched_prior_rows() {
+        let mut batch = MctsSelfPlayBatch::new(2, MctsConfig::new(2, 1.5));
+
+        let err = batch.play_turns_with_priors(vec![vec![1.0; ACTION_SPACE]]);
+
+        assert!(err.is_err());
     }
 }

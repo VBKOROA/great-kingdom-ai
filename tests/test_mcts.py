@@ -77,3 +77,40 @@ def test_mcts_search_with_evaluator_rejects_bad_policy_shape() -> None:
 
     with pytest.raises(ValueError, match="policy row"):
         search.search_with_evaluator(state, evaluator)
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("great_kingdom_core") is None,
+    reason="great_kingdom_core extension is not installed",
+)
+def test_mcts_self_play_batch_advances_active_games_with_batched_priors() -> None:
+    import great_kingdom_core as core  # type: ignore[import-untyped]
+
+    batch = core.MctsSelfPlayBatch(game_count=2, simulations=2, c_puct=1.5)
+    request = batch.active_eval_request()
+    priors = [
+        [1.0 if is_legal else 0.0 for is_legal in mask]
+        for mask in request.legal_masks()
+    ]
+
+    results = batch.play_turns_with_priors(priors)
+
+    assert batch.len() == 2
+    assert batch.active_count() == 2
+    assert len(results) == 2
+    assert all(result is not None for result in results)
+    assert list(batch.current_players()) == [2, 2]
+    assert batch.winners() == [None, None]
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("great_kingdom_core") is None,
+    reason="great_kingdom_core extension is not installed",
+)
+def test_mcts_self_play_batch_rejects_prior_count_mismatch() -> None:
+    import great_kingdom_core as core  # type: ignore[import-untyped]
+
+    batch = core.MctsSelfPlayBatch(game_count=2, simulations=2, c_puct=1.5)
+
+    with pytest.raises(ValueError, match="prior rows"):
+        batch.play_turns_with_priors([[1.0] * core.action_space()])
