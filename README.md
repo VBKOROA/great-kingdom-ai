@@ -109,6 +109,16 @@ Rust 포맷터와 린터는 Ubuntu/Debian 기준으로 다음 패키지가 필�
 sudo apt install -y rustfmt rust-clippy
 ```
 
+## 수동 규칙 확인 CLI
+
+Rust 규칙 엔진을 빌드한 뒤 사람 둘이 직접 self-play로 규칙을 확인할 수 있습니다.
+
+```bash
+great-kingdom-play
+```
+
+입력은 `A1`부터 `I9`, `5 5`, `p`/`pass`, `l`/`legal`, `q`/`quit`을 지원합니다.
+
 ## 예정 디렉터리 구조
 
 초기 구현은 다음 구조를 기준으로 진행할 예정입니다.
