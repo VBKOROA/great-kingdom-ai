@@ -94,23 +94,26 @@ impl EvalRequest {
 
     #[must_use]
     pub(crate) fn new_with_precomputed_bytes(states: Vec<GameState>) -> Self {
-        let feature_rows = states
-            .par_iter()
-            .map(GameState::feature_planes)
-            .collect::<Vec<_>>();
-        let legal_mask_rows = states
-            .par_iter()
-            .map(GameState::legal_mask)
-            .collect::<Vec<_>>();
-
         let mut features = Vec::with_capacity(states.len() * FEATURE_CHANNELS * BOARD_CELLS);
-        for row in feature_rows {
-            features.extend(row);
-        }
+        features.resize(states.len() * FEATURE_CHANNELS * BOARD_CELLS, 0.0);
+        features
+            .par_chunks_mut(FEATURE_CHANNELS * BOARD_CELLS)
+            .zip(states.par_iter())
+            .for_each(|(chunk, state)| {
+                chunk.copy_from_slice(&state.feature_planes());
+            });
+
         let mut masks = Vec::with_capacity(states.len() * ACTION_SPACE);
-        for row in legal_mask_rows {
-            masks.extend(row.into_iter().map(u8::from));
-        }
+        masks.resize(states.len() * ACTION_SPACE, 0);
+        masks
+            .par_chunks_mut(ACTION_SPACE)
+            .zip(states.par_iter())
+            .for_each(|(chunk, state)| {
+                let legal_mask = state.legal_mask();
+                for (target, is_legal) in chunk.iter_mut().zip(legal_mask.into_iter()) {
+                    *target = u8::from(is_legal);
+                }
+            });
 
         Self {
             states,
