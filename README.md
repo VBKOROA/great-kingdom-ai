@@ -2,7 +2,7 @@
 
 Great Kingdom AI는 9x9 추상 전략 게임 **Great Kingdom**을 재현하고, 자가대국 기반 학습으로 강해지는 AI 플레이어를 만들기 위한 프로젝트입니다.
 
-현재 저장소는 Rust 규칙 엔진, PyO3 바인딩, 수동 규칙 확인 CLI, 랜덤 self-play smoke runner, PyTorch 모델, self-play 데이터 저장, 학습 루프와 checkpoint 저장/재개 도구를 포함합니다. 핵심 규칙과 학습 구조, Python/Rust 분리 아키텍처는 문서로 정리해 둔 상태입니다.
+현재 저장소는 Rust 규칙 엔진, PyO3 바인딩, 수동 규칙 확인 CLI, 랜덤 self-play smoke runner, PyTorch 모델, self-play 데이터 저장, 학습 루프와 checkpoint 저장/재개 도구, candidate-vs-best arena 평가와 best checkpoint 교체 도구를 포함합니다. 핵심 규칙과 학습 구조, Python/Rust 분리 아키텍처는 문서로 정리해 둔 상태입니다.
 
 ## 목표
 
@@ -88,6 +88,7 @@ Python과 Rust 연결은 PyO3와 maturin을 사용하는 방향으로 설계되�
 - 수동 self-play CLI와 랜덤 self-play smoke runner
 - PyTorch policy-value 모델과 학습 루프
 - self-play replay artifact, checkpoint 저장과 resume
+- candidate 모델과 best 모델의 arena 평가 및 best checkpoint 교체
 - 개발 순서와 책임 분리 기준
 
 ## 개발 환경
@@ -140,6 +141,51 @@ great-kingdom-train \
   --checkpoint data/runpod/checkpoints/latest.pt \
   --config configs/m8-train-smoke.json
 ```
+
+candidate checkpoint를 현재 best checkpoint와 비교 평가할 때는 다음 console script를 사용할 수 있습니다. 평가는 선후공을 교대하며, self-play용 root noise와 temperature sampling을 쓰지 않습니다.
+
+```bash
+great-kingdom-evaluate \
+  --candidate data/runpod/checkpoints/candidate.pt \
+  --best data/runpod/checkpoints/best.pt \
+  --report data/runpod/logs/arena-report.json \
+  --config configs/m9-arena-smoke.json \
+  --promote
+```
+
+`--promote`를 붙이면 candidate 승률이 설정의 `promotion_threshold` 이상일 때 candidate checkpoint를 best checkpoint 위치로 복사합니다.
+
+자가대국, 학습, arena 평가, best 교체를 반복해서 돌릴 때는 pipeline CLI를 사용합니다. pipeline은 현재 best checkpoint를 보장한 뒤, 매 iteration마다 best 모델의 root policy prior로 self-play 데이터를 만들고 replay를 누적합니다. 이어서 candidate를 학습하고 arena 기준을 넘으면 best를 교체합니다. 세대별 candidate와 arena report, 전체 replay, metrics JSONL은 `work_dir` 아래에 남습니다. 로컬 smoke에서는 CPU fallback을 허용하고 작은 설정으로 확인합니다.
+
+```bash
+great-kingdom-pipeline \
+  --pipeline-config configs/pipeline-smoke.json \
+  --train-config configs/m8-train-smoke.json \
+  --arena-config configs/m9-arena-smoke.json \
+  --iterations 2 \
+  --allow-cpu
+```
+
+editable install을 다시 하지 않은 상태라 console script가 아직 없으면 같은 동작을 모듈로 실행할 수 있습니다.
+
+```bash
+python -m great_kingdom_ai.pipeline \
+  --pipeline-config configs/pipeline-smoke.json \
+  --iterations 2 \
+  --allow-cpu
+```
+
+Runpod에서 정식 학습을 시작할 때는 smoke 설정 대신 Runpod용 설정을 사용합니다.
+
+```bash
+great-kingdom-pipeline \
+  --pipeline-config configs/pipeline-train.json \
+  --train-config configs/train-runpod.json \
+  --arena-config configs/arena-runpod.json \
+  --device cuda
+```
+
+중단 후 같은 `work_dir`에서 다시 실행하면 replay와 로그를 이어서 사용합니다. 완전히 새 run을 시작하려면 `--fresh --work-dir data/runpod/pipeline-YYYYMMDD`처럼 별도 경로를 지정하세요.
 
 ## 수동 규칙 확인 CLI
 

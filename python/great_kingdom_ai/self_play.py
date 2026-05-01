@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from typing import Any, NoReturn, Protocol, cast
 
@@ -173,6 +173,7 @@ def play_mcts_game(
     state: SelfPlayState | None = None,
     search: MctsSearchLike | None = None,
     config: MctsSelfPlayConfig | None = None,
+    prior_provider: Callable[[SelfPlayState], Sequence[float]] | None = None,
 ) -> tuple[GameLog, list[ReplaySample]]:
     """Run one MCTS self-play game and return replay samples with final value targets."""
     config = config if config is not None else MctsSelfPlayConfig()
@@ -188,7 +189,8 @@ def play_mcts_game(
 
         player = game_state.current_player()
         features = _state_features_for_replay(game_state)
-        result = _run_self_play_search(game_state, mcts, rng, config)
+        root_priors = prior_provider(game_state) if prior_provider is not None else None
+        result = _run_self_play_search(game_state, mcts, rng, config, root_priors=root_priors)
         visit_counts = result.visit_counts()
         policy = policy_target_from_visit_counts(visit_counts)
         temperature = (
@@ -269,18 +271,23 @@ def _run_self_play_search(
     search: MctsSearchLike,
     rng: random.Random,
     config: MctsSelfPlayConfig,
+    *,
+    root_priors: Sequence[float] | None = None,
 ) -> MctsResultLike:
-    if not config.root_noise:
+    if root_priors is None and not config.root_noise:
         return search.search(state)
 
+    priors = list(root_priors) if root_priors is not None else [0.0] * PASS_ACTION + [0.0]
     noisy_priors = apply_root_dirichlet_noise(
-        [0.0] * PASS_ACTION + [0.0],
+        priors,
         state.legal_mask(),
         rng,
         alpha=config.root_dirichlet_alpha,
         epsilon=config.root_exploration_fraction,
     )
-    return search.search_with_priors(state, noisy_priors.tolist())
+    if config.root_noise:
+        return search.search_with_priors(state, noisy_priors.tolist())
+    return search.search_with_priors(state, priors)
 
 
 def _state_features_for_replay(state: SelfPlayState) -> np.ndarray:

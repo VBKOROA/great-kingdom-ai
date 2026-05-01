@@ -1,0 +1,18 @@
+{
+  "iterations": 20,
+  "max_self_play_games": 80,
+  "mcts_c_puct": 1.5,
+  "mcts_simulations": 64,
+  "min_replay_samples": 4096,
+  "promote": true,
+  "replay_capacity": 200000,
+  "resume": true,
+  "root_noise": true,
+  "sampling_temperature": 1.0,
+  "seed_start": 0,
+  "self_play_games": 32,
+  "self_play_max_turns": 200,
+  "skip_arena": false,
+  "temperature_turns": 12,
+  "work_dir": "data/runpod/pipeline"
+}

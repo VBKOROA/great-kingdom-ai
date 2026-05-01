@@ -253,6 +253,28 @@ def test_play_mcts_game_applies_root_noise_only_when_enabled() -> None:
     assert search.search_calls == 0
 
 
+def test_play_mcts_game_can_use_model_root_priors_without_noise() -> None:
+    visits = [0] * 82
+    visits[1] = 1
+    state = ScriptedMctsState()
+    search = FakeMctsSearch(visits)
+    priors = [0.0] * 82
+    priors[1] = 0.2
+    priors[2] = 0.7
+    priors[81] = 0.1
+
+    play_mcts_game(
+        seed=47,
+        state=state,
+        search=search,
+        config=MctsSelfPlayConfig(root_noise=False),
+        prior_provider=lambda current_state: priors,
+    )
+
+    assert search.noisy_priors == priors
+    assert search.search_calls == 0
+
+
 def test_play_random_game_guard_rejects_non_terminating_games() -> None:
     state = NonTerminalState()
 
