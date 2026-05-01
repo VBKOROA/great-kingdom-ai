@@ -422,28 +422,26 @@ impl MctsSelfPlayBatch {
                 continue;
             }
 
-            for chunk in pending_leaves.chunks(leaf_batch_size) {
-                let request_states = chunk
-                    .iter()
-                    .map(|leaf| leaf.state.clone())
-                    .collect::<Vec<_>>();
-                let response = evaluator.call1((EvalRequest::new(request_states),))?;
-                let eval = parse_eval_response(&response)?;
-                eval.validate_len(chunk.len())?;
+            let request_states = pending_leaves
+                .iter()
+                .map(|leaf| leaf.state.clone())
+                .collect::<Vec<_>>();
+            let response = evaluator.call1((EvalRequest::new(request_states),))?;
+            let eval = parse_eval_response(&response)?;
+            eval.validate_len(pending_leaves.len())?;
 
-                for (leaf, (policy, value)) in chunk
-                    .iter()
-                    .zip(eval.policies.into_iter().zip(eval.values.into_iter()))
-                {
-                    let search = &mut self.searches[leaf.game_index];
-                    unreserve_path(&mut search.nodes, &leaf.path);
-                    let child_index = search.expand_node_with_priors(&leaf.state, &policy);
-                    if let Some((parent_index, edge_index)) = leaf.path.last().copied() {
-                        search.nodes[parent_index].edges[edge_index].child = Some(child_index);
-                    }
-                    backup_path_from_leaf_value(&mut search.nodes, &leaf.path, value);
-                    completed[leaf.game_index] += 1;
+            for (leaf, (policy, value)) in pending_leaves
+                .iter()
+                .zip(eval.policies.into_iter().zip(eval.values.into_iter()))
+            {
+                let search = &mut self.searches[leaf.game_index];
+                unreserve_path(&mut search.nodes, &leaf.path);
+                let child_index = search.expand_node_with_priors(&leaf.state, &policy);
+                if let Some((parent_index, edge_index)) = leaf.path.last().copied() {
+                    search.nodes[parent_index].edges[edge_index].child = Some(child_index);
                 }
+                backup_path_from_leaf_value(&mut search.nodes, &leaf.path, value);
+                completed[leaf.game_index] += 1;
             }
         }
 
@@ -486,17 +484,122 @@ impl MctsSelfPlayBatch {
         }
 
         let active_indexes = self.active_indexes();
+
+        let root_states = active_indexes
+            .iter()
+            .map(|index| self.states[*index].clone())
+            .collect::<Vec<_>>();
+        let root_response = evaluator.call1((EvalRequest::new(root_states),))?;
+        let root_eval = parse_eval_response(&root_response)?;
+        root_eval.validate_len(active_indexes.len())?;
+
+        let mut root_indexes = vec![None; self.states.len()];
+        let mut completed = vec![0; self.states.len()];
+        for (game_index, prior_row) in active_indexes
+            .iter()
+            .copied()
+            .zip(root_eval.policies.into_iter())
+        {
+            self.searches[game_index].nodes.clear();
+            root_indexes[game_index] = Some(
+                self.searches[game_index]
+                    .expand_node_with_priors(&self.states[game_index], &prior_row),
+            );
+        }
+
+        while active_indexes
+            .iter()
+            .any(|index| completed[*index] < self.searches[*index].config.simulations)
+        {
+            let pending_by_game: Vec<Vec<_>> = self
+                .states
+                .par_iter()
+                .zip(self.searches.par_iter_mut())
+                .zip(completed.par_iter_mut())
+                .zip(root_indexes.par_iter())
+                .enumerate()
+                .map(|(game_index, (((state, search), comp), root_index))| {
+                    let Some(root_index) = *root_index else {
+                        return Vec::new();
+                    };
+                    let batch_target =
+                        (search.config.simulations - *comp).min(leaf_batch_size as u32) as usize;
+                    let mut local_pending = Vec::with_capacity(batch_target);
+
+                    for _ in 0..batch_target {
+                        if *comp + local_pending.len() as u32 >= search.config.simulations {
+                            break;
+                        }
+                        let mut simulation_state = state.clone();
+                        match search.select_eval_leaf(root_index, &mut simulation_state) {
+                            PendingSimulation::NeedsEvaluation {
+                                path,
+                                state: leaf_state,
+                            } => {
+                                reserve_path(&mut search.nodes, &path);
+                                local_pending.push(PendingGameLeaf {
+                                    game_index,
+                                    path,
+                                    state: leaf_state,
+                                });
+                            }
+                            PendingSimulation::Terminal {
+                                path,
+                                last_edge_value,
+                            } => {
+                                backup_path_from_last_edge(
+                                    &mut search.nodes,
+                                    &path,
+                                    last_edge_value,
+                                );
+                                *comp += 1;
+                            }
+                            PendingSimulation::RootTerminal => {
+                                *comp += 1;
+                            }
+                        }
+                    }
+                    local_pending
+                })
+                .collect();
+            let pending_leaves = pending_by_game.into_iter().flatten().collect::<Vec<_>>();
+
+            if pending_leaves.is_empty() {
+                continue;
+            }
+
+            let request_states = pending_leaves
+                .iter()
+                .map(|leaf| leaf.state.clone())
+                .collect::<Vec<_>>();
+            let response = evaluator.call1((EvalRequest::new(request_states),))?;
+            let eval = parse_eval_response(&response)?;
+            eval.validate_len(pending_leaves.len())?;
+
+            for (leaf, (policy, value)) in pending_leaves
+                .iter()
+                .zip(eval.policies.into_iter().zip(eval.values.into_iter()))
+            {
+                let search = &mut self.searches[leaf.game_index];
+                unreserve_path(&mut search.nodes, &leaf.path);
+                let child_index = search.expand_node_with_priors(&leaf.state, &policy);
+                if let Some((parent_index, edge_index)) = leaf.path.last().copied() {
+                    search.nodes[parent_index].edges[edge_index].child = Some(child_index);
+                }
+                backup_path_from_leaf_value(&mut search.nodes, &leaf.path, value);
+                completed[leaf.game_index] += 1;
+            }
+        }
+
         let mut results = vec![None; self.states.len()];
         for game_index in active_indexes {
-            let result = self.searches[game_index].run_with_leaf_evaluator(
-                &self.states[game_index],
-                leaf_batch_size,
-                |request| {
-                    let response = evaluator.call1((request,))?;
-                    parse_eval_response(&response)
-                },
-            )?;
-            results[game_index] = Some(result);
+            let root_index = root_indexes[game_index]
+                .expect("active game root must be initialized before result export");
+            let root = &self.searches[game_index].nodes[root_index];
+            results[game_index] = Some(MctsResult {
+                selected_action: root.most_visited_action(),
+                visit_counts: root.visit_counts(),
+            });
         }
         Ok(results)
     }
