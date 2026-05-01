@@ -1,8 +1,13 @@
+import importlib.util
 import random
 
 import pytest
-
-from great_kingdom_ai.self_play import choose_random_legal_action, play_random_game
+from great_kingdom_ai.self_play import (
+    choose_random_legal_action,
+    play_random_game,
+    play_random_games,
+    summarize_logs,
+)
 
 
 class LegalOnlyState:
@@ -120,3 +125,39 @@ def test_play_random_game_guard_rejects_non_terminating_games() -> None:
 
     with pytest.raises(RuntimeError, match="max_turns=1"):
         play_random_game(seed=29, state=state, max_turns=1)
+
+
+def test_summarize_logs_counts_games_moves_and_winners() -> None:
+    logs = [
+        play_random_game(seed=31, state=ScriptedTerminalState()),
+        play_random_game(seed=37, state=ScriptedTerminalState()),
+    ]
+
+    summary = summarize_logs(logs)
+
+    assert summary.games == 2
+    assert summary.total_moves == 2
+    assert summary.max_moves == 1
+    assert summary.blue_wins == 2
+    assert summary.orange_wins == 0
+    assert summary.to_dict() == {
+        "games": 2,
+        "total_moves": 2,
+        "max_moves": 1,
+        "blue_wins": 2,
+        "orange_wins": 0,
+    }
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("great_kingdom_core") is None,
+    reason="great_kingdom_core extension is not installed",
+)
+def test_random_self_play_smoke_with_real_core() -> None:
+    logs = play_random_games(seeds=list(range(5)), max_turns=200, prefer_place=True)
+
+    assert len(logs) == 5
+    assert all(log.moves for log in logs)
+    assert all(len(log.moves) <= 200 for log in logs)
+    assert all(log.winner in {1, 2} for log in logs)
+    assert all(log.end_reason in {1, 2, 3} for log in logs)

@@ -83,7 +83,7 @@
 
 Python API는 테스트하기 쉬운 작은 메서드 중심으로 시작한다. self-play orchestration은 이 API가 안정된 뒤 붙인다.
 
-### M4. 랜덤 self-play 검증
+### ~~M4. 랜덤 self-play 검증~~
 
 | 작업 | 위치 | 검증 |
 | --- | --- | --- |

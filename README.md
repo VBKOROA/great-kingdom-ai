@@ -2,7 +2,7 @@
 
 Great Kingdom AI는 9x9 추상 전략 게임 **Great Kingdom**을 재현하고, 자가대국 기반 학습으로 강해지는 AI 플레이어를 만들기 위한 프로젝트입니다.
 
-현재 저장소는 초기 개발 환경과 최소 패키지 스캐폴드를 포함합니다. 핵심 규칙과 학습 구조, Python/Rust 분리 아키텍처는 문서로 정리해 둔 상태입니다.
+현재 저장소는 Rust 규칙 엔진, PyO3 바인딩, 수동 규칙 확인 CLI, 랜덤 self-play smoke runner를 포함합니다. 핵심 규칙과 학습 구조, Python/Rust 분리 아키텍처는 문서로 정리해 둔 상태입니다.
 
 ## 목표
 
@@ -80,13 +80,12 @@ Python과 Rust 연결은 PyO3와 maturin을 사용하는 방향으로 설계되�
 
 ## 현재 상태
 
-아직 완성된 게임 엔진과 학습 코드는 포함되어 있지 않습니다.
-
 현재 단계에서 이 저장소는 다음을 제공합니다.
 
 - 게임 규칙의 기준 문서
 - AI 학습 방식의 설계 문서
-- 초기 Python 패키지와 Rust/PyO3 crate 구조
+- Rust 규칙 엔진과 Python 바인딩
+- 수동 self-play CLI와 랜덤 self-play smoke runner
 - 개발 순서와 책임 분리 기준
 
 ## 개발 환경
@@ -118,6 +117,16 @@ great-kingdom-play
 ```
 
 입력은 `A1`부터 `I9`, `5 5`, `p`/`pass`, `l`/`legal`, `q`/`quit`을 지원합니다.
+
+## 랜덤 self-play smoke test
+
+Rust 규칙 엔진을 빌드한 뒤 여러 seed의 랜덤 게임을 실행할 수 있습니다. 로컬 smoke test에서는 작은 판 수와 고정 seed를 사용합니다.
+
+```bash
+great-kingdom-random-self-play --games 10 --seed-start 0 --prefer-place
+```
+
+`--json`을 붙이면 seed, 착수 목록, 종료 사유, 최종 영토 점수를 포함한 게임 로그를 출력합니다.
 
 ## 예정 디렉터리 구조
 
