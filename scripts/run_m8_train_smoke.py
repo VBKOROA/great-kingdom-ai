@@ -57,6 +57,8 @@ def main() -> NoReturn:
             ReplaySample(features=features, policy=policy, value=1.0 if index % 2 else -1.0)
         )
 
+    replay_path = args.work_dir / "replay.npz"
+    replay.save(replay_path)
     checkpoint_path = args.work_dir / "checkpoint.pt"
     summary = train_from_replay(replay, config, checkpoint_path=checkpoint_path, log_every=1)
     print(
@@ -66,6 +68,7 @@ def main() -> NoReturn:
                 "start_step": summary.start_step,
                 "end_step": summary.end_step,
                 "checkpoint": str(summary.checkpoint_path),
+                "replay": str(replay_path),
                 "losses": summary.losses,
             },
             sort_keys=True,
