@@ -36,6 +36,17 @@ def test_mcts_config_rejects_invalid_c_puct() -> None:
     importlib.util.find_spec("great_kingdom_core") is None,
     reason="great_kingdom_core extension is not installed",
 )
+def test_mcts_config_rejects_zero_simulations() -> None:
+    import great_kingdom_core as core  # type: ignore[import-untyped]
+
+    with pytest.raises(ValueError, match="simulations"):
+        core.MctsSearch(simulations=0)
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("great_kingdom_core") is None,
+    reason="great_kingdom_core extension is not installed",
+)
 def test_mcts_search_with_evaluator_batches_leaf_requests() -> None:
     import great_kingdom_core as core  # type: ignore[import-untyped]
 

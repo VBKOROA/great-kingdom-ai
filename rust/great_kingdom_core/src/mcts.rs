@@ -113,6 +113,9 @@ impl MctsSearch {
     #[new]
     #[pyo3(signature = (simulations = 50, c_puct = 1.5))]
     pub fn py_new(simulations: u32, c_puct: f32) -> PyResult<Self> {
+        if simulations == 0 {
+            return Err(PyValueError::new_err("simulations must be positive"));
+        }
         if !c_puct.is_finite() || c_puct < 0.0 {
             return Err(PyValueError::new_err(
                 "c_puct must be a finite non-negative value",
@@ -1189,6 +1192,11 @@ mod tests {
         assert_eq!(search.simulations(), 3);
         assert_eq!(result.visit_counts.iter().sum::<u32>(), 3);
         assert!(search.set_simulations(0).is_err());
+    }
+
+    #[test]
+    fn mcts_python_constructor_rejects_zero_simulation_budget() {
+        assert!(MctsSearch::py_new(0, 1.5).is_err());
     }
 
     #[test]
