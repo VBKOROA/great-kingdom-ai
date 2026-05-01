@@ -7,8 +7,12 @@ edition = "2024"
 name = "great_kingdom_core"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+extension-module = ["pyo3/extension-module"]
+
 [dependencies]
-pyo3 = { version = "0.25", features = ["extension-module"] }
+pyo3 = { version = "0.25" }
 
 [dev-dependencies]
 pretty_assertions = "1.4"
