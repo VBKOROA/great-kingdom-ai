@@ -175,17 +175,37 @@ python -m great_kingdom_ai.pipeline \
   --allow-cpu
 ```
 
-Runpod에서 정식 학습을 시작할 때는 smoke 설정 대신 Runpod용 설정을 사용합니다.
+Runpod에서 정식 학습을 시작할 때는 smoke 설정 대신 Runpod용 설정을 사용합니다. `configs/pipeline-train.json`은 `max_self_play_games`를 `null`로 두어, PCR처럼 저장되는 sample 수가 가변적인 설정에서도 매 iteration마다 `min_replay_samples`를 채울 때까지 self-play를 계속 실행합니다.
 
 ```bash
+source .venv/bin/activate
 great-kingdom-pipeline \
   --pipeline-config configs/pipeline-train.json \
   --train-config configs/train-runpod.json \
   --arena-config configs/arena-runpod.json \
-  --device cuda
+  --device cuda \
+  --playout-cap-randomization \
+  --playout-cap-full-search-fraction 0.25 \
+  --playout-cap-fast-simulations 16
 ```
 
-중단 후 같은 `work_dir`에서 다시 실행하면 replay와 로그를 이어서 사용합니다. 완전히 새 run을 시작하려면 `--fresh --work-dir data/runpod/pipeline-YYYYMMDD`처럼 별도 경로를 지정하세요.
+완전히 새 run을 시작하려면 기존 replay를 무시하도록 `--fresh`와 별도 `work_dir`를 함께 지정합니다.
+
+```bash
+source .venv/bin/activate
+great-kingdom-pipeline \
+  --pipeline-config configs/pipeline-train.json \
+  --train-config configs/train-runpod.json \
+  --arena-config configs/arena-runpod.json \
+  --device cuda \
+  --playout-cap-randomization \
+  --playout-cap-full-search-fraction 0.25 \
+  --playout-cap-fast-simulations 16 \
+  --fresh \
+  --work-dir data/runpod/pipeline-YYYYMMDD
+```
+
+중단 후 같은 `work_dir`에서 다시 실행하면 replay와 로그를 이어서 사용합니다. console script가 갱신되지 않은 pod에서는 `python -m great_kingdom_ai.pipeline ...` 형태로 같은 인자를 넘기면 됩니다.
 
 ## 수동 규칙 확인 CLI
 
