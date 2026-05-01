@@ -67,7 +67,9 @@ impl GameState {
         self.previous_pass = false;
 
         if self.has_destroyed_group(player.other().cell()) {
-            return Ok(Some(self.finish(GameEndReason::OpponentCastleDestroyed, player)));
+            return Ok(Some(
+                self.finish(GameEndReason::OpponentCastleDestroyed, player),
+            ));
         }
 
         if self.group_at_is_destroyed(index) {
@@ -332,7 +334,10 @@ mod tests {
         board[index(1, 2)] = Cell::Blue;
         let mut state = state_with_board(board, Player::Blue);
 
-        let outcome = state.apply(Action::Place { row: 2, col: 1 }).unwrap().unwrap();
+        let outcome = state
+            .apply(Action::Place { row: 2, col: 1 })
+            .unwrap()
+            .unwrap();
 
         assert!(state.is_terminal());
         assert_eq!(outcome.reason, GameEndReason::OpponentCastleDestroyed);
@@ -353,7 +358,10 @@ mod tests {
         board[index(2, 1)] = Cell::Orange;
         let mut state = state_with_board(board, Player::Blue);
 
-        let outcome = state.apply(Action::Place { row: 1, col: 1 }).unwrap().unwrap();
+        let outcome = state
+            .apply(Action::Place { row: 1, col: 1 })
+            .unwrap()
+            .unwrap();
 
         assert!(state.is_terminal());
         assert_eq!(outcome.reason, GameEndReason::OwnCastleDestroyed);
@@ -371,10 +379,30 @@ mod tests {
         board[index(2, 1)] = Cell::Orange;
         let mut state = state_with_board(board, Player::Orange);
 
-        let outcome = state.apply(Action::Place { row: 1, col: 1 }).unwrap().unwrap();
+        let outcome = state
+            .apply(Action::Place { row: 1, col: 1 })
+            .unwrap()
+            .unwrap();
 
         assert!(state.is_terminal());
         assert_eq!(outcome.reason, GameEndReason::OpponentCastleDestroyed);
         assert_eq!(outcome.winner, Player::Orange);
+    }
+
+    #[test]
+    fn cannot_place_inside_current_opponent_territory() {
+        let mut board = [Cell::Empty; BOARD_CELLS];
+        board[CENTER_INDEX] = Cell::Neutral;
+        board[index(0, 1)] = Cell::Blue;
+        board[index(1, 0)] = Cell::Blue;
+        board[index(1, 2)] = Cell::Blue;
+        board[index(2, 1)] = Cell::Blue;
+        let mut state = state_with_board(board, Player::Orange);
+
+        assert!(!state.legal_action_indexes().contains(&index(1, 1)));
+        assert_eq!(
+            state.apply(Action::Place { row: 1, col: 1 }),
+            Err(InvalidAction::OpponentTerritory)
+        );
     }
 }

@@ -200,10 +200,7 @@ impl Default for GameState {
 }
 
 #[cfg(test)]
-pub(crate) fn state_with_board(
-    board: [Cell; BOARD_CELLS],
-    current_player: Player,
-) -> GameState {
+pub(crate) fn state_with_board(board: [Cell; BOARD_CELLS], current_player: Player) -> GameState {
     GameState {
         board,
         current_player,

@@ -97,7 +97,7 @@ impl GameState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::{BOARD_CELLS, CENTER_INDEX, state_with_board};
+    use crate::game::{Action, BOARD_CELLS, CENTER_INDEX, GameEndReason, state_with_board};
     use pretty_assertions::assert_eq;
 
     fn index(row: usize, col: usize) -> usize {
@@ -168,5 +168,47 @@ mod tests {
 
         assert!(!state.is_territory_of(index(0, 1), Player::Blue));
         assert_eq!(state.territory_scores(), (0, 0));
+    }
+
+    #[test]
+    fn blue_wins_score_if_ahead_by_at_least_three() {
+        let mut board = [Cell::Orange; BOARD_CELLS];
+        board[CENTER_INDEX] = Cell::Neutral;
+        for (row, col) in [(1, 1), (1, 4), (4, 1)] {
+            board[index(row, col)] = Cell::Empty;
+            board[index(row - 1, col)] = Cell::Blue;
+            board[index(row + 1, col)] = Cell::Blue;
+            board[index(row, col - 1)] = Cell::Blue;
+            board[index(row, col + 1)] = Cell::Blue;
+        }
+        let mut state = state_with_board(board, Player::Blue);
+
+        assert_eq!(state.territory_scores(), (3, 0));
+        assert_eq!(state.apply(Action::Pass), Ok(None));
+        let outcome = state.apply(Action::Pass).unwrap().unwrap();
+
+        assert_eq!(outcome.reason, GameEndReason::ConsecutivePasses);
+        assert_eq!(outcome.winner, Player::Blue);
+    }
+
+    #[test]
+    fn orange_wins_score_if_blue_leads_by_two_or_less() {
+        let mut board = [Cell::Orange; BOARD_CELLS];
+        board[CENTER_INDEX] = Cell::Neutral;
+        for (row, col) in [(1, 1), (1, 4)] {
+            board[index(row, col)] = Cell::Empty;
+            board[index(row - 1, col)] = Cell::Blue;
+            board[index(row + 1, col)] = Cell::Blue;
+            board[index(row, col - 1)] = Cell::Blue;
+            board[index(row, col + 1)] = Cell::Blue;
+        }
+        let mut state = state_with_board(board, Player::Blue);
+
+        assert_eq!(state.territory_scores(), (2, 0));
+        assert_eq!(state.apply(Action::Pass), Ok(None));
+        let outcome = state.apply(Action::Pass).unwrap().unwrap();
+
+        assert_eq!(outcome.reason, GameEndReason::ConsecutivePasses);
+        assert_eq!(outcome.winner, Player::Orange);
     }
 }
