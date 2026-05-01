@@ -109,7 +109,7 @@ Python API는 테스트하기 쉬운 작은 메서드 중심으로 시작한다.
 
 초기 MCTS는 신경망 없이 uniform prior와 value 0으로 시작한다. 이 구조가 안정되면 PyTorch leaf evaluation을 연결한다. 이후 self-play 학습 데이터로 쓰기 위해 선택된 수뿐 아니라 root visit count 분포도 Python으로 넘길 수 있어야 한다.
 
-### M6. PyTorch 모델과 batch 평가
+### ~~M6. PyTorch 모델과 batch 평가~~
 
 | 작업 | 위치 | 검증 |
 | --- | --- | --- |
