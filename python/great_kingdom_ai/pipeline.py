@@ -5,10 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, NoReturn, cast
 
 from great_kingdom_ai.evaluate import (
     ArenaConfig,
@@ -190,32 +190,36 @@ def run_pipeline(
             else load_model_from_checkpoint(paths.best_checkpoint, device=train_config.device)
         )
         prior_provider: Callable[[Any], list[float]] | None = None
-        batch_prior_provider: Callable[[list[Any]], list[list[float]]] | None = None
+        batch_prior_provider: Callable[[Sequence[Any]], list[list[float]]] | None = None
         batch_evaluator_provider: Callable[
-            [list[Any]],
+            [Sequence[Any]],
             tuple[list[list[float]], list[float]],
         ] | None = None
         if self_play_model is not None:
 
-            def prior_provider(state: Any, model: Any = self_play_model) -> list[float]:
-                return evaluate_state_policy(
+            def _prior_provider(state: Any, model: Any = self_play_model) -> list[float]:
+                return cast(list[float], evaluate_state_policy(
                     model,
                     state,
                     device=train_config.device,
-                )
+                ))
 
-            def batch_prior_provider(
-                states: list[Any],
+            prior_provider = _prior_provider
+
+            def _batch_prior_provider(
+                states: Sequence[Any],
                 model: Any = self_play_model,
             ) -> list[list[float]]:
-                return evaluate_state_policies(
+                return cast(list[list[float]], evaluate_state_policies(
                     model,
                     states,
                     device=train_config.device,
-                )
+                ))
 
-            def batch_evaluator_provider(
-                states: list[Any],
+            batch_prior_provider = _batch_prior_provider
+
+            def _batch_evaluator_provider(
+                states: Sequence[Any],
                 model: Any = self_play_model,
             ) -> tuple[list[list[float]], list[float]]:
                 evaluation = evaluate_feature_batch(
@@ -228,6 +232,8 @@ def run_pipeline(
                     [[float(value) for value in policy] for policy in evaluation.policy],
                     [float(value) for value in evaluation.value],
                 )
+
+            batch_evaluator_provider = _batch_evaluator_provider
 
         logs, samples = generate_self_play_samples(
             pipeline_config=pipeline_config,
@@ -329,9 +335,9 @@ def generate_self_play_samples(
     runner: Callable[[int, MctsSelfPlayConfig], tuple[GameLog, list[ReplaySample]]] | None = None,
     printer: PipelinePrinter | None = None,
     prior_provider: Callable[[Any], list[float]] | None = None,
-    batch_prior_provider: Callable[[list[Any]], list[list[float]]] | None = None,
+    batch_prior_provider: Callable[[Sequence[Any]], list[list[float]]] | None = None,
     batch_evaluator_provider: Callable[
-        [list[Any]],
+        [Sequence[Any]],
         tuple[list[list[float]], list[float]],
     ]
     | None = None,

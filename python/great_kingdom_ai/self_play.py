@@ -477,7 +477,7 @@ def _batched_root_priors(
 ) -> list[Sequence[float] | None]:
     if prior_provider is None:
         return [None] * len(games)
-    priors = list(prior_provider([game.state for game in games]))
+    priors: list[Sequence[float] | None] = list(prior_provider([game.state for game in games]))
     if len(priors) != len(games):
         raise ValueError(
             f"expected {len(games)} prior rows from batch provider, got {len(priors)}"
@@ -546,16 +546,16 @@ def _play_mcts_games_core_batched(
                     if use_full
                     else config.playout_cap_fast_simulations
                 )
-            prior_array = np.asarray(prior, dtype=np.float32)
+            prior_values = [float(value) for value in prior]
             if config.root_noise:
-                prior_array = apply_root_dirichlet_noise(
-                    prior_array,
+                prior_values = apply_root_dirichlet_noise(
+                    prior_values,
                     mask,
                     rng,
                     alpha=config.root_dirichlet_alpha,
                     epsilon=config.root_exploration_fraction,
-                )
-            noisy_priors.append(prior_array.tolist())
+                ).tolist()
+            noisy_priors.append(prior_values)
 
         if config.playout_cap_randomization:
             batch.set_simulations(simulation_budgets)
@@ -690,7 +690,7 @@ def _flat_features_for_replay(feature_planes: Sequence[float]) -> np.ndarray:
     expected = FEATURE_CHANNELS * BOARD_SIZE * BOARD_SIZE
     if features.shape != (expected,):
         raise ValueError(f"expected flat feature shape {(expected,)}, got {features.shape}")
-    return features.reshape(FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
+    return cast(np.ndarray, features.reshape(FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE))
 
 
 def _as_int_list(values: Sequence[int] | bytes) -> list[int]:
@@ -789,7 +789,7 @@ def _state_features_for_replay(state: SelfPlayState) -> np.ndarray:
     expected = FEATURE_CHANNELS * BOARD_SIZE * BOARD_SIZE
     if features.shape != (expected,):
         raise ValueError(f"expected flat feature shape {(expected,)}, got {features.shape}")
-    return features.reshape(FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
+    return cast(np.ndarray, features.reshape(FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE))
 
 
 def build_parser() -> argparse.ArgumentParser:
