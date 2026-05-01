@@ -528,6 +528,52 @@ def test_play_mcts_games_batched_passes_leaf_evaluator_to_core_batch(monkeypatch
     assert fake_batch.leaf_batch_sizes == [32]
 
 
+def test_play_mcts_games_batched_can_use_core_request_fast_path(monkeypatch) -> None:
+    fake_batch = FakeCoreBatch(game_count=2)
+    prior_batch_sizes: list[int] = []
+    evaluator_batch_sizes: list[int] = []
+
+    monkeypatch.setattr(self_play_module, "_can_create_core_self_play_batch", lambda: True)
+    monkeypatch.setattr(
+        self_play_module,
+        "create_core_mcts_self_play_batch",
+        lambda **_kwargs: fake_batch,
+    )
+
+    def feature_batch_prior_provider(features, masks) -> list[list[float]]:
+        assert len(features) == len(masks)
+        prior_batch_sizes.append(len(features))
+        priors = [0.0] * 82
+        priors[1] = 1.0
+        return [priors for _features in features]
+
+    def request_evaluator_provider(request) -> tuple[list[list[float]], list[float]]:
+        features = request.feature_planes()
+        masks = request.legal_masks()
+        assert len(features) == len(masks)
+        evaluator_batch_sizes.append(len(features))
+        policy = [0.0] * 82
+        policy[1] = 1.0
+        return [policy for _features in features], [0.25 for _features in features]
+
+    play_mcts_games_batched(
+        seeds=[41, 42],
+        search_factory=lambda: FakeMctsSearch([0] * 82),
+        config=MctsSelfPlayConfig(
+            max_turns=5,
+            temperature_turns=0,
+            root_noise=False,
+            leaf_batch_size=16,
+        ),
+        feature_batch_prior_provider=feature_batch_prior_provider,
+        request_evaluator_provider=request_evaluator_provider,
+    )
+
+    assert prior_batch_sizes == [2]
+    assert evaluator_batch_sizes == [2]
+    assert fake_batch.leaf_batch_sizes == [16]
+
+
 def test_play_mcts_game_applies_root_noise_only_when_enabled() -> None:
     visits = [0] * 82
     visits[1] = 1

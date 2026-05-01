@@ -340,12 +340,22 @@ def play_mcts_games_batched(
         tuple[Sequence[Sequence[float]], Sequence[float]],
     ]
     | None = None,
+    feature_batch_prior_provider: Callable[
+        [Sequence[Sequence[float]], Sequence[Sequence[bool]]],
+        Sequence[Sequence[float]],
+    ]
+    | None = None,
+    request_evaluator_provider: Callable[
+        [Any],
+        tuple[Sequence[Sequence[float]], Sequence[float]],
+    ]
+    | None = None,
     state_factory: Callable[[], SelfPlayState] | None = None,
 ) -> list[tuple[GameLog, list[ReplaySample]]]:
     """Run MCTS self-play games while batching neural-network root prior inference."""
     if (
         state_factory is None
-        and prior_provider is not None
+        and (prior_provider is not None or feature_batch_prior_provider is not None)
         and _can_create_core_self_play_batch()
     ):
         return _play_mcts_games_core_batched(
@@ -353,6 +363,8 @@ def play_mcts_games_batched(
             config=config,
             prior_provider=prior_provider,
             evaluator_provider=evaluator_provider,
+            feature_batch_prior_provider=feature_batch_prior_provider,
+            request_evaluator_provider=request_evaluator_provider,
         )
 
     make_state = state_factory if state_factory is not None else create_core_game_state
@@ -530,9 +542,20 @@ def _play_mcts_games_core_batched(
     *,
     seeds: Sequence[int],
     config: MctsSelfPlayConfig,
-    prior_provider: Callable[[Sequence[SelfPlayState]], Sequence[Sequence[float]]],
+    prior_provider: Callable[[Sequence[SelfPlayState]], Sequence[Sequence[float]]]
+    | None = None,
     evaluator_provider: Callable[
         [Sequence[SelfPlayState]],
+        tuple[Sequence[Sequence[float]], Sequence[float]],
+    ]
+    | None = None,
+    feature_batch_prior_provider: Callable[
+        [Sequence[Sequence[float]], Sequence[Sequence[bool]]],
+        Sequence[Sequence[float]],
+    ]
+    | None = None,
+    request_evaluator_provider: Callable[
+        [Any],
         tuple[Sequence[Sequence[float]], Sequence[float]],
     ]
     | None = None,
@@ -559,16 +582,25 @@ def _play_mcts_games_core_batched(
 
         request = batch.active_eval_request()
         players = _as_int_list(batch.current_players())
+        feature_rows = request.feature_planes()
+        masks = request.legal_masks()
         features_by_game = {
             game_index: _flat_features_for_replay(feature_planes)
             for game_index, feature_planes in zip(
                 active_indexes,
-                request.feature_planes(),
+                feature_rows,
                 strict=True,
             )
         }
-        masks = request.legal_masks()
-        priors = _evaluate_core_batch_priors(prior_provider, request)
+        if feature_batch_prior_provider is None:
+            if prior_provider is None:
+                raise ValueError("prior_provider is required for core batched self-play")
+            priors = _evaluate_core_batch_priors(prior_provider, request)
+        else:
+            priors = [
+                [float(value) for value in row]
+                for row in feature_batch_prior_provider(feature_rows, masks)
+            ]
         if len(priors) != len(active_indexes):
             raise ValueError(
                 f"expected {len(active_indexes)} prior rows from batch provider, got {len(priors)}"
@@ -600,10 +632,16 @@ def _play_mcts_games_core_batched(
 
         if config.playout_cap_randomization:
             batch.set_simulations(simulation_budgets)
-        if evaluator_provider is None:
+        if evaluator_provider is None and request_evaluator_provider is None:
             results = batch.search_active_with_priors(noisy_priors)
         else:
             def evaluator(request: Any) -> tuple[list[list[float]], list[float]]:
+                if request_evaluator_provider is not None:
+                    policies, values = request_evaluator_provider(request)
+                    return (
+                        [[float(value) for value in row] for row in policies],
+                        [float(value) for value in values],
+                    )
                 return _evaluate_core_batch_policy_values(evaluator_provider, request)
 
             results = batch.search_active_with_priors_and_evaluator(

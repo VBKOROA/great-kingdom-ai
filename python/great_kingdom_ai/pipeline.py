@@ -218,6 +218,14 @@ def run_pipeline(
             [Sequence[Any]],
             tuple[list[list[float]], list[float]],
         ] | None = None
+        feature_batch_prior_provider: Callable[
+            [Sequence[Sequence[float]], Sequence[Sequence[bool]]],
+            list[list[float]],
+        ] | None = None
+        request_evaluator_provider: Callable[
+            [Any],
+            tuple[list[list[float]], list[float]],
+        ] | None = None
         if self_play_model is not None:
 
             def _prior_provider(state: Any, model: Any = self_play_model) -> list[float]:
@@ -241,6 +249,21 @@ def run_pipeline(
 
             batch_prior_provider = _batch_prior_provider
 
+            def _feature_batch_prior_provider(
+                feature_rows: Sequence[Sequence[float]],
+                mask_rows: Sequence[Sequence[bool]],
+                model: Any = self_play_model,
+            ) -> list[list[float]]:
+                evaluation = evaluate_feature_batch(
+                    model,
+                    list(feature_rows),
+                    list(mask_rows),
+                    device=train_config.device,
+                )
+                return [[float(value) for value in policy] for policy in evaluation.policy]
+
+            feature_batch_prior_provider = _feature_batch_prior_provider
+
             def _batch_evaluator_provider(
                 states: Sequence[Any],
                 model: Any = self_play_model,
@@ -258,6 +281,23 @@ def run_pipeline(
 
             batch_evaluator_provider = _batch_evaluator_provider
 
+            def _request_evaluator_provider(
+                request: Any,
+                model: Any = self_play_model,
+            ) -> tuple[list[list[float]], list[float]]:
+                evaluation = evaluate_feature_batch(
+                    model,
+                    request.feature_planes(),
+                    request.legal_masks(),
+                    device=train_config.device,
+                )
+                return (
+                    [[float(value) for value in policy] for policy in evaluation.policy],
+                    [float(value) for value in evaluation.value],
+                )
+
+            request_evaluator_provider = _request_evaluator_provider
+
         logs, samples = generate_self_play_samples(
             pipeline_config=pipeline_config,
             seed_start=seed_cursor,
@@ -266,6 +306,8 @@ def run_pipeline(
             prior_provider=prior_provider,
             batch_prior_provider=batch_prior_provider,
             batch_evaluator_provider=batch_evaluator_provider,
+            feature_batch_prior_provider=feature_batch_prior_provider,
+            request_evaluator_provider=request_evaluator_provider,
         )
         seed_cursor += len(logs)
         replay.extend(samples)
@@ -379,6 +421,16 @@ def generate_self_play_samples(
         tuple[list[list[float]], list[float]],
     ]
     | None = None,
+    feature_batch_prior_provider: Callable[
+        [Sequence[Sequence[float]], Sequence[Sequence[bool]]],
+        list[list[float]],
+    ]
+    | None = None,
+    request_evaluator_provider: Callable[
+        [Any],
+        tuple[list[list[float]], list[float]],
+    ]
+    | None = None,
 ) -> tuple[list[GameLog], list[ReplaySample]]:
     printer = printer if printer is not None else PipelinePrinter()
     config = MctsSelfPlayConfig(
@@ -458,6 +510,8 @@ def generate_self_play_samples(
                 config=config,
                 prior_provider=batch_prior_provider,
                 evaluator_provider=batch_evaluator_provider,
+                feature_batch_prior_provider=feature_batch_prior_provider,
+                request_evaluator_provider=request_evaluator_provider,
             )
             for log, game_samples in batch_results:
                 logs.append(log)
