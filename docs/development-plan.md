@@ -127,7 +127,7 @@ Python API는 테스트하기 쉬운 작은 메서드 중심으로 시작한다.
 
 모델 구현은 로컬 smoke test가 가능한 small preset을 반드시 포함하되, 구조 자체는 channels와 residual block 수를 설정으로 바꿀 수 있게 만든다. Runpod RTX 4090 24GB는 시간당 과금 구조이므로 M6 이후 GPU smoke test에서는 small만 고집하지 않고 medium preset도 초기에 함께 확인한다. Runpod 기준 이미지는 `runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04`로 두며, Python 코드는 3.11에서 동작해야 한다. 초기 구조는 `alphazero-lite.md` 기준으로 CNN backbone, spatial policy head, global average pooling value head를 사용한다. policy head의 global context 결합은 기본 파이프라인이 안정된 뒤 실험 옵션으로 둔다.
 
-### M7. self-play 데이터 파이프라인
+### ~~M7. self-play 데이터 파이프라인~~
 
 | 작업 | 위치 | 검증 |
 | --- | --- | --- |
