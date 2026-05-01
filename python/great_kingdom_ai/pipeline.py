@@ -44,7 +44,7 @@ class PipelineConfig:
     iterations: int = 1
     self_play_games: int = 2
     min_replay_samples: int = 4
-    max_self_play_games: int = 20
+    max_self_play_games: int | None = 20
     self_play_batch_size: int = 1
     seed_start: int = 0
     replay_capacity: int = 10000
@@ -346,13 +346,22 @@ def generate_self_play_samples(
         len(logs) < pipeline_config.self_play_games
         or len(samples) < pipeline_config.min_replay_samples
     ):
-        if len(logs) >= pipeline_config.max_self_play_games:
+        if (
+            pipeline_config.max_self_play_games is not None
+            and len(logs) >= pipeline_config.max_self_play_games
+        ):
             raise RuntimeError(
                 "self-play did not produce enough replay samples: "
                 f"{len(samples)} < {pipeline_config.min_replay_samples}"
             )
         remaining_games = max(1, pipeline_config.self_play_games - len(logs))
-        remaining_cap = pipeline_config.max_self_play_games - len(logs)
+        if len(samples) < pipeline_config.min_replay_samples:
+            remaining_games = max(remaining_games, pipeline_config.self_play_batch_size)
+        remaining_cap = (
+            pipeline_config.max_self_play_games - len(logs)
+            if pipeline_config.max_self_play_games is not None
+            else remaining_games
+        )
         batch_size = min(pipeline_config.self_play_batch_size, remaining_games, remaining_cap)
         if runner is None and batch_prior_provider is not None and batch_size > 1:
             seeds = list(range(seed, seed + batch_size))
@@ -418,7 +427,10 @@ def _validate_pipeline_config(config: PipelineConfig) -> None:
         raise ValueError("self_play_games must be non-negative")
     if config.min_replay_samples < 0:
         raise ValueError("min_replay_samples must be non-negative")
-    if config.max_self_play_games < config.self_play_games:
+    if (
+        config.max_self_play_games is not None
+        and config.max_self_play_games < config.self_play_games
+    ):
         raise ValueError("max_self_play_games must be at least self_play_games")
     if config.self_play_batch_size <= 0:
         raise ValueError("self_play_batch_size must be positive")

@@ -67,6 +67,23 @@ def test_generate_self_play_samples_runs_until_game_and_sample_targets() -> None
     assert [log.seed for log in logs] == [0, 1, 2]
 
 
+def test_generate_self_play_samples_can_run_without_game_cap() -> None:
+    config = PipelineConfig(
+        self_play_games=1,
+        min_replay_samples=5,
+        max_self_play_games=None,
+    )
+
+    logs, samples = generate_self_play_samples(
+        pipeline_config=config,
+        runner=fake_self_play_runner,
+        printer=PipelinePrinter(enabled=False),
+    )
+
+    assert len(logs) == 3
+    assert len(samples) == 6
+
+
 def test_generate_self_play_samples_passes_playout_cap_config() -> None:
     seen_configs: list[MctsSelfPlayConfig] = []
 
@@ -233,9 +250,8 @@ def test_runpod_training_configs_load() -> None:
 
     assert pipeline.iterations > 1
     assert pipeline.self_play_games > 0
-    assert pipeline.max_self_play_games >= 256
+    assert pipeline.max_self_play_games is None
     assert pipeline.min_replay_samples >= train.batch_size
-    assert pipeline.max_self_play_games * 24 >= pipeline.min_replay_samples
     assert train.device == "cuda"
     assert train.model_preset == "medium"
     assert arena.device == "cuda"

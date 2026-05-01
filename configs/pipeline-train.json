@@ -1,6 +1,6 @@
 {
   "iterations": 20,
-  "max_self_play_games": 256,
+  "max_self_play_games": null,
   "mcts_c_puct": 1.5,
   "mcts_simulations": 64,
   "min_replay_samples": 4096,
