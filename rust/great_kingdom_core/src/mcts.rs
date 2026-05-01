@@ -1,4 +1,5 @@
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyAny};
+use rayon::prelude::*;
 
 use crate::game::{ACTION_SPACE, Action, GameOutcome, GameState, Player};
 
@@ -364,90 +365,62 @@ impl MctsSelfPlayBatch {
             .iter()
             .any(|index| completed[*index] < self.searches[*index].config.simulations)
         {
-            let mut pending = Vec::with_capacity(leaf_batch_size);
-            let mut scheduled = vec![0; self.states.len()];
+            let pending_leaves: Vec<_> = self.states.par_iter()
+                .zip(self.searches.par_iter_mut())
+                .zip(completed.par_iter_mut())
+                .zip(root_indexes.par_iter())
+                .enumerate()
+                .filter_map(|(game_index, (((state, search), comp), root_index))| {
+                    let root_index = (*root_index)?;
+                    let mut local_pending = None;
 
-            while pending.len() < leaf_batch_size {
-                let mut made_progress = false;
-
-                for game_index in active_indexes.iter().copied() {
-                    if pending.len() >= leaf_batch_size {
-                        break;
-                    }
-                    if completed[game_index] + scheduled[game_index]
-                        >= self.searches[game_index].config.simulations
-                    {
-                        continue;
-                    }
-
-                    let root_index = root_indexes[game_index]
-                        .expect("active game root must be initialized before simulation");
-                    let mut simulation_state = self.states[game_index].clone();
-                    match self.searches[game_index]
-                        .select_eval_leaf(root_index, &mut simulation_state)
-                    {
-                        PendingSimulation::NeedsEvaluation { path, state } => {
-                            reserve_path(&mut self.searches[game_index].nodes, &path);
-                            scheduled[game_index] += 1;
-                            pending.push(PendingGameLeaf {
-                                game_index,
-                                path,
-                                state,
-                            });
-                            made_progress = true;
-                        }
-                        PendingSimulation::Terminal {
-                            path,
-                            last_edge_value,
-                        } => {
-                            backup_path_from_last_edge(
-                                &mut self.searches[game_index].nodes,
-                                &path,
-                                last_edge_value,
-                            );
-                            completed[game_index] += 1;
-                            made_progress = true;
-                        }
-                        PendingSimulation::RootTerminal => {
-                            completed[game_index] += 1;
-                            made_progress = true;
+                    while *comp < search.config.simulations {
+                        let mut simulation_state = state.clone();
+                        match search.select_eval_leaf(root_index, &mut simulation_state) {
+                            PendingSimulation::NeedsEvaluation { path, state: leaf_state } => {
+                                reserve_path(&mut search.nodes, &path);
+                                local_pending = Some(PendingGameLeaf {
+                                    game_index,
+                                    path,
+                                    state: leaf_state,
+                                });
+                                break;
+                            }
+                            PendingSimulation::Terminal { path, last_edge_value } => {
+                                backup_path_from_last_edge(&mut search.nodes, &path, last_edge_value);
+                                *comp += 1;
+                            }
+                            PendingSimulation::RootTerminal => {
+                                *comp += 1;
+                            }
                         }
                     }
-                }
+                    local_pending
+                })
+                .collect();
 
-                if !made_progress {
-                    break;
-                }
-            }
-
-            if pending.is_empty() {
+            if pending_leaves.is_empty() {
                 continue;
             }
 
-            let request_states = pending
-                .iter()
-                .map(|leaf| leaf.state.clone())
-                .collect::<Vec<_>>();
-            let response = evaluator.call1((EvalRequest::new(request_states),))?;
-            let eval = parse_eval_response(&response)?;
-            eval.validate_len(pending.len())?;
-            for (leaf, (policy, value)) in pending
-                .into_iter()
-                .zip(eval.policies.into_iter().zip(eval.values.into_iter()))
-            {
-                unreserve_path(&mut self.searches[leaf.game_index].nodes, &leaf.path);
-                let child_index =
-                    self.searches[leaf.game_index].expand_node_with_priors(&leaf.state, &policy);
-                if let Some((parent_index, edge_index)) = leaf.path.last().copied() {
-                    self.searches[leaf.game_index].nodes[parent_index].edges[edge_index].child =
-                        Some(child_index);
+            for chunk in pending_leaves.chunks(leaf_batch_size) {
+                let request_states = chunk.iter().map(|leaf| leaf.state.clone()).collect::<Vec<_>>();
+                let response = evaluator.call1((EvalRequest::new(request_states),))?;
+                let eval = parse_eval_response(&response)?;
+                eval.validate_len(chunk.len())?;
+
+                for (leaf, (policy, value)) in chunk.iter()
+                    .zip(eval.policies.into_iter().zip(eval.values.into_iter()))
+                {
+                    let search = &mut self.searches[leaf.game_index];
+                    unreserve_path(&mut search.nodes, &leaf.path);
+                    let child_index = search.expand_node_with_priors(&leaf.state, &policy);
+                    if let Some((parent_index, edge_index)) = leaf.path.last().copied() {
+                        search.nodes[parent_index].edges[edge_index].child = Some(child_index);
+                    }
+                    backup_path_from_leaf_value(&mut search.nodes, &leaf.path, value);
+                    completed[leaf.game_index] += 1;
                 }
-                backup_path_from_leaf_value(
-                    &mut self.searches[leaf.game_index].nodes,
-                    &leaf.path,
-                    value,
-                );
-                completed[leaf.game_index] += 1;
             }
         }
 
