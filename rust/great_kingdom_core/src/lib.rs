@@ -1,5 +1,6 @@
 use pyo3::prelude::*;
 
+mod features;
 mod game;
 mod mcts;
 mod rules;
@@ -7,7 +8,7 @@ mod territory;
 
 pub use game::{
     ACTION_SPACE, Action, BOARD_CELLS, BOARD_SIZE, CASTLES_PER_PLAYER, CENTER_INDEX, Cell,
-    GameEndReason, GameOutcome, GameState, InvalidAction, PASS_ACTION, Player,
+    FEATURE_CHANNELS, GameEndReason, GameOutcome, GameState, InvalidAction, PASS_ACTION, Player,
 };
 pub use mcts::{MctsConfig, MctsResult, MctsSearch};
 
@@ -26,5 +27,6 @@ fn great_kingdom_core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("BOARD_SIZE", BOARD_SIZE)?;
     module.add("BOARD_CELLS", BOARD_CELLS)?;
     module.add("PASS_ACTION", PASS_ACTION)?;
+    module.add("FEATURE_CHANNELS", FEATURE_CHANNELS)?;
     Ok(())
 }

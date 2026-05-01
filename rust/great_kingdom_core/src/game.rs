@@ -6,6 +6,7 @@ pub const PASS_ACTION: usize = BOARD_CELLS;
 pub const ACTION_SPACE: usize = BOARD_CELLS + 1;
 pub const CENTER_INDEX: usize = 40;
 pub const CASTLES_PER_PLAYER: u8 = 40;
+pub const FEATURE_CHANNELS: usize = 11;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -167,6 +168,21 @@ impl GameState {
     #[must_use]
     pub fn legal_actions(&self) -> Vec<usize> {
         self.legal_action_indexes()
+    }
+
+    #[must_use]
+    pub fn legal_mask(&self) -> Vec<bool> {
+        self.legal_action_mask().to_vec()
+    }
+
+    #[must_use]
+    pub fn feature_planes(&self) -> Vec<f32> {
+        self.feature_planes_array().to_vec()
+    }
+
+    #[must_use]
+    pub fn feature_shape(&self) -> (usize, usize, usize) {
+        (FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
     }
 
     #[must_use]
