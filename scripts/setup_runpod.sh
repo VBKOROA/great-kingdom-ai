@@ -8,14 +8,41 @@ RUST_CRATE_DIR="$ROOT_DIR/rust/great_kingdom_core"
 
 cd "$ROOT_DIR"
 
+# 자동 설치 함수
+install_python() {
+  echo "Python을 설치해야 합니다."
+  if command -v apt-get >/dev/null 2>&1; then
+    echo "apt를 사용하여 Python 설치 중..."
+    sudo apt-get update
+    sudo apt-get install -y python3 python3-venv python3-dev
+  elif command -v brew >/dev/null 2>&1; then
+    echo "brew를 사용하여 Python 설치 중..."
+    brew install python3
+  else
+    echo "자동 설치할 수 없습니다. Python3를 수동으로 설치하세요." >&2
+    exit 1
+  fi
+}
+
+install_rust() {
+  echo "Rust/Cargo를 설치 중입니다..."
+  if ! command -v rustup >/dev/null 2>&1; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    source "$HOME/.cargo/env"
+  fi
+  rustup update
+  echo "Rust 설치 완료"
+}
+
+# Python 확인 및 설치
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-  echo "Python command not found: $PYTHON_BIN" >&2
-  exit 1
+  echo "Python 명령을 찾을 수 없습니다: $PYTHON_BIN"
+  install_python
 fi
 
+# Cargo 확인 및 설치
 if ! command -v cargo >/dev/null 2>&1; then
-  echo "Rust cargo not found. Install rustup first, then rerun this script." >&2
-  exit 1
+  install_rust
 fi
 
 echo "Creating venv with system site packages: $VENV_DIR"
