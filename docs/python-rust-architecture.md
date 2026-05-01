@@ -176,7 +176,7 @@ Rust는 각 worker의 게임 상태와 MCTS를 진행한다.
 
 Python은 한 번의 GPU batch inference로 여러 leaf를 평가한다.
 
-Colab 기준에서는 너무 많은 Python 프로세스를 띄우기보다, Rust 쪽에서 CPU 병렬 탐색을 처리하고 Python은 GPU batch를 크게 만드는 편이 단순하다.
+Runpod RTX 4090 24GB 기준에서는 너무 많은 Python 프로세스를 띄우기보다, Rust 쪽에서 CPU 병렬 탐색을 처리하고 Python은 GPU batch를 크게 만드는 편이 단순하다.
 
 ---
 

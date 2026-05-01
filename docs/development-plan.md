@@ -123,8 +123,9 @@ Python API는 테스트하기 쉬운 작은 메서드 중심으로 시작한다.
 | Rust eval request 구조 | `rust/great_kingdom_core/src/` | leaf state batch 반환 |
 | Python batch inference 연결 | `python/great_kingdom_ai/` | policy 82개, value scalar 반환 |
 | Rust MCTS prior masking | `rust/great_kingdom_core/src/` | 불법 수 prior가 탐색 후보에서 제외 |
+| Runpod GPU smoke config | `configs/` 또는 script | `small`, `medium` preset을 Python 3.11 + CUDA 환경에서 짧게 실행 |
 
-모델 구현은 로컬 smoke test가 가능한 small preset을 반드시 포함하되, 구조 자체는 channels와 residual block 수를 설정으로 바꿀 수 있게 만든다. Runpod RTX 4090 24GB는 시간당 과금 구조이므로 M6 이후 GPU smoke test에서는 small만 고집하지 않고 medium preset도 초기에 함께 확인한다. 초기 구조는 `alphazero-lite.md` 기준으로 CNN backbone, spatial policy head, global average pooling value head를 사용한다. policy head의 global context 결합은 기본 파이프라인이 안정된 뒤 실험 옵션으로 둔다.
+모델 구현은 로컬 smoke test가 가능한 small preset을 반드시 포함하되, 구조 자체는 channels와 residual block 수를 설정으로 바꿀 수 있게 만든다. Runpod RTX 4090 24GB는 시간당 과금 구조이므로 M6 이후 GPU smoke test에서는 small만 고집하지 않고 medium preset도 초기에 함께 확인한다. Runpod 기준 이미지는 `runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04`로 두며, Python 코드는 3.11에서 동작해야 한다. 초기 구조는 `alphazero-lite.md` 기준으로 CNN backbone, spatial policy head, global average pooling value head를 사용한다. policy head의 global context 결합은 기본 파이프라인이 안정된 뒤 실험 옵션으로 둔다.
 
 ### M7. self-play 데이터 파이프라인
 
@@ -137,6 +138,7 @@ Python API는 테스트하기 쉬운 작은 메서드 중심으로 시작한다.
 | replay buffer 구현 | `python/great_kingdom_ai/replay_buffer.py` | push, sample, save, load 테스트 |
 | 대칭 증강 구현 | `python/great_kingdom_ai/` | 보드와 policy index가 함께 변환 |
 | self-play artifact 저장 | `data/` 또는 설정 경로 | 재시작 후 로드 가능 |
+| Runpod artifact 경로 설정 | `configs/` 또는 script | pod 재시작을 고려해 replay/checkpoint/log 경로 분리 |
 
 데이터는 사람이 만든 전술 label을 포함하지 않는다. 규칙 결과, MCTS 방문 분포, 최종 승패만 저장한다.
 
@@ -148,9 +150,11 @@ Python API는 테스트하기 쉬운 작은 메서드 중심으로 시작한다.
 | optimizer와 scheduler 설정 | `python/great_kingdom_ai/train.py` | 1 step 업데이트 성공 |
 | checkpoint 저장 | `python/great_kingdom_ai/` | 모델과 optimizer 상태 저장 |
 | checkpoint 로드 | `python/great_kingdom_ai/` | 로드 후 같은 입력에 같은 출력 |
+| 학습 resume 옵션 | `python/great_kingdom_ai/train.py` | 중단된 Runpod 작업을 checkpoint에서 재개 |
+| Runpod smoke train script | `scripts/` 또는 config | toy self-play 데이터로 짧은 CUDA 학습 실행 |
 | 작은 end-to-end 학습 | `tests/` 또는 script | toy batch로 학습 script 완료 |
 
-이 단계의 목표는 강한 모델이 아니라 닫힌 루프다. self-play 데이터 생성, 학습, checkpoint 저장이 한 번에 이어지면 다음 단계로 넘어간다.
+이 단계의 목표는 강한 모델이 아니라 닫힌 루프다. self-play 데이터 생성, 학습, checkpoint 저장, 중단 후 재개가 한 번에 이어지면 다음 단계로 넘어간다.
 
 ### M9. 평가와 모델 교체
 
@@ -162,6 +166,7 @@ Python API는 테스트하기 쉬운 작은 메서드 중심으로 시작한다.
 | best model 관리 | `checkpoints/` 또는 설정 경로 | best와 candidate 구분 |
 | 승률과 품질 지표 리포트 | `python/great_kingdom_ai/` | seed, 판 수, 선후공 승률, 평균 게임 길이 기록 |
 | 모델 교체 조건 | `python/great_kingdom_ai/` | 기준 승률 이상이면 best 갱신 |
+| 평가 artifact 저장 | `reports/` 또는 설정 경로 | Runpod 작업 종료 후 승률과 설정 추적 가능 |
 | 회귀 평가 | `tests/` 또는 script | 작은 판 수로 평가 루프 smoke test |
 
 로컬에서는 평가 판 수를 작게 유지하고, 긴 학습과 대량 평가는 Runpod 학습 환경으로 넘긴다.

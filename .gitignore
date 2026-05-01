@@ -1,5 +1,7 @@
 .codex
 .venv/
+.venv-py313-backup/
+.uv-python/
 __pycache__/
 *.py[cod]
 .pytest_cache/

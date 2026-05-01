@@ -12,7 +12,7 @@ Great Kingdom AI는 9x9 추상 전략 게임 **Great Kingdom**을 재현하고, 
 2. 규칙 엔진 위에서 MCTS 기반 자가대국을 수행한다.
 3. 자가대국 데이터를 이용해 AlphaZero-lite 형태의 신경망 플레이어를 학습한다.
 
-정통 AlphaZero를 완전히 재현하기보다는, Colab GPU와 일반 개발 환경에서 현실적으로 실험 가능한 소형 구조를 목표로 합니다.
+정통 AlphaZero를 완전히 재현하기보다는, GPU 없는 로컬 개발 환경과 Runpod RTX 4090 24GB 학습 환경에서 현실적으로 실험 가능한 소형 구조를 목표로 합니다.
 
 ## 게임 개요
 
@@ -90,7 +90,7 @@ Python과 Rust 연결은 PyO3와 maturin을 사용하는 방향으로 설계되�
 
 ## 개발 환경
 
-Python 3.13과 Rust 1.85 이상을 기준으로 합니다.
+Python 3.11 이상과 Rust 1.85 이상을 기준으로 합니다. 로컬에서는 venv를 사용하고, GPU가 필요한 긴 self-play와 학습은 Runpod에서 실행합니다.
 
 ```bash
 python3 -m venv .venv
@@ -110,6 +110,16 @@ Rust 포맷터와 린터는 Ubuntu/Debian 기준으로 다음 패키지가 필�
 ```bash
 sudo apt install -y rustfmt rust-clippy
 ```
+
+## 학습 환경
+
+Runpod 학습 환경은 다음 템플릿을 기준으로 합니다.
+
+```text
+runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+```
+
+학습 코드는 Python 3.11에서 동작해야 하며, 로컬과 CI의 기본 테스트는 GPU 없이 통과해야 합니다. Runpod에서는 `medium` 모델 preset을 초기 학습 기준으로 삼고, `large` preset은 self-play, 학습, 평가 루프가 안정된 뒤 처리량과 승률을 보고 올립니다.
 
 ## 수동 규칙 확인 CLI
 
