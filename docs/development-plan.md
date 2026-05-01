@@ -72,7 +72,7 @@
 
 이 단계의 테스트가 전체 프로젝트의 기반이다. 이후 AI 코드에서 이상한 착수가 나오면 먼저 이 테스트 묶음으로 회귀 여부를 확인한다.
 
-### M3. Python 바인딩
+### ~~M3. Python 바인딩~~
 
 | 작업 | 위치 | 검증 |
 | --- | --- | --- |
@@ -80,7 +80,6 @@
 | `GameState` Python class 노출 | `rust/great_kingdom_core/src/` | Python에서 새 게임 생성 |
 | `legal_actions()` 노출 | `rust/great_kingdom_core/src/` | Python list 또는 tuple 반환 |
 | `apply_action()` 노출 | `rust/great_kingdom_core/src/` | 다음 상태와 outcome 반환 |
-| feature plane 생성 API 노출 | `rust/great_kingdom_core/src/` | shape와 값 범위 테스트 |
 
 Python API는 테스트하기 쉬운 작은 메서드 중심으로 시작한다. self-play orchestration은 이 API가 안정된 뒤 붙인다.
 
@@ -105,18 +104,21 @@ Python API는 테스트하기 쉬운 작은 메서드 중심으로 시작한다.
 | terminal value backup | `rust/great_kingdom_core/src/` | 즉시 승패가 백업됨 |
 | uniform prior evaluator | `rust/great_kingdom_core/src/` | 신경망 없이 탐색 가능 |
 | Python 호출 API | `rust/great_kingdom_core/src/` | MCTS가 합법 수 하나를 반환 |
+| visit count export | `rust/great_kingdom_core/src/` | 82차원 방문 횟수 분포 반환 |
 
-초기 MCTS는 신경망 없이 uniform prior와 value 0으로 시작한다. 이 구조가 안정되면 PyTorch leaf evaluation을 연결한다.
+초기 MCTS는 신경망 없이 uniform prior와 value 0으로 시작한다. 이 구조가 안정되면 PyTorch leaf evaluation을 연결한다. 이후 self-play 학습 데이터로 쓰기 위해 선택된 수뿐 아니라 root visit count 분포도 Python으로 넘길 수 있어야 한다.
 
 ### M6. PyTorch 모델과 batch 평가
 
 | 작업 | 위치 | 검증 |
 | --- | --- | --- |
-| 작은 policy-value network | `python/great_kingdom_ai/model.py` | forward shape 테스트 |
+| feature plane 생성 API 노출 | `rust/great_kingdom_core/src/` | shape와 값 범위 테스트 |
 | feature tensor 변환 | `python/great_kingdom_ai/` | `[batch, channels, 9, 9]` 확인 |
-| legal mask 적용 | `python/great_kingdom_ai/` | 불법 수 확률 0 확인 |
+| 작은 policy-value network | `python/great_kingdom_ai/model.py` | forward shape 테스트 |
+| legal mask API 노출 | `rust/great_kingdom_core/src/` | 82차원 mask와 `legal_actions()` 일치 |
 | Rust eval request 구조 | `rust/great_kingdom_core/src/` | leaf state batch 반환 |
 | Python batch inference 연결 | `python/great_kingdom_ai/` | policy 82개, value scalar 반환 |
+| Rust MCTS prior masking | `rust/great_kingdom_core/src/` | 불법 수 prior가 탐색 후보에서 제외 |
 
 모델은 로컬 smoke test가 가능한 작은 CNN으로 시작한다. 학습 처리량 최적화는 Runpod RTX 4090 24GB 환경에서 학습 루프가 닫힌 뒤 별도 작업으로 둔다.
 
