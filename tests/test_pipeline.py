@@ -256,3 +256,10 @@ def test_runpod_training_configs_load() -> None:
     assert train.model_preset == "medium"
     assert arena.device == "cuda"
     assert arena.games > 0
+
+
+def test_smoke_pipeline_config_exercises_batched_self_play_path() -> None:
+    pipeline = load_pipeline_config("configs/pipeline-smoke.json")
+
+    assert pipeline.self_play_batch_size > 1
+    assert pipeline.self_play_games >= pipeline.self_play_batch_size
