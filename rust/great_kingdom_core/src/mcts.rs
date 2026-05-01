@@ -1,5 +1,6 @@
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyAny};
 use rayon::prelude::*;
+use std::{env, time::Instant};
 
 use crate::game::{ACTION_SPACE, Action, GameOutcome, GameState, Player};
 
@@ -350,6 +351,8 @@ impl MctsSelfPlayBatch {
             )));
         }
 
+        let profile = MctsProfile::new("search_active_with_priors_and_evaluator");
+        let root_start = Instant::now();
         let mut root_indexes = vec![None; self.states.len()];
         let mut completed = vec![0; self.states.len()];
         for (game_index, prior_row) in active_indexes.iter().copied().zip(priors.into_iter()) {
@@ -360,11 +363,16 @@ impl MctsSelfPlayBatch {
                     .expand_node_with_priors(&self.states[game_index], &prior_array),
             );
         }
+        profile.root(active_indexes.len(), root_start.elapsed());
 
+        let mut wave = 0_u64;
         while active_indexes
             .iter()
             .any(|index| completed[*index] < self.searches[*index].config.simulations)
         {
+            wave += 1;
+            evaluator.py().check_signals()?;
+            let select_start = Instant::now();
             let pending_by_game: Vec<Vec<_>> = self
                 .states
                 .par_iter()
@@ -416,20 +424,35 @@ impl MctsSelfPlayBatch {
                     local_pending
                 })
                 .collect();
+            let selected_games = pending_by_game
+                .iter()
+                .filter(|leaves| !leaves.is_empty())
+                .count();
+            let select_elapsed = select_start.elapsed();
+            let flatten_start = Instant::now();
             let pending_leaves = pending_by_game.into_iter().flatten().collect::<Vec<_>>();
+            let flatten_elapsed = flatten_start.elapsed();
 
             if pending_leaves.is_empty() {
+                profile.empty_wave(wave, selected_games, select_elapsed, flatten_elapsed);
                 continue;
             }
 
+            let request_start = Instant::now();
             let request_states = pending_leaves
                 .iter()
                 .map(|leaf| leaf.state.clone())
                 .collect::<Vec<_>>();
+            let request_elapsed = request_start.elapsed();
+            let eval_start = Instant::now();
             let response = evaluator.call1((EvalRequest::new(request_states),))?;
+            let eval_elapsed = eval_start.elapsed();
+            let parse_start = Instant::now();
             let eval = parse_eval_response(&response)?;
             eval.validate_len(pending_leaves.len())?;
+            let parse_elapsed = parse_start.elapsed();
 
+            let backup_start = Instant::now();
             for (leaf, (policy, value)) in pending_leaves
                 .iter()
                 .zip(eval.policies.into_iter().zip(eval.values.into_iter()))
@@ -443,6 +466,19 @@ impl MctsSelfPlayBatch {
                 backup_path_from_leaf_value(&mut search.nodes, &leaf.path, value);
                 completed[leaf.game_index] += 1;
             }
+            let backup_elapsed = backup_start.elapsed();
+            profile.wave(MctsWaveProfile {
+                wave,
+                active_games: active_indexes.len(),
+                selected_games,
+                leaves: pending_leaves.len(),
+                select_elapsed,
+                flatten_elapsed,
+                request_elapsed,
+                eval_elapsed,
+                parse_elapsed,
+                backup_elapsed,
+            });
         }
 
         let mut results = vec![None; self.states.len()];
@@ -485,14 +521,22 @@ impl MctsSelfPlayBatch {
 
         let active_indexes = self.active_indexes();
 
+        let profile = MctsProfile::new("search_active_with_evaluator");
+        let root_eval_start = Instant::now();
         let root_states = active_indexes
             .iter()
             .map(|index| self.states[*index].clone())
             .collect::<Vec<_>>();
+        let root_request_elapsed = root_eval_start.elapsed();
+        let root_call_start = Instant::now();
         let root_response = evaluator.call1((EvalRequest::new(root_states),))?;
+        let root_call_elapsed = root_call_start.elapsed();
+        let root_parse_start = Instant::now();
         let root_eval = parse_eval_response(&root_response)?;
         root_eval.validate_len(active_indexes.len())?;
+        let root_parse_elapsed = root_parse_start.elapsed();
 
+        let root_expand_start = Instant::now();
         let mut root_indexes = vec![None; self.states.len()];
         let mut completed = vec![0; self.states.len()];
         for (game_index, prior_row) in active_indexes
@@ -506,11 +550,22 @@ impl MctsSelfPlayBatch {
                     .expand_node_with_priors(&self.states[game_index], &prior_row),
             );
         }
+        profile.root_eval(
+            active_indexes.len(),
+            root_request_elapsed,
+            root_call_elapsed,
+            root_parse_elapsed,
+            root_expand_start.elapsed(),
+        );
 
+        let mut wave = 0_u64;
         while active_indexes
             .iter()
             .any(|index| completed[*index] < self.searches[*index].config.simulations)
         {
+            wave += 1;
+            evaluator.py().check_signals()?;
+            let select_start = Instant::now();
             let pending_by_game: Vec<Vec<_>> = self
                 .states
                 .par_iter()
@@ -562,20 +617,35 @@ impl MctsSelfPlayBatch {
                     local_pending
                 })
                 .collect();
+            let selected_games = pending_by_game
+                .iter()
+                .filter(|leaves| !leaves.is_empty())
+                .count();
+            let select_elapsed = select_start.elapsed();
+            let flatten_start = Instant::now();
             let pending_leaves = pending_by_game.into_iter().flatten().collect::<Vec<_>>();
+            let flatten_elapsed = flatten_start.elapsed();
 
             if pending_leaves.is_empty() {
+                profile.empty_wave(wave, selected_games, select_elapsed, flatten_elapsed);
                 continue;
             }
 
+            let request_start = Instant::now();
             let request_states = pending_leaves
                 .iter()
                 .map(|leaf| leaf.state.clone())
                 .collect::<Vec<_>>();
+            let request_elapsed = request_start.elapsed();
+            let eval_start = Instant::now();
             let response = evaluator.call1((EvalRequest::new(request_states),))?;
+            let eval_elapsed = eval_start.elapsed();
+            let parse_start = Instant::now();
             let eval = parse_eval_response(&response)?;
             eval.validate_len(pending_leaves.len())?;
+            let parse_elapsed = parse_start.elapsed();
 
+            let backup_start = Instant::now();
             for (leaf, (policy, value)) in pending_leaves
                 .iter()
                 .zip(eval.policies.into_iter().zip(eval.values.into_iter()))
@@ -589,6 +659,19 @@ impl MctsSelfPlayBatch {
                 backup_path_from_leaf_value(&mut search.nodes, &leaf.path, value);
                 completed[leaf.game_index] += 1;
             }
+            let backup_elapsed = backup_start.elapsed();
+            profile.wave(MctsWaveProfile {
+                wave,
+                active_games: active_indexes.len(),
+                selected_games,
+                leaves: pending_leaves.len(),
+                select_elapsed,
+                flatten_elapsed,
+                request_elapsed,
+                eval_elapsed,
+                parse_elapsed,
+                backup_elapsed,
+            });
         }
 
         let mut results = vec![None; self.states.len()];
@@ -1220,6 +1303,130 @@ fn backup_path_from_last_edge(nodes: &mut [Node], path: &[(usize, usize)], last_
         nodes[node_index].edges[edge_index].update(value);
         value = -value;
     }
+}
+
+#[derive(Clone, Copy)]
+struct MctsProfile {
+    enabled: bool,
+    interval: u64,
+    name: &'static str,
+}
+
+struct MctsWaveProfile {
+    wave: u64,
+    active_games: usize,
+    selected_games: usize,
+    leaves: usize,
+    select_elapsed: std::time::Duration,
+    flatten_elapsed: std::time::Duration,
+    request_elapsed: std::time::Duration,
+    eval_elapsed: std::time::Duration,
+    parse_elapsed: std::time::Duration,
+    backup_elapsed: std::time::Duration,
+}
+
+impl MctsProfile {
+    fn new(name: &'static str) -> Self {
+        Self {
+            enabled: env_flag("GKA_MCTS_PROFILE"),
+            interval: env::var("GKA_MCTS_PROFILE_INTERVAL")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(1),
+            name,
+        }
+    }
+
+    fn root(&self, active_games: usize, elapsed: std::time::Duration) {
+        if !self.enabled {
+            return;
+        }
+        eprintln!(
+            "[gka-mcts-profile] fn={} root active_games={} rayon_threads={} root_expand={:.3}s",
+            self.name,
+            active_games,
+            rayon::current_num_threads(),
+            elapsed.as_secs_f64(),
+        );
+    }
+
+    fn root_eval(
+        &self,
+        active_games: usize,
+        request_elapsed: std::time::Duration,
+        eval_elapsed: std::time::Duration,
+        parse_elapsed: std::time::Duration,
+        expand_elapsed: std::time::Duration,
+    ) {
+        if !self.enabled {
+            return;
+        }
+        eprintln!(
+            "[gka-mcts-profile] fn={} root_eval active_games={} rayon_threads={} request={:.3}s eval_call={:.3}s parse={:.3}s expand={:.3}s",
+            self.name,
+            active_games,
+            rayon::current_num_threads(),
+            request_elapsed.as_secs_f64(),
+            eval_elapsed.as_secs_f64(),
+            parse_elapsed.as_secs_f64(),
+            expand_elapsed.as_secs_f64(),
+        );
+    }
+
+    fn empty_wave(
+        &self,
+        wave: u64,
+        selected_games: usize,
+        select_elapsed: std::time::Duration,
+        flatten_elapsed: std::time::Duration,
+    ) {
+        if !self.enabled || wave % self.interval != 0 {
+            return;
+        }
+        eprintln!(
+            "[gka-mcts-profile] fn={} wave={} empty selected_games={} select={:.3}s flatten={:.3}s",
+            self.name,
+            wave,
+            selected_games,
+            select_elapsed.as_secs_f64(),
+            flatten_elapsed.as_secs_f64(),
+        );
+    }
+
+    fn wave(&self, profile: MctsWaveProfile) {
+        if !self.enabled || profile.wave % self.interval != 0 {
+            return;
+        }
+        let total = profile.select_elapsed
+            + profile.flatten_elapsed
+            + profile.request_elapsed
+            + profile.eval_elapsed
+            + profile.parse_elapsed
+            + profile.backup_elapsed;
+        eprintln!(
+            "[gka-mcts-profile] fn={} wave={} active_games={} selected_games={} leaves={} select={:.3}s flatten={:.3}s request={:.3}s eval_call={:.3}s parse={:.3}s backup={:.3}s total={:.3}s",
+            self.name,
+            profile.wave,
+            profile.active_games,
+            profile.selected_games,
+            profile.leaves,
+            profile.select_elapsed.as_secs_f64(),
+            profile.flatten_elapsed.as_secs_f64(),
+            profile.request_elapsed.as_secs_f64(),
+            profile.eval_elapsed.as_secs_f64(),
+            profile.parse_elapsed.as_secs_f64(),
+            profile.backup_elapsed.as_secs_f64(),
+            total.as_secs_f64(),
+        );
+    }
+}
+
+fn env_flag(name: &str) -> bool {
+    !matches!(
+        env::var(name).as_deref(),
+        Err(_) | Ok("") | Ok("0") | Ok("false") | Ok("False") | Ok("no") | Ok("No")
+    )
 }
 
 fn parse_eval_response(response: &Bound<'_, PyAny>) -> PyResult<EvalBatch> {
