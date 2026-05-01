@@ -344,6 +344,7 @@ impl MctsSelfPlayBatch {
                 match self.searches[game_index].select_eval_leaf(root_index, &mut simulation_state)
                 {
                     PendingSimulation::NeedsEvaluation { path, state } => {
+                        reserve_path(&mut self.searches[game_index].nodes, &path);
                         pending.push(PendingGameLeaf {
                             game_index,
                             path,
@@ -385,6 +386,7 @@ impl MctsSelfPlayBatch {
                 .into_iter()
                 .zip(eval.policies.into_iter().zip(eval.values.into_iter()))
             {
+                unreserve_path(&mut self.searches[leaf.game_index].nodes, &leaf.path);
                 let child_index =
                     self.searches[leaf.game_index].expand_node_with_priors(&leaf.state, &policy);
                 if let Some((parent_index, edge_index)) = leaf.path.last().copied() {
@@ -572,6 +574,7 @@ impl MctsSearch {
                 let mut simulation_state = state.clone();
                 match self.select_eval_leaf(root_index, &mut simulation_state) {
                     PendingSimulation::NeedsEvaluation { path, state } => {
+                        reserve_path(&mut self.nodes, &path);
                         pending.push(PendingLeaf { path, state });
                     }
                     PendingSimulation::Terminal {
@@ -601,6 +604,7 @@ impl MctsSearch {
                 .into_iter()
                 .zip(eval.policies.into_iter().zip(eval.values.into_iter()))
             {
+                unreserve_path(&mut self.nodes, &leaf.path);
                 let child_index = self.expand_node_with_priors(&leaf.state, &policy);
                 if let Some((parent_index, edge_index)) = leaf.path.last().copied() {
                     self.nodes[parent_index].edges[edge_index].child = Some(child_index);
@@ -663,6 +667,7 @@ impl MctsSearch {
                 let mut simulation_state = state.clone();
                 match self.select_eval_leaf(root_index, &mut simulation_state) {
                     PendingSimulation::NeedsEvaluation { path, state } => {
+                        reserve_path(&mut self.nodes, &path);
                         pending.push(PendingLeaf { path, state });
                     }
                     PendingSimulation::Terminal {
@@ -692,6 +697,7 @@ impl MctsSearch {
                 .into_iter()
                 .zip(eval.policies.into_iter().zip(eval.values.into_iter()))
             {
+                unreserve_path(&mut self.nodes, &leaf.path);
                 let child_index = self.expand_node_with_priors(&leaf.state, &policy);
                 if let Some((parent_index, edge_index)) = leaf.path.last().copied() {
                     self.nodes[parent_index].edges[edge_index].child = Some(child_index);
@@ -778,8 +784,9 @@ impl MctsSearch {
             .iter()
             .enumerate()
             .max_by(|(_, left), (_, right)| {
-                let left_score = puct_score(node.visit_count, left, self.config.c_puct);
-                let right_score = puct_score(node.visit_count, right, self.config.c_puct);
+                let parent_visits = node.visit_count + node.virtual_visit_count;
+                let left_score = puct_score(parent_visits, left, self.config.c_puct);
+                let right_score = puct_score(parent_visits, right, self.config.c_puct);
                 left_score
                     .partial_cmp(&right_score)
                     .expect("PUCT score must be finite")
@@ -892,6 +899,8 @@ pub(crate) struct EdgeStats {
     prior: f32,
     visit_count: u32,
     value_sum: f32,
+    virtual_visit_count: u32,
+    virtual_value_sum: f32,
     child: Option<usize>,
 }
 
@@ -902,6 +911,8 @@ impl EdgeStats {
             prior,
             visit_count: 0,
             value_sum: 0.0,
+            virtual_visit_count: 0,
+            virtual_value_sum: 0.0,
             child: None,
         }
     }
@@ -912,10 +923,11 @@ impl EdgeStats {
     }
 
     fn mean_value(&self) -> f32 {
-        if self.visit_count == 0 {
+        let total_visits = self.visit_count + self.virtual_visit_count;
+        if total_visits == 0 {
             0.0
         } else {
-            self.value_sum / self.visit_count as f32
+            (self.value_sum + self.virtual_value_sum) / total_visits as f32
         }
     }
 }
@@ -924,6 +936,7 @@ impl EdgeStats {
 pub(crate) struct Node {
     to_play: Player,
     visit_count: u32,
+    virtual_visit_count: u32,
     edges: Vec<EdgeStats>,
 }
 
@@ -944,6 +957,7 @@ impl Node {
         Self {
             to_play: state.current_player_value(),
             visit_count: 0,
+            virtual_visit_count: 0,
             edges,
         }
     }
@@ -976,6 +990,7 @@ impl Node {
         Self {
             to_play: state.current_player_value(),
             visit_count: 0,
+            virtual_visit_count: 0,
             edges,
         }
     }
@@ -1010,12 +1025,35 @@ impl GameState {
 
 fn puct_score(parent_visits: u32, edge: &EdgeStats, c_puct: f32) -> f32 {
     let exploration_visits = parent_visits.max(1) as f32;
-    edge.mean_value()
-        + c_puct * edge.prior * exploration_visits.sqrt() / (1.0 + edge.visit_count as f32)
+    let edge_visits = edge.visit_count + edge.virtual_visit_count;
+    edge.mean_value() + c_puct * edge.prior * exploration_visits.sqrt() / (1.0 + edge_visits as f32)
 }
 
 fn value_for_player(outcome: GameOutcome, player: Player) -> f32 {
     if outcome.winner == player { 1.0 } else { -1.0 }
+}
+
+fn reserve_path(nodes: &mut [Node], path: &[(usize, usize)]) {
+    for (node_index, edge_index) in path.iter().copied() {
+        nodes[node_index].virtual_visit_count += 1;
+        nodes[node_index].edges[edge_index].virtual_visit_count += 1;
+        nodes[node_index].edges[edge_index].virtual_value_sum -= 1.0;
+    }
+}
+
+fn unreserve_path(nodes: &mut [Node], path: &[(usize, usize)]) {
+    for (node_index, edge_index) in path.iter().copied() {
+        nodes[node_index].virtual_visit_count = nodes[node_index]
+            .virtual_visit_count
+            .checked_sub(1)
+            .expect("virtual node visit count underflow");
+        nodes[node_index].edges[edge_index].virtual_visit_count = nodes[node_index].edges
+            [edge_index]
+            .virtual_visit_count
+            .checked_sub(1)
+            .expect("virtual edge visit count underflow");
+        nodes[node_index].edges[edge_index].virtual_value_sum += 1.0;
+    }
 }
 
 fn backup_path_from_leaf_value(nodes: &mut [Node], path: &[(usize, usize)], leaf_value: f32) {
@@ -1182,12 +1220,15 @@ mod tests {
         let node = Node {
             to_play: Player::Blue,
             visit_count: 16,
+            virtual_visit_count: 0,
             edges: vec![
                 EdgeStats {
                     action: Action::from_index(0).unwrap(),
                     prior: 0.9,
                     visit_count: 0,
                     value_sum: 0.0,
+                    virtual_visit_count: 0,
+                    virtual_value_sum: 0.0,
                     child: None,
                 },
                 EdgeStats {
@@ -1195,6 +1236,8 @@ mod tests {
                     prior: 0.1,
                     visit_count: 10,
                     value_sum: 8.0,
+                    virtual_visit_count: 0,
+                    virtual_value_sum: 0.0,
                     child: None,
                 },
             ],
@@ -1248,6 +1291,7 @@ mod tests {
         search.nodes.push(Node {
             to_play: Player::Blue,
             visit_count: 0,
+            virtual_visit_count: 0,
             edges: vec![EdgeStats::new(Action::from_index(0).unwrap(), 1.0)],
         });
 

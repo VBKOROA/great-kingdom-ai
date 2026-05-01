@@ -83,6 +83,33 @@ def test_mcts_search_with_evaluator_rejects_bad_policy_shape() -> None:
     importlib.util.find_spec("great_kingdom_core") is None,
     reason="great_kingdom_core extension is not installed",
 )
+def test_mcts_search_with_evaluator_uses_virtual_loss_within_leaf_batch() -> None:
+    import great_kingdom_core as core  # type: ignore[import-untyped]
+
+    state = core.GameState()
+    search = core.MctsSearch(simulations=4, c_puct=1.5)
+
+    def evaluator(request):
+        policies = []
+        values = []
+        for mask in request.legal_masks():
+            policies.append([1.0 if is_legal else 0.0 for is_legal in mask])
+            values.append(0.0)
+        return policies, values
+
+    result = search.search_with_evaluator(state, evaluator, leaf_batch_size=4)
+    visited_actions = [
+        index for index, visits in enumerate(result.visit_counts()) if visits > 0
+    ]
+
+    assert len(visited_actions) == 4
+    assert max(result.visit_counts()) == 1
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("great_kingdom_core") is None,
+    reason="great_kingdom_core extension is not installed",
+)
 def test_mcts_self_play_batch_advances_active_games_with_batched_priors() -> None:
     import great_kingdom_core as core  # type: ignore[import-untyped]
 
