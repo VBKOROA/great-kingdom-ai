@@ -22,7 +22,7 @@ from great_kingdom_ai.evaluate import (
     run_arena,
     save_arena_report,
 )
-from great_kingdom_ai.evaluator import evaluate_feature_batch
+from great_kingdom_ai.evaluator import evaluate_feature_batch, evaluate_request_bytes
 from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
 from great_kingdom_ai.self_play import (
     GameLog,
@@ -224,7 +224,7 @@ def run_pipeline(
         ] | None = None
         request_evaluator_provider: Callable[
             [Any],
-            tuple[list[list[float]], list[float]],
+            tuple[Any, Any],
         ] | None = None
         if self_play_model is not None:
 
@@ -284,17 +284,13 @@ def run_pipeline(
             def _request_evaluator_provider(
                 request: Any,
                 model: Any = self_play_model,
-            ) -> tuple[list[list[float]], list[float]]:
-                evaluation = evaluate_feature_batch(
+            ) -> tuple[Any, Any]:
+                evaluation = evaluate_request_bytes(
                     model,
-                    request.feature_planes(),
-                    request.legal_masks(),
+                    request,
                     device=train_config.device,
                 )
-                return (
-                    [[float(value) for value in policy] for policy in evaluation.policy],
-                    [float(value) for value in evaluation.value],
-                )
+                return evaluation.policy, evaluation.value
 
             request_evaluator_provider = _request_evaluator_provider
 
@@ -428,7 +424,7 @@ def generate_self_play_samples(
     | None = None,
     request_evaluator_provider: Callable[
         [Any],
-        tuple[list[list[float]], list[float]],
+        tuple[Any, Any],
     ]
     | None = None,
 ) -> tuple[list[GameLog], list[ReplaySample]]:

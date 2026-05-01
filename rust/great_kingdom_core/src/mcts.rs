@@ -1,8 +1,15 @@
-use pyo3::{exceptions::PyValueError, prelude::*, types::PyAny};
+use pyo3::{
+    buffer::PyBuffer,
+    exceptions::PyValueError,
+    prelude::*,
+    types::{PyAny, PyBytes},
+};
 use rayon::prelude::*;
 use std::{env, time::Instant};
 
-use crate::game::{ACTION_SPACE, Action, GameOutcome, GameState, Player};
+use crate::game::{
+    ACTION_SPACE, Action, BOARD_CELLS, FEATURE_CHANNELS, GameOutcome, GameState, Player,
+};
 
 #[pyclass]
 #[derive(Clone, Debug)]
@@ -31,11 +38,34 @@ impl EvalRequest {
     }
 
     #[must_use]
+    pub fn feature_plane_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        let mut features = Vec::with_capacity(self.states.len() * FEATURE_CHANNELS * BOARD_CELLS);
+        for state in &self.states {
+            features.extend(state.feature_planes());
+        }
+        PyBytes::new(py, f32_slice_as_bytes(&features))
+    }
+
+    #[must_use]
     pub fn legal_masks(&self) -> Vec<Vec<bool>> {
         self.states
             .iter()
             .map(GameState::legal_mask)
             .collect::<Vec<_>>()
+    }
+
+    #[must_use]
+    pub fn legal_mask_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        let mut masks = Vec::with_capacity(self.states.len() * ACTION_SPACE);
+        for state in &self.states {
+            masks.extend(
+                state
+                    .legal_mask()
+                    .into_iter()
+                    .map(|is_legal| u8::from(is_legal)),
+            );
+        }
+        PyBytes::new(py, &masks)
     }
 
     #[must_use]
@@ -1429,11 +1459,69 @@ fn env_flag(name: &str) -> bool {
     )
 }
 
+fn f32_slice_as_bytes(values: &[f32]) -> &[u8] {
+    unsafe {
+        std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), std::mem::size_of_val(values))
+    }
+}
+
 fn parse_eval_response(response: &Bound<'_, PyAny>) -> PyResult<EvalBatch> {
+    if let Ok((policy_obj, value_obj)) = response.extract::<(Bound<'_, PyAny>, Bound<'_, PyAny>)>()
+    {
+        if let Ok(eval) = parse_eval_response_buffers(&policy_obj, &value_obj) {
+            return Ok(eval);
+        }
+    }
+
     let (policy_rows, values): (Vec<Vec<f32>>, Vec<f32>) = response.extract()?;
     let mut policies = Vec::with_capacity(policy_rows.len());
     for (row_index, row) in policy_rows.into_iter().enumerate() {
         policies.push(parse_policy_row(row, row_index)?);
+    }
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err(PyValueError::new_err("values must be finite"));
+    }
+    Ok(EvalBatch::new(policies, values))
+}
+
+fn parse_eval_response_buffers(
+    policy_obj: &Bound<'_, PyAny>,
+    value_obj: &Bound<'_, PyAny>,
+) -> PyResult<EvalBatch> {
+    let py = policy_obj.py();
+    let policy_buffer = PyBuffer::<f32>::get(policy_obj)?;
+    let value_buffer = PyBuffer::<f32>::get(value_obj)?;
+    if !policy_buffer.is_c_contiguous() || !value_buffer.is_c_contiguous() {
+        return Err(PyValueError::new_err(
+            "policy/value buffers must be C-contiguous float32 arrays",
+        ));
+    }
+    let policy_count = policy_buffer.item_count();
+    if policy_count % ACTION_SPACE != 0 {
+        return Err(PyValueError::new_err(format!(
+            "policy buffer length must be divisible by {ACTION_SPACE}, got {policy_count}",
+        )));
+    }
+    let batch_size = policy_count / ACTION_SPACE;
+    if value_buffer.item_count() != batch_size {
+        return Err(PyValueError::new_err(format!(
+            "expected {batch_size} values, got {}",
+            value_buffer.item_count()
+        )));
+    }
+
+    let policy_values = policy_buffer.to_vec(py)?;
+    let values = value_buffer.to_vec(py)?;
+    let mut policies = Vec::with_capacity(batch_size);
+    for (row_index, row) in policy_values.chunks_exact(ACTION_SPACE).enumerate() {
+        if row.iter().any(|prior| !prior.is_finite() || *prior < 0.0) {
+            return Err(PyValueError::new_err(format!(
+                "policy row {row_index} contains invalid priors"
+            )));
+        }
+        let mut policy = [0.0; ACTION_SPACE];
+        policy.copy_from_slice(row);
+        policies.push(policy);
     }
     if values.iter().any(|value| !value.is_finite()) {
         return Err(PyValueError::new_err("values must be finite"));

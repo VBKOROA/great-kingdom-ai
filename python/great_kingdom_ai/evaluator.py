@@ -23,6 +23,14 @@ class EvalRequestLike(Protocol):
     def legal_masks(self) -> list[list[bool]]: ...
 
 
+class ByteEvalRequestLike(Protocol):
+    def len(self) -> int: ...
+
+    def feature_plane_bytes(self) -> bytes: ...
+
+    def legal_mask_bytes(self) -> bytes: ...
+
+
 @dataclass(frozen=True)
 class NetworkEvaluation:
     policy: np.ndarray
@@ -54,6 +62,26 @@ def evaluate_request(
     return evaluate_feature_batch(model, features, masks, device=device)
 
 
+def evaluate_request_bytes(
+    model: nn.Module,
+    request: ByteEvalRequestLike,
+    *,
+    device: torch.device | str | None = None,
+) -> NetworkEvaluation:
+    batch_size = request.len()
+    features = np.frombuffer(request.feature_plane_bytes(), dtype=np.float32).reshape(
+        batch_size,
+        FEATURE_CHANNELS,
+        BOARD_SIZE,
+        BOARD_SIZE,
+    )
+    masks = np.frombuffer(request.legal_mask_bytes(), dtype=np.bool_).reshape(
+        batch_size,
+        ACTION_SPACE,
+    )
+    return evaluate_feature_arrays(model, features, masks, device=device)
+
+
 def evaluate_feature_batch(
     model: nn.Module,
     feature_planes: list[list[float]],
@@ -70,6 +98,48 @@ def evaluate_feature_batch(
     start = time.perf_counter() if profile else 0.0
     features = _feature_array(feature_planes, batch_size)
     masks = _legal_mask_array(legal_masks, batch_size)
+    return _evaluate_arrays_with_profile(
+        model,
+        features,
+        masks,
+        device=device,
+        profile=profile,
+        start=start,
+    )
+
+
+def evaluate_feature_arrays(
+    model: nn.Module,
+    features: np.ndarray,
+    masks: np.ndarray,
+    *,
+    device: torch.device | str | None = None,
+) -> NetworkEvaluation:
+    profile = _profile_enabled()
+    start = time.perf_counter() if profile else 0.0
+    features = _feature_array_from_array(features)
+    masks = _legal_mask_array_from_array(masks, len(features))
+    return _evaluate_arrays_with_profile(
+        model,
+        features,
+        masks,
+        device=device,
+        profile=profile,
+        start=start,
+    )
+
+
+def _evaluate_arrays_with_profile(
+    model: nn.Module,
+    features: np.ndarray,
+    masks: np.ndarray,
+    *,
+    device: torch.device | str | None,
+    profile: bool,
+    start: float,
+) -> NetworkEvaluation:
+    torch = _import_torch()
+    batch_size = len(features)
     feature_done = time.perf_counter() if profile else 0.0
 
     model_device = _model_device(model)
@@ -98,8 +168,8 @@ def evaluate_feature_batch(
         )
         policy = torch.softmax(masked_logits, dim=1)
 
-    policy_array = policy.cpu().numpy().astype(np.float32, copy=False)
-    value_array = value.cpu().numpy().astype(np.float32, copy=False)
+    policy_array = np.ascontiguousarray(policy.cpu().numpy(), dtype=np.float32)
+    value_array = np.ascontiguousarray(value.cpu().numpy(), dtype=np.float32)
     output_done = time.perf_counter() if profile else 0.0
     if profile:
         _record_profile(
@@ -161,21 +231,37 @@ def _record_profile(
 
 def _feature_array(feature_planes: list[list[float]], batch_size: int) -> np.ndarray:
     features = np.asarray(feature_planes, dtype=np.float32)
+    return _feature_array_from_array(features, batch_size)
+
+
+def _feature_array_from_array(features: np.ndarray, batch_size: int | None = None) -> np.ndarray:
+    features = np.asarray(features, dtype=np.float32)
+    if batch_size is None:
+        batch_size = len(features)
     expected = FEATURE_CHANNELS * BOARD_SIZE * BOARD_SIZE
-    if features.shape != (batch_size, expected):
-        raise ValueError(f"expected feature shape {(batch_size, expected)}, got {features.shape}")
-    return features.reshape(batch_size, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
+    flat_shape = (batch_size, expected)
+    plane_shape = (batch_size, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
+    if features.shape == flat_shape:
+        return np.ascontiguousarray(features.reshape(plane_shape), dtype=np.float32)
+    if features.shape == plane_shape:
+        return np.ascontiguousarray(features, dtype=np.float32)
+    raise ValueError(f"expected feature shape {flat_shape} or {plane_shape}, got {features.shape}")
 
 
 def _legal_mask_array(legal_masks: list[list[bool]], batch_size: int) -> np.ndarray:
     masks = np.asarray(legal_masks, dtype=np.bool_)
+    return _legal_mask_array_from_array(masks, batch_size)
+
+
+def _legal_mask_array_from_array(masks: np.ndarray, batch_size: int) -> np.ndarray:
+    masks = np.asarray(masks, dtype=np.bool_)
     if masks.shape != (batch_size, ACTION_SPACE):
         raise ValueError(
             f"expected legal mask shape {(batch_size, ACTION_SPACE)}, got {masks.shape}"
         )
     if np.any(~masks.any(axis=1)):
         raise ValueError("each legal mask must contain at least one legal action")
-    return masks
+    return np.ascontiguousarray(masks, dtype=np.bool_)
 
 
 def _model_device(model: nn.Module) -> torch.device:

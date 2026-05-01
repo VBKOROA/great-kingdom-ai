@@ -13,7 +13,7 @@ pytestmark = pytest.mark.skipif(
 )
 torch = importlib.import_module("torch") if _torch_spec is not None else None
 
-from great_kingdom_ai.evaluator import evaluate_request  # noqa: E402
+from great_kingdom_ai.evaluator import evaluate_request, evaluate_request_bytes  # noqa: E402
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS  # noqa: E402
 
 
@@ -26,6 +26,22 @@ class FakeEvalRequest:
         return self.features
 
     def legal_masks(self) -> list[list[bool]]:
+        return self.masks
+
+
+@dataclass(frozen=True)
+class FakeByteEvalRequest:
+    features: bytes
+    masks: bytes
+    batch_size: int
+
+    def len(self) -> int:
+        return self.batch_size
+
+    def feature_plane_bytes(self) -> bytes:
+        return self.features
+
+    def legal_mask_bytes(self) -> bytes:
         return self.masks
 
 
@@ -49,6 +65,31 @@ def test_evaluate_request_returns_masked_policy_and_value_batch() -> None:
     )
 
     result = evaluate_request(FixedNetwork(), request)
+
+    assert result.policy.shape == (1, ACTION_SPACE)
+    assert result.value.shape == (1,)
+    assert result.policy[0, 1] == 0.0
+    assert result.policy[0, 81] > result.policy[0, 0]
+    assert result.policy[0].sum() == pytest.approx(1.0)
+    assert result.value[0] == pytest.approx(-0.5)
+
+
+def test_evaluate_request_bytes_returns_masked_policy_and_value_batch() -> None:
+    mask = [False] * ACTION_SPACE
+    mask[0] = True
+    mask[81] = True
+    features = torch.zeros(
+        (1, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE),
+        dtype=torch.float32,
+    ).numpy()
+    masks = torch.tensor([mask], dtype=torch.bool).numpy()
+    request = FakeByteEvalRequest(
+        features=features.tobytes(),
+        masks=masks.tobytes(),
+        batch_size=1,
+    )
+
+    result = evaluate_request_bytes(FixedNetwork(), request)
 
     assert result.policy.shape == (1, ACTION_SPACE)
     assert result.value.shape == (1,)

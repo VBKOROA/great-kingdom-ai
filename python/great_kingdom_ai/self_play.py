@@ -347,7 +347,7 @@ def play_mcts_games_batched(
     | None = None,
     request_evaluator_provider: Callable[
         [Any],
-        tuple[Sequence[Sequence[float]], Sequence[float]],
+        tuple[Any, Any],
     ]
     | None = None,
     state_factory: Callable[[], SelfPlayState] | None = None,
@@ -556,7 +556,7 @@ def _play_mcts_games_core_batched(
     | None = None,
     request_evaluator_provider: Callable[
         [Any],
-        tuple[Sequence[Sequence[float]], Sequence[float]],
+        tuple[Any, Any],
     ]
     | None = None,
 ) -> list[tuple[GameLog, list[ReplaySample]]]:
@@ -635,13 +635,9 @@ def _play_mcts_games_core_batched(
         if evaluator_provider is None and request_evaluator_provider is None:
             results = batch.search_active_with_priors(noisy_priors)
         else:
-            def evaluator(request: Any) -> tuple[list[list[float]], list[float]]:
+            def evaluator(request: Any) -> tuple[Any, Any]:
                 if request_evaluator_provider is not None:
-                    policies, values = request_evaluator_provider(request)
-                    return (
-                        [[float(value) for value in row] for row in policies],
-                        [float(value) for value in values],
-                    )
+                    return request_evaluator_provider(request)
                 return _evaluate_core_batch_policy_values(evaluator_provider, request)
 
             results = batch.search_active_with_priors_and_evaluator(
