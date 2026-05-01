@@ -10,3 +10,4 @@ build/
 *.egg-info/
 target/
 AGENTS.md
+data/self_play/
