@@ -2,7 +2,7 @@
 
 Great Kingdom AI는 9x9 추상 전략 게임 **Great Kingdom**을 재현하고, 자가대국 기반 학습으로 강해지는 AI 플레이어를 만들기 위한 프로젝트입니다.
 
-현재 저장소는 Rust 규칙 엔진, PyO3 바인딩, 수동 규칙 확인 CLI, 랜덤 self-play smoke runner를 포함합니다. 핵심 규칙과 학습 구조, Python/Rust 분리 아키텍처는 문서로 정리해 둔 상태입니다.
+현재 저장소는 Rust 규칙 엔진, PyO3 바인딩, 수동 규칙 확인 CLI, 랜덤 self-play smoke runner, PyTorch 모델, self-play 데이터 저장, 학습 루프와 checkpoint 저장/재개 도구를 포함합니다. 핵심 규칙과 학습 구조, Python/Rust 분리 아키텍처는 문서로 정리해 둔 상태입니다.
 
 ## 목표
 
@@ -86,6 +86,8 @@ Python과 Rust 연결은 PyO3와 maturin을 사용하는 방향으로 설계되�
 - AI 학습 방식의 설계 문서
 - Rust 규칙 엔진과 Python 바인딩
 - 수동 self-play CLI와 랜덤 self-play smoke runner
+- PyTorch policy-value 모델과 학습 루프
+- self-play replay artifact, checkpoint 저장과 resume
 - 개발 순서와 책임 분리 기준
 
 ## 개발 환경
@@ -127,6 +129,16 @@ Runpod에서는 이미지에 포함된 PyTorch/CUDA 조합을 유지하기 위�
 ./scripts/setup_runpod.sh
 source .venv/bin/activate
 python scripts/run_m6_smoke.py
+python scripts/run_m8_train_smoke.py
+```
+
+기존 replay artifact로 학습을 직접 실행할 때는 다음 console script를 사용할 수 있습니다.
+
+```bash
+great-kingdom-train \
+  --replay data/runpod/replay/replay.npz \
+  --checkpoint data/runpod/checkpoints/latest.pt \
+  --config configs/m8-train-smoke.json
 ```
 
 ## 수동 규칙 확인 CLI

@@ -26,6 +26,7 @@ dev = [
 [project.scripts]
 great-kingdom-play = "great_kingdom_ai.cli:main"
 great-kingdom-random-self-play = "great_kingdom_ai.self_play:main"
+great-kingdom-train = "great_kingdom_ai.train:main"
 
 [tool.setuptools.packages.find]
 where = ["python"]
