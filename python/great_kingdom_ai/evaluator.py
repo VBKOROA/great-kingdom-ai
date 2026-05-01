@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import sys
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -24,6 +27,20 @@ class EvalRequestLike(Protocol):
 class NetworkEvaluation:
     policy: np.ndarray
     value: np.ndarray
+
+
+@dataclass
+class _EvalProfileStats:
+    calls: int = 0
+    samples: int = 0
+    max_batch: int = 0
+    feature_seconds: float = 0.0
+    transfer_seconds: float = 0.0
+    model_seconds: float = 0.0
+    output_seconds: float = 0.0
+
+
+_PROFILE_STATS = _EvalProfileStats()
 
 
 def evaluate_request(
@@ -49,8 +66,11 @@ def evaluate_feature_batch(
         raise ValueError("feature batch and legal mask batch must have the same length")
 
     batch_size = len(feature_planes)
+    profile = _profile_enabled()
+    start = time.perf_counter() if profile else 0.0
     features = _feature_array(feature_planes, batch_size)
     masks = _legal_mask_array(legal_masks, batch_size)
+    feature_done = time.perf_counter() if profile else 0.0
 
     model_device = _model_device(model)
     target_device = torch.device(device) if device is not None else model_device
@@ -58,9 +78,13 @@ def evaluate_feature_batch(
     mask_tensor = torch.from_numpy(masks).to(device=target_device)
     model.to(target_device)
     model.eval()
+    transfer_done = time.perf_counter() if profile else 0.0
 
     with torch.no_grad():
         policy_logits, value = model(inputs)
+        if profile and target_device.type == "cuda":
+            torch.cuda.synchronize(target_device)
+        model_done = time.perf_counter() if profile else 0.0
         if policy_logits.shape != (batch_size, ACTION_SPACE):
             raise ValueError(
                 f"expected policy logits shape {(batch_size, ACTION_SPACE)}, "
@@ -74,9 +98,64 @@ def evaluate_feature_batch(
         )
         policy = torch.softmax(masked_logits, dim=1)
 
-    return NetworkEvaluation(
-        policy=policy.cpu().numpy().astype(np.float32, copy=False),
-        value=value.cpu().numpy().astype(np.float32, copy=False),
+    policy_array = policy.cpu().numpy().astype(np.float32, copy=False)
+    value_array = value.cpu().numpy().astype(np.float32, copy=False)
+    output_done = time.perf_counter() if profile else 0.0
+    if profile:
+        _record_profile(
+            batch_size=batch_size,
+            feature_seconds=feature_done - start,
+            transfer_seconds=transfer_done - feature_done,
+            model_seconds=model_done - transfer_done,
+            output_seconds=output_done - model_done,
+        )
+
+    return NetworkEvaluation(policy=policy_array, value=value_array)
+
+
+def _profile_enabled() -> bool:
+    value = os.environ.get("GKA_EVAL_PROFILE", "")
+    return value not in {"", "0", "false", "False", "no", "No"}
+
+
+def _record_profile(
+    *,
+    batch_size: int,
+    feature_seconds: float,
+    transfer_seconds: float,
+    model_seconds: float,
+    output_seconds: float,
+) -> None:
+    _PROFILE_STATS.calls += 1
+    _PROFILE_STATS.samples += batch_size
+    _PROFILE_STATS.max_batch = max(_PROFILE_STATS.max_batch, batch_size)
+    _PROFILE_STATS.feature_seconds += feature_seconds
+    _PROFILE_STATS.transfer_seconds += transfer_seconds
+    _PROFILE_STATS.model_seconds += model_seconds
+    _PROFILE_STATS.output_seconds += output_seconds
+    interval = int(os.environ.get("GKA_EVAL_PROFILE_INTERVAL", "100"))
+    if interval <= 0 or _PROFILE_STATS.calls % interval != 0:
+        return
+
+    calls = _PROFILE_STATS.calls
+    total_seconds = (
+        _PROFILE_STATS.feature_seconds
+        + _PROFILE_STATS.transfer_seconds
+        + _PROFILE_STATS.model_seconds
+        + _PROFILE_STATS.output_seconds
+    )
+    avg_batch = _PROFILE_STATS.samples / calls
+    print(
+        "[gka-eval-profile] "
+        f"calls={calls} samples={_PROFILE_STATS.samples} "
+        f"avg_batch={avg_batch:.1f} max_batch={_PROFILE_STATS.max_batch} "
+        f"feature={_PROFILE_STATS.feature_seconds:.3f}s "
+        f"transfer={_PROFILE_STATS.transfer_seconds:.3f}s "
+        f"model={_PROFILE_STATS.model_seconds:.3f}s "
+        f"output={_PROFILE_STATS.output_seconds:.3f}s "
+        f"total={total_seconds:.3f}s",
+        file=sys.stderr,
+        flush=True,
     )
 
 
