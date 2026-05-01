@@ -59,3 +59,50 @@ def select_action_from_visit_counts(
         if threshold <= cumulative:
             return action
     return int(np.flatnonzero(probabilities)[-1])
+
+
+def apply_root_dirichlet_noise(
+    priors: Sequence[float],
+    legal_mask: Sequence[bool],
+    rng: random.Random,
+    *,
+    alpha: float = 0.3,
+    epsilon: float = 0.25,
+) -> np.ndarray:
+    """Mix Dirichlet noise into root priors for self-play exploration only."""
+    if alpha <= 0.0:
+        raise ValueError("alpha must be positive")
+    if not 0.0 <= epsilon <= 1.0:
+        raise ValueError("epsilon must be between 0 and 1")
+
+    prior_array = np.asarray(priors, dtype=np.float32)
+    mask_array = np.asarray(legal_mask, dtype=np.bool_)
+    if prior_array.shape != (ACTION_SPACE,):
+        raise ValueError(f"expected {ACTION_SPACE} priors, got shape {prior_array.shape}")
+    if mask_array.shape != (ACTION_SPACE,):
+        raise ValueError(f"expected {ACTION_SPACE} legal mask, got shape {mask_array.shape}")
+    if np.any(prior_array < 0.0) or not np.all(np.isfinite(prior_array)):
+        raise ValueError("priors must be finite non-negative values")
+
+    legal_indexes = np.flatnonzero(mask_array)
+    if legal_indexes.size == 0:
+        raise ValueError("legal mask must contain at least one legal action")
+
+    legal_priors = prior_array[legal_indexes]
+    legal_total = float(legal_priors.sum())
+    if legal_total > 0.0:
+        legal_priors = legal_priors / legal_total
+    else:
+        legal_priors = np.full(legal_indexes.size, 1.0 / legal_indexes.size, dtype=np.float32)
+
+    noise_values = np.asarray(
+        [rng.gammavariate(alpha, 1.0) for _ in range(legal_indexes.size)],
+        dtype=np.float32,
+    )
+    noise_values /= float(noise_values.sum())
+
+    mixed = (1.0 - epsilon) * legal_priors + epsilon * noise_values
+    result = np.zeros(ACTION_SPACE, dtype=np.float32)
+    result[legal_indexes] = mixed
+    result /= float(result.sum())
+    return result

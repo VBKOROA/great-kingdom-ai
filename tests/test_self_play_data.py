@@ -5,6 +5,7 @@ import pytest
 
 from great_kingdom_ai.features import ACTION_SPACE
 from great_kingdom_ai.self_play_data import (
+    apply_root_dirichlet_noise,
     policy_target_from_visit_counts,
     select_action_from_visit_counts,
     value_target_for_player,
@@ -59,3 +60,43 @@ def test_select_action_samples_from_positive_visit_counts() -> None:
 
     assert actions <= {2, 7}
     assert actions == {2, 7}
+
+
+def test_root_dirichlet_noise_keeps_probability_on_legal_actions() -> None:
+    priors = [0.0] * ACTION_SPACE
+    priors[1] = 3.0
+    priors[4] = 1.0
+    legal_mask = [False] * ACTION_SPACE
+    legal_mask[1] = True
+    legal_mask[4] = True
+
+    noisy = apply_root_dirichlet_noise(
+        priors,
+        legal_mask,
+        random.Random(5),
+        alpha=0.3,
+        epsilon=0.25,
+    )
+
+    assert noisy.shape == (ACTION_SPACE,)
+    assert np.isclose(noisy.sum(), 1.0)
+    assert noisy[1] > 0.0
+    assert noisy[4] > 0.0
+    assert np.count_nonzero(noisy) == 2
+
+
+def test_root_dirichlet_noise_uses_uniform_fallback_for_zero_legal_priors() -> None:
+    legal_mask = [False] * ACTION_SPACE
+    legal_mask[8] = True
+    legal_mask[9] = True
+
+    noisy = apply_root_dirichlet_noise(
+        [0.0] * ACTION_SPACE,
+        legal_mask,
+        random.Random(7),
+        alpha=0.3,
+        epsilon=0.0,
+    )
+
+    assert noisy[8] == pytest.approx(0.5)
+    assert noisy[9] == pytest.approx(0.5)
