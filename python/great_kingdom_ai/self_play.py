@@ -255,7 +255,7 @@ def create_core_game_state() -> SelfPlayState:
 
 def create_core_mcts_search(*, simulations: int = 50, c_puct: float = 1.5) -> MctsSearchLike:
     try:
-        import great_kingdom_core as core  # type: ignore[import-untyped]
+        import great_kingdom_core as core
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             "great_kingdom_core is not installed. Build it with maturin before self-play."
