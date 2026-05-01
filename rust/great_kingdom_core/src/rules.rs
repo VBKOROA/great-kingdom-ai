@@ -346,7 +346,10 @@ mod tests {
         board[CENTER_INDEX] = Cell::Neutral;
         board[index(0, 1)] = Cell::Orange;
         board[index(1, 0)] = Cell::Orange;
-        board[index(1, 2)] = Cell::Orange;
+        board[index(1, 2)] = Cell::Blue;
+        board[index(0, 2)] = Cell::Orange;
+        board[index(1, 3)] = Cell::Orange;
+        board[index(2, 2)] = Cell::Orange;
         board[index(2, 1)] = Cell::Orange;
         let mut state = state_with_board(board, Player::Blue);
 
@@ -359,14 +362,13 @@ mod tests {
 
     #[test]
     fn opponent_capture_takes_priority_over_own_destroyed_group() {
-        let mut board = [Cell::Empty; BOARD_CELLS];
+        let mut board = [Cell::Blue; BOARD_CELLS];
         board[CENTER_INDEX] = Cell::Neutral;
-        board[index(0, 1)] = Cell::Blue;
+        board[index(1, 1)] = Cell::Empty;
         board[index(0, 0)] = Cell::Orange;
-        board[index(0, 2)] = Cell::Orange;
+        board[index(0, 1)] = Cell::Orange;
         board[index(1, 0)] = Cell::Blue;
-        board[index(1, 2)] = Cell::Blue;
-        board[index(2, 1)] = Cell::Blue;
+        board[index(2, 1)] = Cell::Orange;
         let mut state = state_with_board(board, Player::Orange);
 
         let outcome = state.apply(Action::Place { row: 1, col: 1 }).unwrap().unwrap();
