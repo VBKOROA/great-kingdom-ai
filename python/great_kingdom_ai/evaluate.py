@@ -136,15 +136,22 @@ def play_arena_game(
         player = game_state.current_player()
         model = candidate_model if player == candidate_player else best_model
         priors = evaluate_state_policy(model, game_state, device=config.device)
+        
+        def evaluator(request: Any, m=model) -> tuple[list[list[float]], list[float]]:
+            feature_rows = request.feature_planes()
+            mask_rows = request.legal_masks()
+            evaluation = evaluate_feature_batch(
+                m, feature_rows, mask_rows, device=config.device
+            )
+            return (
+                [[float(value) for value in policy] for policy in evaluation.policy],
+                [float(value) for value in evaluation.value],
+            )
+
         result = searches[player].search_with_priors_and_evaluator(
             game_state,
             priors,
-            _arena_leaf_evaluator(
-                candidate_model=candidate_model,
-                best_model=best_model,
-                candidate_player=candidate_player,
-                device=config.device,
-            ),
+            evaluator,
             config.leaf_batch_size,
         )
         action = _deterministic_action(result, priors, game_state.legal_actions())
@@ -271,63 +278,6 @@ def evaluate_state_policies(
         device=device,
     )
     return [[float(value) for value in policy] for policy in evaluation.policy]
-
-
-def _arena_leaf_evaluator(
-    *,
-    candidate_model: Any,
-    best_model: Any,
-    candidate_player: int,
-    device: Any | str | None,
-) -> Callable[[Any], tuple[list[list[float]], list[float]]]:
-    def evaluator(request: Any) -> tuple[list[list[float]], list[float]]:
-        feature_rows = request.feature_planes()
-        mask_rows = request.legal_masks()
-        players = [int(player) for player in request.current_players()]
-        if len(feature_rows) != len(mask_rows) or len(feature_rows) != len(players):
-            raise ValueError("arena eval request batches must have matching lengths")
-
-        policies: list[list[float] | None] = [None] * len(feature_rows)
-        values: list[float | None] = [None] * len(feature_rows)
-        for model, indexes in _group_eval_indexes(
-            players,
-            candidate_player=candidate_player,
-        ):
-            if not indexes:
-                continue
-            actual_model = candidate_model if model == "candidate" else best_model
-            evaluation = evaluate_feature_batch(
-                actual_model,
-                [feature_rows[index] for index in indexes],
-                [mask_rows[index] for index in indexes],
-                device=device,
-            )
-            for offset, index in enumerate(indexes):
-                policies[index] = [float(value) for value in evaluation.policy[offset]]
-                values[index] = float(evaluation.value[offset])
-
-        if any(policy is None for policy in policies) or any(value is None for value in values):
-            raise RuntimeError("arena evaluator did not fill every request row")
-        return (
-            [policy for policy in policies if policy is not None],
-            [value for value in values if value is not None],
-        )
-
-    return evaluator
-
-
-def _group_eval_indexes(
-    players: Sequence[int],
-    *,
-    candidate_player: int,
-) -> list[tuple[str, list[int]]]:
-    candidate_indexes = [
-        index for index, player in enumerate(players) if player == candidate_player
-    ]
-    best_indexes = [
-        index for index, player in enumerate(players) if player != candidate_player
-    ]
-    return [("candidate", candidate_indexes), ("best", best_indexes)]
 
 
 def save_arena_report(report: ArenaReport, path: str | Path) -> Path:
