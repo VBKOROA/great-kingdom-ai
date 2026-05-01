@@ -1,5 +1,4 @@
 import numpy as np
-
 from great_kingdom_ai.augmentation import ALL_SYMMETRIES, augment_all_symmetries, augment_sample
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.replay_buffer import ReplaySample

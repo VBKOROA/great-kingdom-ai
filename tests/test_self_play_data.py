@@ -2,7 +2,6 @@ import random
 
 import numpy as np
 import pytest
-
 from great_kingdom_ai.features import ACTION_SPACE
 from great_kingdom_ai.self_play_data import (
     apply_root_dirichlet_noise,

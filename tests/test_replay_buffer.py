@@ -2,7 +2,6 @@ import random
 
 import numpy as np
 import pytest
-
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
 
