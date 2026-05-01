@@ -21,6 +21,7 @@ from great_kingdom_ai.evaluate import (
     run_arena,
     save_arena_report,
 )
+from great_kingdom_ai.evaluator import evaluate_feature_batch
 from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
 from great_kingdom_ai.self_play import (
     GameLog,
@@ -190,6 +191,10 @@ def run_pipeline(
         )
         prior_provider: Callable[[Any], list[float]] | None = None
         batch_prior_provider: Callable[[list[Any]], list[list[float]]] | None = None
+        batch_evaluator_provider: Callable[
+            [list[Any]],
+            tuple[list[list[float]], list[float]],
+        ] | None = None
         if self_play_model is not None:
 
             def prior_provider(state: Any, model: Any = self_play_model) -> list[float]:
@@ -209,6 +214,21 @@ def run_pipeline(
                     device=train_config.device,
                 )
 
+            def batch_evaluator_provider(
+                states: list[Any],
+                model: Any = self_play_model,
+            ) -> tuple[list[list[float]], list[float]]:
+                evaluation = evaluate_feature_batch(
+                    model,
+                    [state.feature_planes() for state in states],
+                    [state.legal_mask() for state in states],
+                    device=train_config.device,
+                )
+                return (
+                    [[float(value) for value in policy] for policy in evaluation.policy],
+                    [float(value) for value in evaluation.value],
+                )
+
         logs, samples = generate_self_play_samples(
             pipeline_config=pipeline_config,
             seed_start=seed_cursor,
@@ -216,6 +236,7 @@ def run_pipeline(
             printer=printer,
             prior_provider=prior_provider,
             batch_prior_provider=batch_prior_provider,
+            batch_evaluator_provider=batch_evaluator_provider,
         )
         seed_cursor += len(logs)
         replay.extend(samples)
@@ -309,10 +330,16 @@ def generate_self_play_samples(
     printer: PipelinePrinter | None = None,
     prior_provider: Callable[[Any], list[float]] | None = None,
     batch_prior_provider: Callable[[list[Any]], list[list[float]]] | None = None,
+    batch_evaluator_provider: Callable[
+        [list[Any]],
+        tuple[list[list[float]], list[float]],
+    ]
+    | None = None,
 ) -> tuple[list[GameLog], list[ReplaySample]]:
     printer = printer if printer is not None else PipelinePrinter()
     config = MctsSelfPlayConfig(
         max_turns=pipeline_config.self_play_max_turns,
+        c_puct=pipeline_config.mcts_c_puct,
         temperature_turns=pipeline_config.temperature_turns,
         sampling_temperature=pipeline_config.sampling_temperature,
         root_noise=pipeline_config.root_noise,
@@ -374,6 +401,7 @@ def generate_self_play_samples(
                 ),
                 config=config,
                 prior_provider=batch_prior_provider,
+                evaluator_provider=batch_evaluator_provider,
             )
             for log, game_samples in batch_results:
                 logs.append(log)

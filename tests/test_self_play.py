@@ -1,6 +1,7 @@
 import importlib.util
 import random
 
+import great_kingdom_ai.self_play as self_play_module
 import pytest
 from great_kingdom_ai.self_play import (
     MctsSelfPlayConfig,
@@ -176,6 +177,89 @@ class BudgetRecordingMctsSearch(FakeMctsSearch):
         self.simulation_budgets.append(simulations)
 
 
+class FakeCoreBatch:
+    def __init__(self, game_count: int) -> None:
+        self._game_count = game_count
+        self._terminal = [False] * game_count
+        self._winners: list[int | None] = [None] * game_count
+        self._end_reasons: list[int | None] = [None] * game_count
+        self.applied_actions: list[int | None] = []
+
+    def len(self) -> int:
+        return self._game_count
+
+    def active_count(self) -> int:
+        return len(self.active_game_indexes())
+
+    def active_game_indexes(self) -> list[int]:
+        return [index for index, terminal in enumerate(self._terminal) if not terminal]
+
+    def active_eval_request(self):
+        active = self.active_game_indexes()
+
+        class Request:
+            def feature_planes(self) -> list[list[float]]:
+                return [[float(index + 1)] + [0.0] * (11 * 9 * 9 - 1) for index in active]
+
+            def legal_masks(self) -> list[list[bool]]:
+                masks = []
+                for _index in active:
+                    mask = [False] * 82
+                    mask[1] = True
+                    masks.append(mask)
+                return masks
+
+        return Request()
+
+    def current_players(self) -> list[int]:
+        return [1] * self._game_count
+
+    def is_terminal(self) -> list[bool]:
+        return list(self._terminal)
+
+    def winners(self) -> list[int | None]:
+        return list(self._winners)
+
+    def end_reasons(self) -> list[int | None]:
+        return list(self._end_reasons)
+
+    def territory_scores(self) -> list[tuple[int, int]]:
+        return [(0, 0)] * self._game_count
+
+    def search_active_with_priors(self, priors: list[list[float]]):
+        assert len(priors) == self.active_count()
+        visits = [0] * 82
+        visits[1] = 1
+        results = [None] * self._game_count
+        for index in self.active_game_indexes():
+            results[index] = FakeMctsResult(visits)
+        return results
+
+    def search_active_with_priors_and_evaluator(
+        self,
+        priors: list[list[float]],
+        evaluator,
+        leaf_batch_size: int = 8,
+    ):
+        assert leaf_batch_size == 8
+        policies, values = evaluator(self.active_eval_request())
+        assert len(policies) == self.active_count()
+        assert len(values) == self.active_count()
+        return self.search_active_with_priors(priors)
+
+    def apply_actions(self, actions: list[int | None]) -> list[int | None]:
+        self.applied_actions.extend(actions)
+        for index, action in enumerate(actions):
+            if action is not None:
+                self._terminal[index] = True
+                self._winners[index] = 1
+                self._end_reasons[index] = 1
+        return self._winners
+
+    def set_simulations(self, simulations: list[int | None]) -> None:
+        del simulations
+
+
 def test_random_selector_only_returns_legal_actions() -> None:
     state = LegalOnlyState([2, 5, 81])
     rng = random.Random(7)
@@ -337,6 +421,80 @@ def test_play_mcts_games_batched_evaluates_root_priors_together() -> None:
     assert [log.moves[0].action for log in logs] == [1, 1]
     assert len(samples) == 2
     assert batch_sizes == [2]
+
+
+def test_play_mcts_games_batched_uses_core_batch_when_available(monkeypatch) -> None:
+    fake_batch = FakeCoreBatch(game_count=2)
+    batch_sizes: list[int] = []
+
+    monkeypatch.setattr(self_play_module, "_can_create_core_self_play_batch", lambda: True)
+    monkeypatch.setattr(
+        self_play_module,
+        "create_core_mcts_self_play_batch",
+        lambda **_kwargs: fake_batch,
+    )
+
+    def batch_prior_provider(states) -> list[list[float]]:
+        batch_sizes.append(len(states))
+        priors = [0.0] * 82
+        priors[1] = 1.0
+        return [priors for _state in states]
+
+    results = play_mcts_games_batched(
+        seeds=[21, 22],
+        search_factory=lambda: FakeMctsSearch([0] * 82),
+        config=MctsSelfPlayConfig(
+            max_turns=5,
+            temperature_turns=0,
+            root_noise=False,
+        ),
+        prior_provider=batch_prior_provider,
+    )
+
+    logs = [log for log, _samples in results]
+    samples = [sample for _log, game_samples in results for sample in game_samples]
+    assert batch_sizes == [2]
+    assert fake_batch.applied_actions == [1, 1]
+    assert [log.seed for log in logs] == [21, 22]
+    assert [log.moves[0].action for log in logs] == [1, 1]
+    assert len(samples) == 2
+
+
+def test_play_mcts_games_batched_passes_leaf_evaluator_to_core_batch(monkeypatch) -> None:
+    fake_batch = FakeCoreBatch(game_count=2)
+    evaluator_batch_sizes: list[int] = []
+
+    monkeypatch.setattr(self_play_module, "_can_create_core_self_play_batch", lambda: True)
+    monkeypatch.setattr(
+        self_play_module,
+        "create_core_mcts_self_play_batch",
+        lambda **_kwargs: fake_batch,
+    )
+
+    def batch_prior_provider(states) -> list[list[float]]:
+        priors = [0.0] * 82
+        priors[1] = 1.0
+        return [priors for _state in states]
+
+    def evaluator_provider(states) -> tuple[list[list[float]], list[float]]:
+        evaluator_batch_sizes.append(len(states))
+        policy = [0.0] * 82
+        policy[1] = 1.0
+        return [policy for _state in states], [0.25 for _state in states]
+
+    play_mcts_games_batched(
+        seeds=[31, 32],
+        search_factory=lambda: FakeMctsSearch([0] * 82),
+        config=MctsSelfPlayConfig(
+            max_turns=5,
+            temperature_turns=0,
+            root_noise=False,
+        ),
+        prior_provider=batch_prior_provider,
+        evaluator_provider=evaluator_provider,
+    )
+
+    assert evaluator_batch_sizes == [2]
 
 
 def test_play_mcts_game_applies_root_noise_only_when_enabled() -> None:

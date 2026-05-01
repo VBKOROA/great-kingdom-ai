@@ -61,6 +61,42 @@ class MctsSearchLike(Protocol):
     def set_simulations(self, simulations: int) -> None: ...
 
 
+class MctsSelfPlayBatchLike(Protocol):
+    def len(self) -> int: ...
+
+    def active_count(self) -> int: ...
+
+    def active_game_indexes(self) -> list[int]: ...
+
+    def active_eval_request(self) -> Any: ...
+
+    def current_players(self) -> list[int] | bytes: ...
+
+    def is_terminal(self) -> list[bool]: ...
+
+    def winners(self) -> list[int | None]: ...
+
+    def end_reasons(self) -> list[int | None]: ...
+
+    def territory_scores(self) -> list[tuple[int, int]]: ...
+
+    def search_active_with_priors(
+        self,
+        priors: list[list[float]],
+    ) -> list[MctsResultLike | None]: ...
+
+    def search_active_with_priors_and_evaluator(
+        self,
+        priors: list[list[float]],
+        evaluator: Callable[[Any], tuple[list[list[float]], list[float]]],
+        leaf_batch_size: int = 8,
+    ) -> list[MctsResultLike | None]: ...
+
+    def apply_actions(self, actions: list[int | None]) -> list[int | None]: ...
+
+    def set_simulations(self, simulations: list[int | None]) -> None: ...
+
+
 @dataclass(frozen=True)
 class MoveLog:
     turn: int
@@ -95,6 +131,7 @@ class SmokeSummary:
 @dataclass(frozen=True)
 class MctsSelfPlayConfig:
     max_turns: int = 200
+    c_puct: float = 1.5
     temperature_turns: int = 10
     sampling_temperature: float = 1.0
     root_noise: bool = True
@@ -108,6 +145,8 @@ class MctsSelfPlayConfig:
     def __post_init__(self) -> None:
         if self.max_turns <= 0:
             raise ValueError("max_turns must be positive")
+        if not np.isfinite(self.c_puct) or self.c_puct < 0.0:
+            raise ValueError("c_puct must be a finite non-negative value")
         if self.temperature_turns < 0:
             raise ValueError("temperature_turns must be non-negative")
         if self.sampling_temperature < 0.0:
@@ -279,9 +318,26 @@ def play_mcts_games_batched(
     config: MctsSelfPlayConfig,
     prior_provider: Callable[[Sequence[SelfPlayState]], Sequence[Sequence[float]]]
     | None = None,
+    evaluator_provider: Callable[
+        [Sequence[SelfPlayState]],
+        tuple[Sequence[Sequence[float]], Sequence[float]],
+    ]
+    | None = None,
     state_factory: Callable[[], SelfPlayState] | None = None,
 ) -> list[tuple[GameLog, list[ReplaySample]]]:
     """Run MCTS self-play games while batching neural-network root prior inference."""
+    if (
+        state_factory is None
+        and prior_provider is not None
+        and _can_create_core_self_play_batch()
+    ):
+        return _play_mcts_games_core_batched(
+            seeds=seeds,
+            config=config,
+            prior_provider=prior_provider,
+            evaluator_provider=evaluator_provider,
+        )
+
     make_state = state_factory if state_factory is not None else create_core_game_state
     games = [
         _BatchedGame(
@@ -352,6 +408,29 @@ def create_core_mcts_search(*, simulations: int = 50, c_puct: float = 1.5) -> Mc
     return cast(MctsSearchLike, core.MctsSearch(simulations=simulations, c_puct=c_puct))
 
 
+def create_core_mcts_self_play_batch(
+    *,
+    game_count: int,
+    simulations: int = 50,
+    c_puct: float = 1.5,
+) -> MctsSelfPlayBatchLike:
+    try:
+        import great_kingdom_core as core
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "great_kingdom_core is not installed. Build it with maturin before self-play."
+        ) from exc
+
+    return cast(
+        MctsSelfPlayBatchLike,
+        core.MctsSelfPlayBatch(
+            game_count=game_count,
+            simulations=simulations,
+            c_puct=c_puct,
+        ),
+    )
+
+
 def _run_self_play_search(
     state: SelfPlayState,
     search: MctsSearchLike,
@@ -404,6 +483,226 @@ def _batched_root_priors(
             f"expected {len(games)} prior rows from batch provider, got {len(priors)}"
         )
     return priors
+
+
+def _play_mcts_games_core_batched(
+    *,
+    seeds: Sequence[int],
+    config: MctsSelfPlayConfig,
+    prior_provider: Callable[[Sequence[SelfPlayState]], Sequence[Sequence[float]]],
+    evaluator_provider: Callable[
+        [Sequence[SelfPlayState]],
+        tuple[Sequence[Sequence[float]], Sequence[float]],
+    ]
+    | None = None,
+) -> list[tuple[GameLog, list[ReplaySample]]]:
+    if not seeds:
+        return []
+
+    batch = create_core_mcts_self_play_batch(
+        game_count=len(seeds),
+        simulations=config.playout_cap_full_simulations,
+        c_puct=config.c_puct,
+    )
+    rngs = [random.Random(seed) for seed in seeds]
+    moves: list[list[MoveLog]] = [[] for _ in seeds]
+    pending_samples: list[list[tuple[int, np.ndarray, np.ndarray]]] = [
+        [] for _ in seeds
+    ]
+    territory_scores = [(0, 0) for _ in seeds]
+
+    for turn in range(config.max_turns):
+        active_indexes = batch.active_game_indexes()
+        if not active_indexes:
+            break
+
+        request = batch.active_eval_request()
+        players = _as_int_list(batch.current_players())
+        features_by_game = {
+            game_index: _flat_features_for_replay(feature_planes)
+            for game_index, feature_planes in zip(
+                active_indexes,
+                request.feature_planes(),
+                strict=True,
+            )
+        }
+        masks = request.legal_masks()
+        priors = _evaluate_core_batch_priors(prior_provider, request)
+        if len(priors) != len(active_indexes):
+            raise ValueError(
+                f"expected {len(active_indexes)} prior rows from batch provider, got {len(priors)}"
+            )
+
+        noisy_priors = []
+        use_full_by_game: dict[int, bool] = {}
+        simulation_budgets: list[int | None] = [None] * batch.len()
+        for game_index, prior, mask in zip(active_indexes, priors, masks, strict=True):
+            rng = rngs[game_index]
+            use_full = _use_full_search_turn(rng, config)
+            use_full_by_game[game_index] = use_full
+            if config.playout_cap_randomization:
+                simulation_budgets[game_index] = (
+                    config.playout_cap_full_simulations
+                    if use_full
+                    else config.playout_cap_fast_simulations
+                )
+            prior_array = np.asarray(prior, dtype=np.float32)
+            if config.root_noise:
+                prior_array = apply_root_dirichlet_noise(
+                    prior_array,
+                    mask,
+                    rng,
+                    alpha=config.root_dirichlet_alpha,
+                    epsilon=config.root_exploration_fraction,
+                )
+            noisy_priors.append(prior_array.tolist())
+
+        if config.playout_cap_randomization:
+            batch.set_simulations(simulation_budgets)
+        if evaluator_provider is None:
+            results = batch.search_active_with_priors(noisy_priors)
+        else:
+            def evaluator(request: Any) -> tuple[list[list[float]], list[float]]:
+                return _evaluate_core_batch_policy_values(evaluator_provider, request)
+
+            results = batch.search_active_with_priors_and_evaluator(
+                noisy_priors,
+                evaluator,
+            )
+        actions: list[int | None] = [None] * batch.len()
+        for game_index in active_indexes:
+            result = results[game_index]
+            if result is None:
+                continue
+            visit_counts = result.visit_counts()
+            policy = policy_target_from_visit_counts(visit_counts)
+            temperature = (
+                config.sampling_temperature if turn < config.temperature_turns else 0.0
+            )
+            action = select_action_from_visit_counts(
+                visit_counts,
+                rngs[game_index],
+                temperature=temperature,
+            )
+            if use_full_by_game[game_index]:
+                pending_samples[game_index].append(
+                    (players[game_index], features_by_game[game_index], policy)
+                )
+            moves[game_index].append(
+                MoveLog(turn=turn, player=players[game_index], action=action)
+            )
+            actions[game_index] = action
+        batch.apply_actions(actions)
+    else:
+        unfinished = [
+            seeds[index]
+            for index, is_terminal in enumerate(batch.is_terminal())
+            if not is_terminal
+        ]
+        if unfinished:
+            raise RuntimeError(
+                f"MCTS self-play exceeded max_turns={config.max_turns} "
+                f"for seeds={unfinished}"
+            )
+
+    winners = batch.winners()
+    end_reasons = batch.end_reasons()
+    territory_scores = batch.territory_scores()
+    outputs: list[tuple[GameLog, list[ReplaySample]]] = []
+    for game_index, seed in enumerate(seeds):
+        winner = winners[game_index]
+        end_reason = end_reasons[game_index]
+        if winner is None or end_reason is None:
+            raise RuntimeError("MCTS self-play stopped before terminal outcome")
+        samples = [
+            ReplaySample(
+                features=features,
+                policy=policy,
+                value=value_target_for_player(player=player, winner=winner),
+            )
+            for player, features, policy in pending_samples[game_index]
+        ]
+        outputs.append(
+            (
+                GameLog(
+                    seed=seed,
+                    moves=moves[game_index],
+                    winner=winner,
+                    end_reason=end_reason,
+                    territory_scores=territory_scores[game_index],
+                ),
+                samples,
+            )
+        )
+    return outputs
+
+
+def _evaluate_core_batch_priors(
+    prior_provider: Callable[[Sequence[SelfPlayState]], Sequence[Sequence[float]]],
+    request: Any,
+) -> list[list[float]]:
+    states = _request_states(request)
+    return [
+        [float(value) for value in row]
+        for row in prior_provider(cast(Sequence[SelfPlayState], states))
+    ]
+
+
+def _evaluate_core_batch_policy_values(
+    evaluator_provider: Callable[
+        [Sequence[SelfPlayState]],
+        tuple[Sequence[Sequence[float]], Sequence[float]],
+    ],
+    request: Any,
+) -> tuple[list[list[float]], list[float]]:
+    states = _request_states(request)
+    policies, values = evaluator_provider(cast(Sequence[SelfPlayState], states))
+    return (
+        [[float(value) for value in row] for row in policies],
+        [float(value) for value in values],
+    )
+
+
+def _request_states(request: Any) -> list[Any]:
+    class _RequestState:
+        def __init__(self, features: list[float], mask: list[bool]) -> None:
+            self._features = features
+            self._mask = mask
+
+        def feature_planes(self) -> list[float]:
+            return self._features
+
+        def legal_mask(self) -> list[bool]:
+            return self._mask
+
+    return [
+        _RequestState(features, mask)
+        for features, mask in zip(
+            request.feature_planes(),
+            request.legal_masks(),
+            strict=True,
+        )
+    ]
+
+
+def _flat_features_for_replay(feature_planes: Sequence[float]) -> np.ndarray:
+    features = np.asarray(feature_planes, dtype=np.float32)
+    expected = FEATURE_CHANNELS * BOARD_SIZE * BOARD_SIZE
+    if features.shape != (expected,):
+        raise ValueError(f"expected flat feature shape {(expected,)}, got {features.shape}")
+    return features.reshape(FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
+
+
+def _as_int_list(values: Sequence[int] | bytes) -> list[int]:
+    return [int(value) for value in values]
+
+
+def _can_create_core_self_play_batch() -> bool:
+    try:
+        import great_kingdom_core as core
+    except ModuleNotFoundError:
+        return False
+    return hasattr(core, "MctsSelfPlayBatch")
 
 
 def _play_batched_mcts_turn(

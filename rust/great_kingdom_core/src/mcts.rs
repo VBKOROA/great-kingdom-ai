@@ -221,6 +221,11 @@ impl MctsSelfPlayBatch {
     }
 
     #[must_use]
+    pub fn active_game_indexes(&self) -> Vec<usize> {
+        self.active_indexes()
+    }
+
+    #[must_use]
     pub fn is_terminal(&self) -> Vec<bool> {
         self.states.iter().map(GameState::is_terminal).collect()
     }
@@ -233,6 +238,14 @@ impl MctsSelfPlayBatch {
     #[must_use]
     pub fn end_reasons(&self) -> Vec<Option<u8>> {
         self.states.iter().map(GameState::end_reason).collect()
+    }
+
+    #[must_use]
+    pub fn territory_scores(&self) -> Vec<(u8, u8)> {
+        self.states
+            .iter()
+            .map(GameState::territory_scores)
+            .collect()
     }
 
     #[must_use]
@@ -254,6 +267,19 @@ impl MctsSelfPlayBatch {
         &mut self,
         priors: Vec<Vec<f32>>,
     ) -> PyResult<Vec<Option<MctsResult>>> {
+        let results = self.search_active_with_priors(priors)?;
+        let actions = results
+            .iter()
+            .map(|result| result.as_ref().and_then(MctsResult::selected_action))
+            .collect();
+        self.apply_actions(actions)?;
+        Ok(results)
+    }
+
+    pub fn search_active_with_priors(
+        &mut self,
+        priors: Vec<Vec<f32>>,
+    ) -> PyResult<Vec<Option<MctsResult>>> {
         let active_indexes = self.active_indexes();
         if priors.len() != active_indexes.len() {
             return Err(PyValueError::new_err(format!(
@@ -268,14 +294,42 @@ impl MctsSelfPlayBatch {
             let prior_array = parse_policy_row(prior_row, game_index)?;
             let result = self.searches[game_index]
                 .run_with_root_priors(&self.states[game_index], &prior_array);
-            if let Some(action_index) = result.selected_action {
-                let action = Action::from_index(action_index).ok_or_else(|| {
-                    PyValueError::new_err(format!("invalid action index: {action_index}"))
-                })?;
-                self.states[game_index]
-                    .apply(action)
-                    .map_err(|err| PyValueError::new_err(format!("invalid action: {err:?}")))?;
-            }
+            results[game_index] = Some(result);
+        }
+        Ok(results)
+    }
+
+    #[pyo3(signature = (priors, evaluator, leaf_batch_size = 8))]
+    pub fn search_active_with_priors_and_evaluator(
+        &mut self,
+        priors: Vec<Vec<f32>>,
+        evaluator: &Bound<'_, PyAny>,
+        leaf_batch_size: usize,
+    ) -> PyResult<Vec<Option<MctsResult>>> {
+        if leaf_batch_size == 0 {
+            return Err(PyValueError::new_err("leaf_batch_size must be positive"));
+        }
+        let active_indexes = self.active_indexes();
+        if priors.len() != active_indexes.len() {
+            return Err(PyValueError::new_err(format!(
+                "expected {} prior rows for active games, got {}",
+                active_indexes.len(),
+                priors.len()
+            )));
+        }
+
+        let mut results = vec![None; self.states.len()];
+        for (game_index, prior_row) in active_indexes.into_iter().zip(priors.into_iter()) {
+            let prior_array = parse_policy_row(prior_row, game_index)?;
+            let result = self.searches[game_index].run_with_root_priors_and_leaf_evaluator(
+                &self.states[game_index],
+                &prior_array,
+                leaf_batch_size,
+                |request| {
+                    let response = evaluator.call1((request,))?;
+                    parse_eval_response(&response)
+                },
+            )?;
             results[game_index] = Some(result);
         }
         Ok(results)
@@ -283,6 +337,21 @@ impl MctsSelfPlayBatch {
 
     #[pyo3(signature = (evaluator, leaf_batch_size = 8))]
     pub fn play_turns_with_evaluator(
+        &mut self,
+        evaluator: &Bound<'_, PyAny>,
+        leaf_batch_size: usize,
+    ) -> PyResult<Vec<Option<MctsResult>>> {
+        let results = self.search_active_with_evaluator(evaluator, leaf_batch_size)?;
+        let actions = results
+            .iter()
+            .map(|result| result.as_ref().and_then(MctsResult::selected_action))
+            .collect();
+        self.apply_actions(actions)?;
+        Ok(results)
+    }
+
+    #[pyo3(signature = (evaluator, leaf_batch_size = 8))]
+    pub fn search_active_with_evaluator(
         &mut self,
         evaluator: &Bound<'_, PyAny>,
         leaf_batch_size: usize,
@@ -302,17 +371,52 @@ impl MctsSelfPlayBatch {
                     parse_eval_response(&response)
                 },
             )?;
-            if let Some(action_index) = result.selected_action {
-                let action = Action::from_index(action_index).ok_or_else(|| {
-                    PyValueError::new_err(format!("invalid action index: {action_index}"))
-                })?;
-                self.states[game_index]
-                    .apply(action)
-                    .map_err(|err| PyValueError::new_err(format!("invalid action: {err:?}")))?;
-            }
             results[game_index] = Some(result);
         }
         Ok(results)
+    }
+
+    pub fn apply_actions(&mut self, actions: Vec<Option<usize>>) -> PyResult<Vec<Option<u8>>> {
+        if actions.len() != self.states.len() {
+            return Err(PyValueError::new_err(format!(
+                "expected {} action slots, got {}",
+                self.states.len(),
+                actions.len()
+            )));
+        }
+
+        let mut outcomes = Vec::with_capacity(actions.len());
+        for (game_index, action_index) in actions.into_iter().enumerate() {
+            let Some(action_index) = action_index else {
+                outcomes.push(None);
+                continue;
+            };
+            let action = Action::from_index(action_index).ok_or_else(|| {
+                PyValueError::new_err(format!("invalid action index: {action_index}"))
+            })?;
+            let outcome = self.states[game_index]
+                .apply(action)
+                .map_err(|err| PyValueError::new_err(format!("invalid action: {err:?}")))?;
+            outcomes.push(outcome.map(|outcome| outcome.winner as u8));
+        }
+        Ok(outcomes)
+    }
+
+    pub fn set_simulations(&mut self, simulations: Vec<Option<u32>>) -> PyResult<()> {
+        if simulations.len() != self.searches.len() {
+            return Err(PyValueError::new_err(format!(
+                "expected {} simulation slots, got {}",
+                self.searches.len(),
+                simulations.len()
+            )));
+        }
+        for (search, simulations) in self.searches.iter_mut().zip(simulations.into_iter()) {
+            let Some(simulations) = simulations else {
+                continue;
+            };
+            search.set_simulations(simulations)?;
+        }
+        Ok(())
     }
 }
 
@@ -379,6 +483,97 @@ impl MctsSearch {
         let root_eval = evaluator(EvalRequest::new(vec![state.clone()]))?;
         let root_policy = root_eval.single_policy()?;
         let root_index = self.expand_node_with_priors(state, root_policy);
+
+        let mut completed = 0;
+        while completed < self.config.simulations {
+            let batch_target =
+                (self.config.simulations - completed).min(leaf_batch_size as u32) as usize;
+            let mut pending = Vec::with_capacity(batch_target);
+
+            for _ in 0..batch_target {
+                let mut simulation_state = state.clone();
+                match self.select_eval_leaf(root_index, &mut simulation_state) {
+                    PendingSimulation::NeedsEvaluation { path, state } => {
+                        pending.push(PendingLeaf { path, state });
+                    }
+                    PendingSimulation::Terminal {
+                        path,
+                        last_edge_value,
+                    } => {
+                        backup_path_from_last_edge(&mut self.nodes, &path, last_edge_value);
+                        completed += 1;
+                    }
+                    PendingSimulation::RootTerminal => {
+                        completed += 1;
+                    }
+                }
+            }
+
+            if pending.is_empty() {
+                continue;
+            }
+
+            let request_states = pending
+                .iter()
+                .map(|leaf| leaf.state.clone())
+                .collect::<Vec<_>>();
+            let eval = evaluator(EvalRequest::new(request_states))?;
+            eval.validate_len(pending.len())?;
+            for (leaf, (policy, value)) in pending
+                .into_iter()
+                .zip(eval.policies.into_iter().zip(eval.values.into_iter()))
+            {
+                let child_index = self.expand_node_with_priors(&leaf.state, &policy);
+                if let Some((parent_index, edge_index)) = leaf.path.last().copied() {
+                    self.nodes[parent_index].edges[edge_index].child = Some(child_index);
+                }
+                backup_path_from_leaf_value(&mut self.nodes, &leaf.path, value);
+                completed += 1;
+            }
+        }
+
+        let root = &self.nodes[root_index];
+        Ok(MctsResult {
+            selected_action: root.most_visited_action(),
+            visit_counts: root.visit_counts(),
+        })
+    }
+
+    pub fn run_with_root_priors_and_leaf_evaluator<F>(
+        &mut self,
+        state: &GameState,
+        priors: &[f32; ACTION_SPACE],
+        leaf_batch_size: usize,
+        evaluator: F,
+    ) -> PyResult<MctsResult>
+    where
+        F: FnMut(EvalRequest) -> PyResult<EvalBatch>,
+    {
+        self.nodes.clear();
+        if state.outcome_value().is_some() {
+            return Ok(MctsResult {
+                selected_action: None,
+                visit_counts: [0; ACTION_SPACE],
+            });
+        }
+
+        let root_index = self.expand_node_with_priors(state, priors);
+        self.run_simulations_with_leaf_evaluator(state, root_index, leaf_batch_size, evaluator)
+    }
+
+    fn run_simulations_with_leaf_evaluator<F>(
+        &mut self,
+        state: &GameState,
+        root_index: usize,
+        leaf_batch_size: usize,
+        mut evaluator: F,
+    ) -> PyResult<MctsResult>
+    where
+        F: FnMut(EvalRequest) -> PyResult<EvalBatch>,
+    {
+        if leaf_batch_size == 0 {
+            return Err(PyValueError::new_err("leaf_batch_size must be positive"));
+        }
 
         let mut completed = 0;
         while completed < self.config.simulations {
