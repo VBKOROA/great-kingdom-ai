@@ -14,6 +14,7 @@ from great_kingdom_ai.evaluate import (
     evaluate_state_policy,
     play_arena_game,
     promote_candidate_if_needed,
+    run_arena,
     save_arena_report,
     summarize_arena,
 )
@@ -158,6 +159,24 @@ def test_play_arena_game_uses_candidate_when_candidate_has_current_turn() -> Non
     assert result.best_player == 2
     assert result.winner == 1
     assert result.moves == [MoveLog(turn=0, player=1, action=2)]
+
+
+def test_run_arena_reports_progress_after_each_game() -> None:
+    progress: list[tuple[int, int, int]] = []
+
+    report = run_arena(
+        candidate_model=FakeNetwork(2),
+        best_model=FakeNetwork(3),
+        config=ArenaConfig(games=2, max_turns=4, simulations=1),
+        state_factory=OneMoveState,
+        search_factory=PriorSearch,
+        progress_callback=lambda current, total, game: progress.append(
+            (current, total, game.seed)
+        ),
+    )
+
+    assert report.summary.games == 2
+    assert progress == [(1, 2, 0), (2, 2, 1)]
 
 
 def test_summarize_arena_reports_side_split_and_promotion() -> None:

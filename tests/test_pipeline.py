@@ -190,7 +190,12 @@ def test_run_pipeline_saves_artifacts_and_promotes_candidate(
     def fake_load_model_from_checkpoint(path: str | Path, *, device: str) -> str:
         return f"{device}:{Path(path).name}"
 
-    def fake_run_arena(candidate_model: str, best_model: str, config: ArenaConfig) -> ArenaReport:
+    def fake_run_arena(
+        candidate_model: str,
+        best_model: str,
+        config: ArenaConfig,
+        progress_callback=None,
+    ) -> ArenaReport:
         del candidate_model, best_model
         from great_kingdom_ai.evaluate import ArenaGameResult
 
@@ -203,6 +208,8 @@ def test_run_pipeline_saves_artifacts_and_promotes_candidate(
             moves=[MoveLog(turn=0, player=1, action=1)],
             territory_scores=(0, 0),
         )
+        if progress_callback is not None:
+            progress_callback(1, config.games, game)
         return ArenaReport(
             config=config,
             games=[game],

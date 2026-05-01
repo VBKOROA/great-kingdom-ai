@@ -311,6 +311,15 @@ def run_pipeline(
                 candidate_model=candidate_model,
                 best_model=best_model,
                 config=arena_config,
+                progress_callback=lambda current, target, game: printer.progress(
+                    "arena games",
+                    current,
+                    target,
+                    detail=(
+                        f"last_seed={game.seed}, moves={len(game.moves)}, "
+                        f"winner={game.winner}, elapsed={printer.elapsed()}"
+                    ),
+                ),
             )
             save_arena_report(report, arena_report_path)
             if paths.arena_report_path is not None:

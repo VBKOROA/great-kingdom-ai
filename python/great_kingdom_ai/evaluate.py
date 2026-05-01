@@ -177,6 +177,7 @@ def run_arena(
     config: ArenaConfig | None = None,
     state_factory: Callable[[], SelfPlayState] | None = None,
     search_factory: Callable[[], ArenaSearchLike] | None = None,
+    progress_callback: Callable[[int, int, ArenaGameResult], None] | None = None,
 ) -> ArenaReport:
     config = config if config is not None else ArenaConfig()
     if config.games < 0:
@@ -187,8 +188,9 @@ def run_arena(
         raise ValueError("promotion_threshold must be between 0 and 1")
 
     make_state = state_factory if state_factory is not None else create_core_game_state
-    games = [
-        play_arena_game(
+    games = []
+    for index in range(config.games):
+        game = play_arena_game(
             seed=config.seed_start + index,
             candidate_model=candidate_model,
             best_model=best_model,
@@ -197,8 +199,9 @@ def run_arena(
             state=make_state(),
             search_factory=search_factory,
         )
-        for index in range(config.games)
-    ]
+        games.append(game)
+        if progress_callback is not None:
+            progress_callback(index + 1, config.games, game)
     return ArenaReport(
         config=config,
         games=games,
