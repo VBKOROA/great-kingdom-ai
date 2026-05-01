@@ -198,6 +198,7 @@ class FakeCoreBatch:
         self._winners: list[int | None] = [None] * game_count
         self._end_reasons: list[int | None] = [None] * game_count
         self.applied_actions: list[int | None] = []
+        self.leaf_batch_sizes: list[int] = []
 
     def len(self) -> int:
         return self._game_count
@@ -255,7 +256,7 @@ class FakeCoreBatch:
         evaluator,
         leaf_batch_size: int = 8,
     ):
-        assert leaf_batch_size == 8
+        self.leaf_batch_sizes.append(leaf_batch_size)
         policies, values = evaluator(self.active_eval_request())
         assert len(policies) == self.active_count()
         assert len(values) == self.active_count()
@@ -517,12 +518,14 @@ def test_play_mcts_games_batched_passes_leaf_evaluator_to_core_batch(monkeypatch
             max_turns=5,
             temperature_turns=0,
             root_noise=False,
+            leaf_batch_size=32,
         ),
         prior_provider=batch_prior_provider,
         evaluator_provider=evaluator_provider,
     )
 
     assert evaluator_batch_sizes == [2]
+    assert fake_batch.leaf_batch_sizes == [32]
 
 
 def test_play_mcts_game_applies_root_noise_only_when_enabled() -> None:

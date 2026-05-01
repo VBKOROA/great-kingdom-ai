@@ -609,6 +609,7 @@ def _play_mcts_games_core_batched(
             results = batch.search_active_with_priors_and_evaluator(
                 noisy_priors,
                 evaluator,
+                leaf_batch_size=config.leaf_batch_size,
             )
         actions: list[int | None] = [None] * batch.len()
         for game_index in active_indexes:
