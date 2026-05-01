@@ -3,7 +3,9 @@ import random
 
 import pytest
 from great_kingdom_ai.self_play import (
+    MctsSelfPlayConfig,
     choose_random_legal_action,
+    play_mcts_game,
     play_random_game,
     play_random_games,
     summarize_logs,
@@ -47,6 +49,14 @@ class ScriptedTerminalState:
     def territory_scores(self) -> tuple[int, int]:
         return (0, 0)
 
+    def feature_planes(self) -> list[float]:
+        return [0.0] * (11 * 9 * 9)
+
+    def legal_mask(self) -> list[bool]:
+        mask = [False] * 82
+        mask[10] = True
+        return mask
+
 
 class NonTerminalState:
     def current_player(self) -> int:
@@ -69,6 +79,77 @@ class NonTerminalState:
 
     def territory_scores(self) -> tuple[int, int]:
         return (0, 0)
+
+
+class ScriptedMctsState:
+    def __init__(self) -> None:
+        self.applied_actions: list[int] = []
+        self._current_player = 1
+        self._terminal = False
+
+    def current_player(self) -> int:
+        return self._current_player
+
+    def legal_actions(self) -> list[int]:
+        return [1, 2, 81]
+
+    def legal_mask(self) -> list[bool]:
+        mask = [False] * 82
+        for action in self.legal_actions():
+            mask[action] = True
+        return mask
+
+    def feature_planes(self) -> list[float]:
+        features = [0.0] * (11 * 9 * 9)
+        features[0] = float(len(self.applied_actions) + 1)
+        return features
+
+    def apply_action(self, action_index: int) -> int | None:
+        self.applied_actions.append(action_index)
+        self._terminal = True
+        return 1
+
+    def is_terminal(self) -> bool:
+        return self._terminal
+
+    def winner(self) -> int | None:
+        return 1 if self._terminal else None
+
+    def end_reason(self) -> int | None:
+        return 1 if self._terminal else None
+
+    def territory_scores(self) -> tuple[int, int]:
+        return (0, 0)
+
+
+class FakeMctsResult:
+    def __init__(self, visits: list[int]) -> None:
+        self._visits = visits
+
+    def selected_action(self) -> int | None:
+        return None
+
+    def visit_counts(self) -> list[int]:
+        return self._visits
+
+
+class FakeMctsSearch:
+    def __init__(self, visits: list[int]) -> None:
+        self.visits = visits
+        self.noisy_priors: list[float] | None = None
+        self.search_calls = 0
+
+    def search(self, state: ScriptedMctsState) -> FakeMctsResult:
+        self.search_calls += 1
+        return FakeMctsResult(self.visits)
+
+    def search_with_priors(
+        self,
+        state: ScriptedMctsState,
+        priors: list[float],
+    ) -> FakeMctsResult:
+        self.noisy_priors = priors
+        return FakeMctsResult(self.visits)
 
 
 def test_random_selector_only_returns_legal_actions() -> None:
@@ -118,6 +199,54 @@ def test_play_random_game_records_reproducible_log() -> None:
     assert log.end_reason == 1
     assert log.territory_scores == (0, 0)
     assert log.to_dict()["moves"] == [{"turn": 0, "player": 1, "action": 10}]
+
+
+def test_play_mcts_game_records_policy_and_final_value_targets() -> None:
+    visits = [0] * 82
+    visits[1] = 2
+    visits[2] = 8
+    state = ScriptedMctsState()
+    search = FakeMctsSearch(visits)
+
+    log, samples = play_mcts_game(
+        seed=41,
+        state=state,
+        search=search,
+        config=MctsSelfPlayConfig(
+            max_turns=5,
+            temperature_turns=0,
+            root_noise=False,
+        ),
+    )
+
+    assert state.applied_actions == [2]
+    assert log.moves[0].action == 2
+    assert len(samples) == 1
+    assert samples[0].features.shape == (11, 9, 9)
+    assert samples[0].policy[1] == pytest.approx(0.2)
+    assert samples[0].policy[2] == pytest.approx(0.8)
+    assert samples[0].value == 1.0
+
+
+def test_play_mcts_game_applies_root_noise_only_when_enabled() -> None:
+    visits = [0] * 82
+    visits[1] = 1
+    state = ScriptedMctsState()
+    search = FakeMctsSearch(visits)
+
+    play_mcts_game(
+        seed=43,
+        state=state,
+        search=search,
+        config=MctsSelfPlayConfig(root_noise=True),
+    )
+
+    assert search.noisy_priors is not None
+    assert sum(search.noisy_priors) == pytest.approx(1.0)
+    assert search.noisy_priors[1] > 0.0
+    assert search.noisy_priors[2] > 0.0
+    assert search.noisy_priors[81] > 0.0
+    assert search.search_calls == 0
 
 
 def test_play_random_game_guard_rejects_non_terminating_games() -> None:

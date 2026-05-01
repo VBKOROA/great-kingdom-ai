@@ -9,6 +9,17 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from typing import Any, NoReturn, Protocol, cast
 
+import numpy as np
+
+from great_kingdom_ai.features import BOARD_SIZE, FEATURE_CHANNELS
+from great_kingdom_ai.replay_buffer import ReplaySample
+from great_kingdom_ai.self_play_data import (
+    apply_root_dirichlet_noise,
+    policy_target_from_visit_counts,
+    select_action_from_visit_counts,
+    value_target_for_player,
+)
+
 PASS_ACTION = 81
 
 
@@ -26,6 +37,26 @@ class SelfPlayState(Protocol):
     def end_reason(self) -> int | None: ...
 
     def territory_scores(self) -> tuple[int, int]: ...
+
+    def feature_planes(self) -> list[float]: ...
+
+    def legal_mask(self) -> list[bool]: ...
+
+
+class MctsResultLike(Protocol):
+    def selected_action(self) -> int | None: ...
+
+    def visit_counts(self) -> list[int]: ...
+
+
+class MctsSearchLike(Protocol):
+    def search(self, state: SelfPlayState) -> MctsResultLike: ...
+
+    def search_with_priors(
+        self,
+        state: SelfPlayState,
+        priors: list[float],
+    ) -> MctsResultLike: ...
 
 
 @dataclass(frozen=True)
@@ -57,6 +88,16 @@ class SmokeSummary:
 
     def to_dict(self) -> dict[str, int]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class MctsSelfPlayConfig:
+    max_turns: int = 200
+    temperature_turns: int = 20
+    sampling_temperature: float = 1.0
+    root_noise: bool = True
+    root_dirichlet_alpha: float = 0.3
+    root_exploration_fraction: float = 0.25
 
 
 def choose_random_legal_action(
@@ -126,6 +167,70 @@ def play_random_games(
     ]
 
 
+def play_mcts_game(
+    *,
+    seed: int,
+    state: SelfPlayState | None = None,
+    search: MctsSearchLike | None = None,
+    config: MctsSelfPlayConfig | None = None,
+) -> tuple[GameLog, list[ReplaySample]]:
+    """Run one MCTS self-play game and return replay samples with final value targets."""
+    config = config if config is not None else MctsSelfPlayConfig()
+    game_state = state if state is not None else create_core_game_state()
+    mcts = search if search is not None else create_core_mcts_search()
+    rng = random.Random(seed)
+    moves: list[MoveLog] = []
+    pending_samples: list[tuple[int, np.ndarray, np.ndarray]] = []
+
+    for turn in range(config.max_turns):
+        if game_state.is_terminal():
+            break
+
+        player = game_state.current_player()
+        features = _state_features_for_replay(game_state)
+        result = _run_self_play_search(game_state, mcts, rng, config)
+        visit_counts = result.visit_counts()
+        policy = policy_target_from_visit_counts(visit_counts)
+        temperature = (
+            config.sampling_temperature if turn < config.temperature_turns else 0.0
+        )
+        action = select_action_from_visit_counts(
+            visit_counts,
+            rng,
+            temperature=temperature,
+        )
+
+        pending_samples.append((player, features, policy))
+        moves.append(MoveLog(turn=turn, player=player, action=action))
+        game_state.apply_action(action)
+    else:
+        raise RuntimeError(f"MCTS self-play exceeded max_turns={config.max_turns}")
+
+    winner = game_state.winner()
+    end_reason = game_state.end_reason()
+    if winner is None or end_reason is None:
+        raise RuntimeError("MCTS self-play stopped before terminal outcome")
+
+    samples = [
+        ReplaySample(
+            features=features,
+            policy=policy,
+            value=value_target_for_player(player=player, winner=winner),
+        )
+        for player, features, policy in pending_samples
+    ]
+    return (
+        GameLog(
+            seed=seed,
+            moves=moves,
+            winner=winner,
+            end_reason=end_reason,
+            territory_scores=game_state.territory_scores(),
+        ),
+        samples,
+    )
+
+
 def summarize_logs(logs: Sequence[GameLog]) -> SmokeSummary:
     move_counts = [len(log.moves) for log in logs]
     return SmokeSummary(
@@ -146,6 +251,44 @@ def create_core_game_state() -> SelfPlayState:
         ) from exc
 
     return cast(SelfPlayState, core.GameState())
+
+
+def create_core_mcts_search(*, simulations: int = 50, c_puct: float = 1.5) -> MctsSearchLike:
+    try:
+        import great_kingdom_core as core  # type: ignore[import-untyped]
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "great_kingdom_core is not installed. Build it with maturin before self-play."
+        ) from exc
+
+    return cast(MctsSearchLike, core.MctsSearch(simulations=simulations, c_puct=c_puct))
+
+
+def _run_self_play_search(
+    state: SelfPlayState,
+    search: MctsSearchLike,
+    rng: random.Random,
+    config: MctsSelfPlayConfig,
+) -> MctsResultLike:
+    if not config.root_noise:
+        return search.search(state)
+
+    noisy_priors = apply_root_dirichlet_noise(
+        [0.0] * PASS_ACTION + [0.0],
+        state.legal_mask(),
+        rng,
+        alpha=config.root_dirichlet_alpha,
+        epsilon=config.root_exploration_fraction,
+    )
+    return search.search_with_priors(state, noisy_priors.tolist())
+
+
+def _state_features_for_replay(state: SelfPlayState) -> np.ndarray:
+    features = np.asarray(state.feature_planes(), dtype=np.float32)
+    expected = FEATURE_CHANNELS * BOARD_SIZE * BOARD_SIZE
+    if features.shape != (expected,):
+        raise ValueError(f"expected flat feature shape {(expected,)}, got {features.shape}")
+    return features.reshape(FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
 
 
 def build_parser() -> argparse.ArgumentParser:
