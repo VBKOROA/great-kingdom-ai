@@ -1,4 +1,4 @@
-use crate::game::{ACTION_SPACE, Action, GameState, Player};
+use crate::game::{ACTION_SPACE, Action, GameOutcome, GameState, Player};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MctsConfig {
@@ -25,12 +25,108 @@ impl MctsConfig {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct MctsResult {
+    pub selected_action: Option<usize>,
+    pub visit_counts: [u32; ACTION_SPACE],
+}
+
+#[derive(Clone, Debug)]
+pub struct MctsSearch {
+    config: MctsConfig,
+    nodes: Vec<Node>,
+}
+
+impl MctsSearch {
+    #[must_use]
+    pub const fn new(config: MctsConfig) -> Self {
+        Self {
+            config,
+            nodes: Vec::new(),
+        }
+    }
+
+    pub fn run(&mut self, state: &GameState) -> MctsResult {
+        self.nodes.clear();
+        let root_index = self.expand_node(state);
+
+        for _ in 0..self.config.simulations {
+            let mut simulation_state = state.clone();
+            self.simulate(root_index, &mut simulation_state);
+        }
+
+        let root = &self.nodes[root_index];
+        MctsResult {
+            selected_action: root.most_visited_action(),
+            visit_counts: root.visit_counts(),
+        }
+    }
+
+    fn simulate(&mut self, node_index: usize, state: &mut GameState) -> f32 {
+        if let Some(outcome) = state.outcome_value() {
+            return value_for_player(outcome, self.nodes[node_index].to_play);
+        }
+
+        if self.nodes[node_index].edges.is_empty() {
+            return 0.0;
+        }
+
+        let edge_index = self.select_edge_index(node_index);
+        let player = self.nodes[node_index].to_play;
+        let action = self.nodes[node_index].edges[edge_index].action;
+        let outcome = state
+            .apply(action)
+            .expect("MCTS selected an action from legal_action_indexes");
+
+        let value = if let Some(outcome) = outcome {
+            value_for_player(outcome, player)
+        } else {
+            let child_index = match self.nodes[node_index].edges[edge_index].child {
+                Some(child_index) => child_index,
+                None => {
+                    let child_index = self.expand_node(state);
+                    self.nodes[node_index].edges[edge_index].child = Some(child_index);
+                    child_index
+                }
+            };
+            -self.simulate(child_index, state)
+        };
+
+        self.nodes[node_index].visit_count += 1;
+        self.nodes[node_index].edges[edge_index].update(value);
+        value
+    }
+
+    fn expand_node(&mut self, state: &GameState) -> usize {
+        let node_index = self.nodes.len();
+        self.nodes.push(Node::expanded_with_uniform_priors(state));
+        node_index
+    }
+
+    fn select_edge_index(&self, node_index: usize) -> usize {
+        let node = &self.nodes[node_index];
+        node.edges
+            .iter()
+            .enumerate()
+            .max_by(|(_, left), (_, right)| {
+                let left_score = puct_score(node.visit_count, left, self.config.c_puct);
+                let right_score = puct_score(node.visit_count, right, self.config.c_puct);
+                left_score
+                    .partial_cmp(&right_score)
+                    .expect("PUCT score must be finite")
+            })
+            .map(|(index, _)| index)
+            .expect("expanded MCTS node must contain at least one edge")
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct EdgeStats {
     action: Action,
     prior: f32,
     visit_count: u32,
     value_sum: f32,
+    child: Option<usize>,
 }
 
 impl EdgeStats {
@@ -40,6 +136,7 @@ impl EdgeStats {
             prior,
             visit_count: 0,
             value_sum: 0.0,
+            child: None,
         }
     }
 
@@ -92,6 +189,13 @@ impl Node {
         }
         counts
     }
+
+    fn most_visited_action(&self) -> Option<usize> {
+        self.edges
+            .iter()
+            .max_by_key(|edge| edge.visit_count)
+            .map(|edge| edge.action.to_index())
+    }
 }
 
 impl GameState {
@@ -99,6 +203,21 @@ impl GameState {
     pub(crate) const fn current_player_value(&self) -> Player {
         self.current_player
     }
+
+    #[must_use]
+    pub(crate) const fn outcome_value(&self) -> Option<GameOutcome> {
+        self.outcome
+    }
+}
+
+fn puct_score(parent_visits: u32, edge: &EdgeStats, c_puct: f32) -> f32 {
+    let exploration_visits = parent_visits.max(1) as f32;
+    edge.mean_value()
+        + c_puct * edge.prior * exploration_visits.sqrt() / (1.0 + edge.visit_count as f32)
+}
+
+fn value_for_player(outcome: GameOutcome, player: Player) -> f32 {
+    if outcome.winner == player { 1.0 } else { -1.0 }
 }
 
 #[cfg(test)]
@@ -153,5 +272,70 @@ mod tests {
 
         let counts = node.visit_counts();
         assert_eq!(counts[PASS_ACTION], 0);
+    }
+
+    #[test]
+    fn puct_selection_reflects_prior_and_visit_count() {
+        let config = MctsConfig::new(1, 2.0);
+        let search = MctsSearch::new(config);
+        let node = Node {
+            to_play: Player::Blue,
+            visit_count: 16,
+            edges: vec![
+                EdgeStats {
+                    action: Action::from_index(0).unwrap(),
+                    prior: 0.9,
+                    visit_count: 0,
+                    value_sum: 0.0,
+                    child: None,
+                },
+                EdgeStats {
+                    action: Action::Pass,
+                    prior: 0.1,
+                    visit_count: 10,
+                    value_sum: 8.0,
+                    child: None,
+                },
+            ],
+        };
+        let mut search = search;
+        search.nodes.push(node);
+
+        assert_eq!(search.select_edge_index(0), 0);
+    }
+
+    #[test]
+    fn mcts_search_returns_only_legal_actions_and_visit_distribution() {
+        let state = GameState::new();
+        let legal_actions = state.legal_action_indexes();
+        let mut search = MctsSearch::new(MctsConfig::new(8, 1.5));
+
+        let result = search.run(&state);
+
+        assert!(legal_actions.contains(&result.selected_action.unwrap()));
+        assert_eq!(result.visit_counts.iter().sum::<u32>(), 8);
+        assert_eq!(result.visit_counts[crate::game::CENTER_INDEX], 0);
+    }
+
+    #[test]
+    fn terminal_win_is_backed_up_to_parent_edge() {
+        let mut board = [crate::game::Cell::Empty; crate::game::BOARD_CELLS];
+        board[crate::game::CENTER_INDEX] = crate::game::Cell::Neutral;
+        board[1] = crate::game::Cell::Orange;
+        board[2] = crate::game::Cell::Blue;
+        board[10] = crate::game::Cell::Blue;
+        let mut state = crate::game::state_with_board(board, Player::Blue);
+        let mut search = MctsSearch::new(MctsConfig::new(1, 1.5));
+        search.nodes.push(Node {
+            to_play: Player::Blue,
+            visit_count: 0,
+            edges: vec![EdgeStats::new(Action::from_index(0).unwrap(), 1.0)],
+        });
+
+        let value = search.simulate(0, &mut state);
+
+        assert_eq!(value, 1.0);
+        assert_eq!(search.nodes[0].visit_count, 1);
+        assert_eq!(search.nodes[0].visit_counts()[0], 1);
     }
 }
