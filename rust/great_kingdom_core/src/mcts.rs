@@ -1,4 +1,4 @@
-use pyo3::{exceptions::PyValueError, prelude::*};
+use pyo3::{exceptions::PyValueError, prelude::*, types::PyAny};
 
 use crate::game::{ACTION_SPACE, Action, GameOutcome, GameState, Player};
 
@@ -160,6 +160,23 @@ impl MctsSearch {
     pub fn root_eval_request(&self, state: &GameState) -> EvalRequest {
         EvalRequest::new(vec![state.clone()])
     }
+
+    #[pyo3(signature = (state, evaluator, leaf_batch_size = 8))]
+    pub fn search_with_evaluator(
+        &mut self,
+        state: &GameState,
+        evaluator: &Bound<'_, PyAny>,
+        leaf_batch_size: usize,
+    ) -> PyResult<MctsResult> {
+        if leaf_batch_size == 0 {
+            return Err(PyValueError::new_err("leaf_batch_size must be positive"));
+        }
+
+        self.run_with_leaf_evaluator(state, leaf_batch_size, |request| {
+            let response = evaluator.call1((request,))?;
+            parse_eval_response(&response)
+        })
+    }
 }
 
 impl MctsSearch {
@@ -185,6 +202,82 @@ impl MctsSearch {
         self.nodes.clear();
         let root_index = self.expand_node_with_priors(state, priors);
         self.run_simulations_from_root(state, root_index)
+    }
+
+    pub fn run_with_leaf_evaluator<F>(
+        &mut self,
+        state: &GameState,
+        leaf_batch_size: usize,
+        mut evaluator: F,
+    ) -> PyResult<MctsResult>
+    where
+        F: FnMut(EvalRequest) -> PyResult<EvalBatch>,
+    {
+        self.nodes.clear();
+        if state.outcome_value().is_some() {
+            return Ok(MctsResult {
+                selected_action: None,
+                visit_counts: [0; ACTION_SPACE],
+            });
+        }
+
+        let root_eval = evaluator(EvalRequest::new(vec![state.clone()]))?;
+        let root_policy = root_eval.single_policy()?;
+        let root_index = self.expand_node_with_priors(state, root_policy);
+
+        let mut completed = 0;
+        while completed < self.config.simulations {
+            let batch_target = (self.config.simulations - completed)
+                .min(leaf_batch_size as u32) as usize;
+            let mut pending = Vec::with_capacity(batch_target);
+
+            for _ in 0..batch_target {
+                let mut simulation_state = state.clone();
+                match self.select_eval_leaf(root_index, &mut simulation_state) {
+                    PendingSimulation::NeedsEvaluation { path, state } => {
+                        pending.push(PendingLeaf { path, state });
+                    }
+                    PendingSimulation::Terminal {
+                        path,
+                        last_edge_value,
+                    } => {
+                        backup_path_from_last_edge(&mut self.nodes, &path, last_edge_value);
+                        completed += 1;
+                    }
+                    PendingSimulation::RootTerminal => {
+                        completed += 1;
+                    }
+                }
+            }
+
+            if pending.is_empty() {
+                continue;
+            }
+
+            let request_states = pending
+                .iter()
+                .map(|leaf| leaf.state.clone())
+                .collect::<Vec<_>>();
+            let eval = evaluator(EvalRequest::new(request_states))?;
+            eval.validate_len(pending.len())?;
+            for (leaf, (policy, value)) in pending
+                .into_iter()
+                .zip(eval.policies.into_iter().zip(eval.values.into_iter()))
+            {
+                let child_index = self.expand_node_with_priors(&leaf.state, &policy);
+                if let Some((parent_index, edge_index)) = leaf.path.last().copied() {
+                    self.nodes[parent_index].edges[edge_index].child = Some(child_index);
+                }
+                backup_path_from_leaf_value(&mut self.nodes, &leaf.path, value);
+                completed += 1;
+            }
+        }
+
+        let root = &self.nodes[root_index];
+        Ok(MctsResult {
+            selected_action: root.most_visited_action(),
+            visit_counts: root.visit_counts(),
+        })
     }
 
     fn run_simulations_from_root(&mut self, state: &GameState, root_index: usize) -> MctsResult {
@@ -266,6 +359,100 @@ impl MctsSearch {
             .map(|(index, _)| index)
             .expect("expanded MCTS node must contain at least one edge")
     }
+
+    fn select_eval_leaf(
+        &self,
+        root_index: usize,
+        state: &mut GameState,
+    ) -> PendingSimulation {
+        if state.outcome_value().is_some() {
+            return PendingSimulation::RootTerminal;
+        }
+
+        let mut node_index = root_index;
+        let mut path = Vec::new();
+        loop {
+            if self.nodes[node_index].edges.is_empty() {
+                return PendingSimulation::NeedsEvaluation {
+                    path,
+                    state: state.clone(),
+                };
+            }
+
+            let edge_index = self.select_edge_index(node_index);
+            let player = self.nodes[node_index].to_play;
+            let action = self.nodes[node_index].edges[edge_index].action;
+            let outcome = state
+                .apply(action)
+                .expect("MCTS selected an action from legal_action_indexes");
+            path.push((node_index, edge_index));
+
+            if let Some(outcome) = outcome {
+                return PendingSimulation::Terminal {
+                    path,
+                    last_edge_value: value_for_player(outcome, player),
+                };
+            }
+
+            match self.nodes[node_index].edges[edge_index].child {
+                Some(child_index) => node_index = child_index,
+                None => {
+                    return PendingSimulation::NeedsEvaluation {
+                        path,
+                        state: state.clone(),
+                    };
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct EvalBatch {
+    policies: Vec<[f32; ACTION_SPACE]>,
+    values: Vec<f32>,
+}
+
+impl EvalBatch {
+    #[must_use]
+    pub fn new(policies: Vec<[f32; ACTION_SPACE]>, values: Vec<f32>) -> Self {
+        Self { policies, values }
+    }
+
+    fn single_policy(&self) -> PyResult<&[f32; ACTION_SPACE]> {
+        self.validate_len(1)?;
+        Ok(&self.policies[0])
+    }
+
+    fn validate_len(&self, expected: usize) -> PyResult<()> {
+        if self.policies.len() != expected || self.values.len() != expected {
+            return Err(PyValueError::new_err(format!(
+                "expected {expected} policy/value rows, got {}/{}",
+                self.policies.len(),
+                self.values.len()
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PendingLeaf {
+    path: Vec<(usize, usize)>,
+    state: GameState,
+}
+
+#[derive(Clone, Debug)]
+enum PendingSimulation {
+    NeedsEvaluation {
+        path: Vec<(usize, usize)>,
+        state: GameState,
+    },
+    Terminal {
+        path: Vec<(usize, usize)>,
+        last_edge_value: f32,
+    },
+    RootTerminal,
 }
 
 #[derive(Clone, Debug)]
@@ -398,6 +585,57 @@ fn puct_score(parent_visits: u32, edge: &EdgeStats, c_puct: f32) -> f32 {
 
 fn value_for_player(outcome: GameOutcome, player: Player) -> f32 {
     if outcome.winner == player { 1.0 } else { -1.0 }
+}
+
+fn backup_path_from_leaf_value(
+    nodes: &mut [Node],
+    path: &[(usize, usize)],
+    leaf_value: f32,
+) {
+    let mut value = leaf_value;
+    for (node_index, edge_index) in path.iter().rev().copied() {
+        value = -value;
+        nodes[node_index].visit_count += 1;
+        nodes[node_index].edges[edge_index].update(value);
+    }
+}
+
+fn backup_path_from_last_edge(
+    nodes: &mut [Node],
+    path: &[(usize, usize)],
+    last_edge_value: f32,
+) {
+    let mut value = last_edge_value;
+    for (node_index, edge_index) in path.iter().rev().copied() {
+        nodes[node_index].visit_count += 1;
+        nodes[node_index].edges[edge_index].update(value);
+        value = -value;
+    }
+}
+
+fn parse_eval_response(response: &Bound<'_, PyAny>) -> PyResult<EvalBatch> {
+    let (policy_rows, values): (Vec<Vec<f32>>, Vec<f32>) = response.extract()?;
+    let mut policies = Vec::with_capacity(policy_rows.len());
+    for (row_index, row) in policy_rows.into_iter().enumerate() {
+        if row.len() != ACTION_SPACE {
+            return Err(PyValueError::new_err(format!(
+                "policy row {row_index} must have length {ACTION_SPACE}, got {}",
+                row.len()
+            )));
+        }
+        if row.iter().any(|prior| !prior.is_finite() || *prior < 0.0) {
+            return Err(PyValueError::new_err(
+                "policy priors must be finite non-negative values",
+            ));
+        }
+        let mut policy = [0.0; ACTION_SPACE];
+        policy.copy_from_slice(&row);
+        policies.push(policy);
+    }
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err(PyValueError::new_err("values must be finite"));
+    }
+    Ok(EvalBatch::new(policies, values))
 }
 
 #[cfg(test)]
@@ -607,5 +845,41 @@ mod tests {
         );
         assert_eq!(request.legal_masks()[0].len(), ACTION_SPACE);
         assert_eq!(request.legal_masks()[0][crate::game::PASS_ACTION], true);
+    }
+
+    #[test]
+    fn mcts_search_with_leaf_evaluator_uses_policy_and_value_batches() {
+        let state = GameState::new();
+        let mut search = MctsSearch::new(MctsConfig::new(4, 1.5));
+        let mut batch_sizes = Vec::new();
+
+        let result = search
+            .run_with_leaf_evaluator(&state, 2, |request| {
+                batch_sizes.push(request.len());
+                let mut policies = Vec::new();
+                let mut values = Vec::new();
+                for mask in request.legal_masks() {
+                    let mut policy = [0.0; ACTION_SPACE];
+                    for (index, is_legal) in mask.into_iter().enumerate() {
+                        if is_legal {
+                            policy[index] = if index == 0 { 10.0 } else { 1.0 };
+                        }
+                    }
+                    policies.push(policy);
+                    values.push(0.25);
+                }
+                Ok(EvalBatch::new(policies, values))
+            })
+            .unwrap();
+
+        assert_eq!(batch_sizes[0], 1);
+        assert!(batch_sizes.iter().skip(1).any(|size| *size > 0));
+        assert_eq!(result.visit_counts.iter().sum::<u32>(), 4);
+        assert!(
+            state
+                .legal_action_indexes()
+                .contains(&result.selected_action.unwrap())
+        );
+        assert_eq!(result.visit_counts[crate::game::CENTER_INDEX], 0);
     }
 }
