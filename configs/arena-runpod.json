@@ -1,7 +1,7 @@
 {
   "c_puct": 1.5,
   "device": "cuda",
-  "games": 100,
+  "games": 20,
   "leaf_batch_size": 200,
   "max_turns": 200,
   "promotion_threshold": 0.55,
