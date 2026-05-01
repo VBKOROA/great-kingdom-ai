@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
@@ -227,6 +227,7 @@ def train_from_replay(
     checkpoint_path: str | Path | None = None,
     resume_path: str | Path | None = None,
     log_every: int = 0,
+    progress_callback: Callable[[int, int, dict[str, float]], None] | None = None,
 ) -> TrainSummary:
     if len(replay) < config.batch_size:
         raise ValueError("replay buffer must contain at least batch_size samples")
@@ -267,7 +268,10 @@ def train_from_replay(
         else:
             should_log = False
         if should_log:
-            losses.append({"step": float(state.step), **loss.to_float_dict()})
+            loss_values = loss.to_float_dict()
+            losses.append({"step": float(state.step), **loss_values})
+            if progress_callback is not None:
+                progress_callback(state.step - start_step, config.steps, loss_values)
 
     saved_path = save_checkpoint(state, checkpoint_path) if checkpoint_path is not None else None
     return TrainSummary(

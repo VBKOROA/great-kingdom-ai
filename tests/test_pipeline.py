@@ -113,6 +113,23 @@ def test_generate_self_play_samples_passes_playout_cap_config() -> None:
     assert seen_configs[0].playout_cap_fast_simulations == 16
 
 
+def test_generate_self_play_samples_prints_progress(capsys) -> None:
+    generate_self_play_samples(
+        pipeline_config=PipelineConfig(
+            self_play_games=1,
+            min_replay_samples=3,
+            max_self_play_games=2,
+        ),
+        runner=fake_self_play_runner,
+        printer=PipelinePrinter(),
+    )
+
+    output = capsys.readouterr().out
+    assert "self-play target" in output
+    assert "self-play samples" in output
+    assert "avg_samples/game" in output
+
+
 def test_generate_self_play_samples_uses_batched_model_priors(monkeypatch) -> None:
     seen_batches: list[list[int]] = []
 
@@ -158,8 +175,9 @@ def test_run_pipeline_saves_artifacts_and_promotes_candidate(
         *,
         checkpoint_path: str | Path,
         log_every: int,
+        progress_callback: Any = None,
     ) -> FakeTrainSummary:
-        del replay, config, log_every
+        del replay, config, log_every, progress_callback
         destination = Path(checkpoint_path)
         destination.write_text("candidate", encoding="utf-8")
         return FakeTrainSummary(

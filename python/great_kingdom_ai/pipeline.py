@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -139,22 +140,33 @@ class PipelineSummary:
 class PipelinePrinter:
     def __init__(self, *, enabled: bool = True) -> None:
         self.enabled = enabled
+        self.started_at = time.monotonic()
 
     def title(self, text: str) -> None:
         if self.enabled:
-            print(f"\n== {text} ==")
+            print(f"\n== {text} ==", flush=True)
 
     def step(self, text: str) -> None:
         if self.enabled:
-            print(f"  -> {text}")
+            print(f"  -> {text}", flush=True)
 
     def done(self, text: str) -> None:
         if self.enabled:
-            print(f"  ok {text}")
+            print(f"  ok {text}", flush=True)
 
     def metric(self, key: str, value: object) -> None:
         if self.enabled:
-            print(f"  {key:<18} {value}")
+            print(f"  {key:<18} {value}", flush=True)
+
+    def progress(self, key: str, current: int, target: int, *, detail: str = "") -> None:
+        if not self.enabled:
+            return
+        percent = 100.0 if target <= 0 else min(100.0, current / target * 100.0)
+        suffix = f"  {detail}" if detail else ""
+        print(f"  {key:<18} {current:>6}/{target:<6} {percent:>6.1f}%{suffix}", flush=True)
+
+    def elapsed(self) -> str:
+        return _format_duration(time.monotonic() - self.started_at)
 
 
 def run_pipeline(
@@ -180,6 +192,16 @@ def run_pipeline(
     saved_log_dicts = _load_saved_log_dicts(paths.self_play_log_path, pipeline_config)
     seed_cursor = pipeline_config.seed_start + len(saved_log_dicts)
     iteration_summaries: list[PipelineIterationSummary] = []
+
+    printer.title("Pipeline")
+    printer.metric("work dir", pipeline_config.work_dir)
+    printer.metric("resume", pipeline_config.resume)
+    printer.metric("device", train_config.device)
+    printer.metric("model", train_config.model_preset)
+    printer.metric("replay samples", len(replay))
+    printer.metric("saved games", len(saved_log_dicts))
+    printer.metric("self-play", _self_play_config_summary(pipeline_config))
+    printer.metric("training", f"steps={train_config.steps}, batch={train_config.batch_size}")
 
     for iteration in range(1, pipeline_config.iterations + 1):
         printer.title(f"Iteration {iteration}/{pipeline_config.iterations}")
@@ -260,7 +282,13 @@ def run_pipeline(
             replay,
             train_config,
             checkpoint_path=candidate_checkpoint,
-            log_every=max(1, train_config.steps),
+            log_every=max(1, train_config.steps // 10),
+            progress_callback=lambda current, target, loss: printer.progress(
+                "train",
+                current,
+                target,
+                detail=f"loss={loss['total']:.4f}",
+            ),
         )
         shutil.copy2(candidate_checkpoint, paths.candidate_checkpoint)
         printer.metric("train steps", f"{train_summary.start_step}->{train_summary.end_step}")
@@ -378,6 +406,16 @@ def generate_self_play_samples(
     logs: list[GameLog] = []
     samples: list[ReplaySample] = []
     seed = pipeline_config.seed_start if seed_start is None else seed_start
+    started_at = time.monotonic()
+    printer.step(
+        "self-play target "
+        f"games>={pipeline_config.self_play_games}, "
+        f"samples>={pipeline_config.min_replay_samples}, "
+        f"batch={pipeline_config.self_play_batch_size}, "
+        f"sims={pipeline_config.mcts_simulations}, "
+        f"leaf_batch={pipeline_config.leaf_batch_size}, "
+        f"pcr={_pcr_summary(pipeline_config)}"
+    )
     while (
         len(logs) < pipeline_config.self_play_games
         or len(samples) < pipeline_config.min_replay_samples
@@ -416,13 +454,80 @@ def generate_self_play_samples(
                 logs.append(log)
                 samples.extend(game_samples)
             seed += len(batch_results)
+            _print_self_play_progress(
+                printer,
+                pipeline_config=pipeline_config,
+                logs=logs,
+                samples=samples,
+                started_at=started_at,
+            )
         else:
             printer.step(f"game seed={seed}")
             log, game_samples = run_one(seed, config)
             logs.append(log)
             samples.extend(game_samples)
             seed += 1
+            _print_self_play_progress(
+                printer,
+                pipeline_config=pipeline_config,
+                logs=logs,
+                samples=samples,
+                started_at=started_at,
+            )
     return logs, samples
+
+
+def _print_self_play_progress(
+    printer: PipelinePrinter,
+    *,
+    pipeline_config: PipelineConfig,
+    logs: Sequence[GameLog],
+    samples: Sequence[ReplaySample],
+    started_at: float,
+) -> None:
+    games = len(logs)
+    sample_count = len(samples)
+    avg_samples = sample_count / games if games else 0.0
+    elapsed = _format_duration(time.monotonic() - started_at)
+    detail = f"games={games}, avg_samples/game={avg_samples:.1f}, elapsed={elapsed}"
+    printer.progress(
+        "self-play samples",
+        sample_count,
+        pipeline_config.min_replay_samples,
+        detail=detail,
+    )
+    if games < pipeline_config.self_play_games:
+        printer.progress("self-play games", games, pipeline_config.self_play_games)
+
+
+def _self_play_config_summary(config: PipelineConfig) -> str:
+    return (
+        f"games>={config.self_play_games}, samples>={config.min_replay_samples}, "
+        f"batch={config.self_play_batch_size}, sims={config.mcts_simulations}, "
+        f"leaf_batch={config.leaf_batch_size}, pcr={_pcr_summary(config)}"
+    )
+
+
+def _pcr_summary(config: PipelineConfig) -> str:
+    if not config.playout_cap_randomization:
+        return "off"
+    return (
+        "on("
+        f"full={config.playout_cap_full_search_fraction:.2f}, "
+        f"fast_sims={config.playout_cap_fast_simulations}"
+        ")"
+    )
+
+
+def _format_duration(seconds: float) -> str:
+    total_seconds = max(0, int(seconds))
+    minutes, second = divmod(total_seconds, 60)
+    hours, minute = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h{minute:02d}m{second:02d}s"
+    if minute:
+        return f"{minute}m{second:02d}s"
+    return f"{second}s"
 
 
 def load_pipeline_config(path: str | Path) -> PipelineConfig:
