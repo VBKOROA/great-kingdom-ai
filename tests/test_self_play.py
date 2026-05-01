@@ -228,6 +228,10 @@ def test_play_mcts_game_records_policy_and_final_value_targets() -> None:
     assert samples[0].value == 1.0
 
 
+def test_mcts_self_play_config_samples_only_opening_turns_by_default() -> None:
+    assert MctsSelfPlayConfig().temperature_turns == 10
+
+
 def test_play_mcts_game_applies_root_noise_only_when_enabled() -> None:
     visits = [0] * 82
     visits[1] = 1

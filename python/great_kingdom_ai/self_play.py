@@ -93,7 +93,7 @@ class SmokeSummary:
 @dataclass(frozen=True)
 class MctsSelfPlayConfig:
     max_turns: int = 200
-    temperature_turns: int = 20
+    temperature_turns: int = 10
     sampling_temperature: float = 1.0
     root_noise: bool = True
     root_dirichlet_alpha: float = 0.3
