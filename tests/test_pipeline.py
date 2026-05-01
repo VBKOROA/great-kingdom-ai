@@ -96,6 +96,31 @@ def test_generate_self_play_samples_passes_playout_cap_config() -> None:
     assert seen_configs[0].playout_cap_fast_simulations == 16
 
 
+def test_generate_self_play_samples_uses_batched_model_priors(monkeypatch) -> None:
+    seen_batches: list[list[int]] = []
+
+    def fake_batched_games(**kwargs) -> list[tuple[GameLog, list[ReplaySample]]]:
+        seeds = list(kwargs["seeds"])
+        seen_batches.append(seeds)
+        return [fake_self_play_runner(seed, kwargs["config"]) for seed in seeds]
+
+    monkeypatch.setattr(pipeline_module, "play_mcts_games_batched", fake_batched_games)
+
+    logs, samples = generate_self_play_samples(
+        pipeline_config=PipelineConfig(
+            self_play_games=2,
+            min_replay_samples=1,
+            self_play_batch_size=2,
+        ),
+        printer=PipelinePrinter(enabled=False),
+        batch_prior_provider=lambda states: [[0.0] * ACTION_SPACE for _ in states],
+    )
+
+    assert [log.seed for log in logs] == [0, 1]
+    assert len(samples) == 4
+    assert seen_batches == [[0, 1]]
+
+
 def test_run_pipeline_saves_artifacts_and_promotes_candidate(
     tmp_path: Path,
     monkeypatch,

@@ -13,6 +13,7 @@ from typing import Any, NoReturn
 from great_kingdom_ai.evaluate import (
     ArenaConfig,
     ArenaReport,
+    evaluate_state_policies,
     evaluate_state_policy,
     load_arena_config,
     load_model_from_checkpoint,
@@ -26,6 +27,7 @@ from great_kingdom_ai.self_play import (
     MctsSelfPlayConfig,
     create_core_mcts_search,
     play_mcts_game,
+    play_mcts_games_batched,
 )
 from great_kingdom_ai.train import (
     TrainingConfig,
@@ -43,6 +45,7 @@ class PipelineConfig:
     self_play_games: int = 2
     min_replay_samples: int = 4
     max_self_play_games: int = 20
+    self_play_batch_size: int = 1
     seed_start: int = 0
     replay_capacity: int = 10000
     mcts_simulations: int = 8
@@ -186,6 +189,7 @@ def run_pipeline(
             else load_model_from_checkpoint(paths.best_checkpoint, device=train_config.device)
         )
         prior_provider: Callable[[Any], list[float]] | None = None
+        batch_prior_provider: Callable[[list[Any]], list[list[float]]] | None = None
         if self_play_model is not None:
 
             def prior_provider(state: Any, model: Any = self_play_model) -> list[float]:
@@ -195,12 +199,23 @@ def run_pipeline(
                     device=train_config.device,
                 )
 
+            def batch_prior_provider(
+                states: list[Any],
+                model: Any = self_play_model,
+            ) -> list[list[float]]:
+                return evaluate_state_policies(
+                    model,
+                    states,
+                    device=train_config.device,
+                )
+
         logs, samples = generate_self_play_samples(
             pipeline_config=pipeline_config,
             seed_start=seed_cursor,
             runner=self_play_runner,
             printer=printer,
             prior_provider=prior_provider,
+            batch_prior_provider=batch_prior_provider,
         )
         seed_cursor += len(logs)
         replay.extend(samples)
@@ -293,6 +308,7 @@ def generate_self_play_samples(
     runner: Callable[[int, MctsSelfPlayConfig], tuple[GameLog, list[ReplaySample]]] | None = None,
     printer: PipelinePrinter | None = None,
     prior_provider: Callable[[Any], list[float]] | None = None,
+    batch_prior_provider: Callable[[list[Any]], list[list[float]]] | None = None,
 ) -> tuple[list[GameLog], list[ReplaySample]]:
     printer = printer if printer is not None else PipelinePrinter()
     config = MctsSelfPlayConfig(
@@ -335,11 +351,31 @@ def generate_self_play_samples(
                 "self-play did not produce enough replay samples: "
                 f"{len(samples)} < {pipeline_config.min_replay_samples}"
             )
-        printer.step(f"game seed={seed}")
-        log, game_samples = run_one(seed, config)
-        logs.append(log)
-        samples.extend(game_samples)
-        seed += 1
+        remaining_games = max(1, pipeline_config.self_play_games - len(logs))
+        remaining_cap = pipeline_config.max_self_play_games - len(logs)
+        batch_size = min(pipeline_config.self_play_batch_size, remaining_games, remaining_cap)
+        if runner is None and batch_prior_provider is not None and batch_size > 1:
+            seeds = list(range(seed, seed + batch_size))
+            printer.step(f"game seeds={seeds[0]}..{seeds[-1]}")
+            batch_results = play_mcts_games_batched(
+                seeds=seeds,
+                search_factory=lambda: create_core_mcts_search(
+                    simulations=pipeline_config.mcts_simulations,
+                    c_puct=pipeline_config.mcts_c_puct,
+                ),
+                config=config,
+                prior_provider=batch_prior_provider,
+            )
+            for log, game_samples in batch_results:
+                logs.append(log)
+                samples.extend(game_samples)
+            seed += len(batch_results)
+        else:
+            printer.step(f"game seed={seed}")
+            log, game_samples = run_one(seed, config)
+            logs.append(log)
+            samples.extend(game_samples)
+            seed += 1
     return logs, samples
 
 
@@ -384,6 +420,8 @@ def _validate_pipeline_config(config: PipelineConfig) -> None:
         raise ValueError("min_replay_samples must be non-negative")
     if config.max_self_play_games < config.self_play_games:
         raise ValueError("max_self_play_games must be at least self_play_games")
+    if config.self_play_batch_size <= 0:
+        raise ValueError("self_play_batch_size must be positive")
     if config.replay_capacity <= 0:
         raise ValueError("replay_capacity must be positive")
     if config.mcts_simulations <= 0:
@@ -512,6 +550,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="MCTS simulations per self-play move",
     )
     self_play_group.add_argument(
+        "--self-play-batch-size",
+        type=int,
+        default=None,
+        help="parallel self-play games for batched model inference",
+    )
+    self_play_group.add_argument(
         "--playout-cap-randomization",
         action="store_true",
         help="use full search only on sampled self-play turns",
@@ -558,6 +602,7 @@ def _configs_from_args(
         "self_play_games": args.self_play_games,
         "min_replay_samples": args.min_replay_samples,
         "mcts_simulations": args.mcts_simulations,
+        "self_play_batch_size": args.self_play_batch_size,
         "playout_cap_randomization": True if args.playout_cap_randomization else None,
         "playout_cap_full_search_fraction": args.playout_cap_full_search_fraction,
         "playout_cap_fast_simulations": args.playout_cap_fast_simulations,

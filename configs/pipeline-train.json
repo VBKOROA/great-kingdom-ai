@@ -10,6 +10,7 @@
   "root_noise": true,
   "sampling_temperature": 1.0,
   "seed_start": 0,
+  "self_play_batch_size": 8,
   "self_play_games": 32,
   "self_play_max_turns": 200,
   "skip_arena": false,

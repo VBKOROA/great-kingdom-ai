@@ -272,6 +272,53 @@ def play_mcts_game(
     )
 
 
+def play_mcts_games_batched(
+    *,
+    seeds: Sequence[int],
+    search_factory: Callable[[], MctsSearchLike],
+    config: MctsSelfPlayConfig,
+    prior_provider: Callable[[Sequence[SelfPlayState]], Sequence[Sequence[float]]]
+    | None = None,
+    state_factory: Callable[[], SelfPlayState] | None = None,
+) -> list[tuple[GameLog, list[ReplaySample]]]:
+    """Run MCTS self-play games while batching neural-network root prior inference."""
+    make_state = state_factory if state_factory is not None else create_core_game_state
+    games = [
+        _BatchedGame(
+            seed=seed,
+            state=make_state(),
+            search=search_factory(),
+            rng=random.Random(seed),
+        )
+        for seed in seeds
+    ]
+    if not games:
+        return []
+
+    for turn in range(config.max_turns):
+        active_games = [game for game in games if not game.state.is_terminal()]
+        if not active_games:
+            break
+
+        batched_priors = _batched_root_priors(active_games, prior_provider)
+        for game, root_priors in zip(active_games, batched_priors, strict=True):
+            _play_batched_mcts_turn(
+                game,
+                turn,
+                config,
+                root_priors=root_priors,
+            )
+    else:
+        unfinished = [game.seed for game in games if not game.state.is_terminal()]
+        if unfinished:
+            raise RuntimeError(
+                f"MCTS self-play exceeded max_turns={config.max_turns} "
+                f"for seeds={unfinished}"
+            )
+
+    return [_finish_batched_game(game) for game in games]
+
+
 def summarize_logs(logs: Sequence[GameLog]) -> SmokeSummary:
     move_counts = [len(log.moves) for log in logs]
     return SmokeSummary(
@@ -327,6 +374,105 @@ def _run_self_play_search(
     if config.root_noise:
         return search.search_with_priors(state, noisy_priors.tolist())
     return search.search_with_priors(state, priors)
+
+
+@dataclass
+class _BatchedGame:
+    seed: int
+    state: SelfPlayState
+    search: MctsSearchLike
+    rng: random.Random
+    moves: list[MoveLog] | None = None
+    pending_samples: list[tuple[int, np.ndarray, np.ndarray]] | None = None
+
+    def __post_init__(self) -> None:
+        if self.moves is None:
+            self.moves = []
+        if self.pending_samples is None:
+            self.pending_samples = []
+
+
+def _batched_root_priors(
+    games: Sequence[_BatchedGame],
+    prior_provider: Callable[[Sequence[SelfPlayState]], Sequence[Sequence[float]]] | None,
+) -> list[Sequence[float] | None]:
+    if prior_provider is None:
+        return [None] * len(games)
+    priors = list(prior_provider([game.state for game in games]))
+    if len(priors) != len(games):
+        raise ValueError(
+            f"expected {len(games)} prior rows from batch provider, got {len(priors)}"
+        )
+    return priors
+
+
+def _play_batched_mcts_turn(
+    game: _BatchedGame,
+    turn: int,
+    config: MctsSelfPlayConfig,
+    *,
+    root_priors: Sequence[float] | None,
+) -> None:
+    player = game.state.current_player()
+    features = _state_features_for_replay(game.state)
+    use_full_search = _use_full_search_turn(game.rng, config)
+    if config.playout_cap_randomization:
+        simulations = (
+            config.playout_cap_full_simulations
+            if use_full_search
+            else config.playout_cap_fast_simulations
+        )
+        _set_search_simulations(game.search, simulations)
+
+    result = _run_self_play_search(
+        game.state,
+        game.search,
+        game.rng,
+        config,
+        root_priors=root_priors,
+    )
+    visit_counts = result.visit_counts()
+    policy = policy_target_from_visit_counts(visit_counts)
+    temperature = config.sampling_temperature if turn < config.temperature_turns else 0.0
+    action = select_action_from_visit_counts(
+        visit_counts,
+        game.rng,
+        temperature=temperature,
+    )
+
+    if use_full_search:
+        assert game.pending_samples is not None
+        game.pending_samples.append((player, features, policy))
+    assert game.moves is not None
+    game.moves.append(MoveLog(turn=turn, player=player, action=action))
+    game.state.apply_action(action)
+
+
+def _finish_batched_game(game: _BatchedGame) -> tuple[GameLog, list[ReplaySample]]:
+    winner = game.state.winner()
+    end_reason = game.state.end_reason()
+    if winner is None or end_reason is None:
+        raise RuntimeError("MCTS self-play stopped before terminal outcome")
+    assert game.moves is not None
+    assert game.pending_samples is not None
+    samples = [
+        ReplaySample(
+            features=features,
+            policy=policy,
+            value=value_target_for_player(player=player, winner=winner),
+        )
+        for player, features, policy in game.pending_samples
+    ]
+    return (
+        GameLog(
+            seed=game.seed,
+            moves=game.moves,
+            winner=winner,
+            end_reason=end_reason,
+            territory_scores=game.state.territory_scores(),
+        ),
+        samples,
+    )
 
 
 def _use_full_search_turn(rng: random.Random, config: MctsSelfPlayConfig) -> bool:

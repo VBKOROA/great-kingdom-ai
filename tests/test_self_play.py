@@ -6,6 +6,7 @@ from great_kingdom_ai.self_play import (
     MctsSelfPlayConfig,
     choose_random_legal_action,
     play_mcts_game,
+    play_mcts_games_batched,
     play_random_game,
     play_random_games,
     summarize_logs,
@@ -305,6 +306,37 @@ def test_play_mcts_game_keeps_full_playout_cap_turns_as_samples() -> None:
     assert len(log.moves) == 2
     assert len(samples) == 2
     assert search.simulation_budgets == [100, 100]
+
+
+def test_play_mcts_games_batched_evaluates_root_priors_together() -> None:
+    visits = [0] * 82
+    visits[1] = 1
+    batch_sizes: list[int] = []
+
+    def batch_prior_provider(states) -> list[list[float]]:
+        batch_sizes.append(len(states))
+        priors = [0.0] * 82
+        priors[1] = 1.0
+        return [priors for _ in states]
+
+    results = play_mcts_games_batched(
+        seeds=[11, 12],
+        search_factory=lambda: FakeMctsSearch(visits),
+        state_factory=lambda: MultiTurnMctsState(terminal_after=1),
+        config=MctsSelfPlayConfig(
+            max_turns=5,
+            temperature_turns=0,
+            root_noise=False,
+        ),
+        prior_provider=batch_prior_provider,
+    )
+
+    logs = [log for log, _samples in results]
+    samples = [sample for _log, game_samples in results for sample in game_samples]
+    assert [log.seed for log in logs] == [11, 12]
+    assert [log.moves[0].action for log in logs] == [1, 1]
+    assert len(samples) == 2
+    assert batch_sizes == [2]
 
 
 def test_play_mcts_game_applies_root_noise_only_when_enabled() -> None:

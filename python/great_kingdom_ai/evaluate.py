@@ -233,13 +233,22 @@ def evaluate_state_policy(
     *,
     device: Any | str | None = None,
 ) -> list[float]:
+    return evaluate_state_policies(model, [state], device=device)[0]
+
+
+def evaluate_state_policies(
+    model: Any,
+    states: Sequence[SelfPlayState],
+    *,
+    device: Any | str | None = None,
+) -> list[list[float]]:
     evaluation = evaluate_feature_batch(
         model,
-        [state.feature_planes()],
-        [state.legal_mask()],
+        [state.feature_planes() for state in states],
+        [state.legal_mask() for state in states],
         device=device,
     )
-    return [float(value) for value in evaluation.policy[0]]
+    return [[float(value) for value in policy] for policy in evaluation.policy]
 
 
 def save_arena_report(report: ArenaReport, path: str | Path) -> Path:
