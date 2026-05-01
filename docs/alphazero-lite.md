@@ -632,7 +632,7 @@ AlphaZero-lite는 구성 요소가 많기 때문에, 처음부터 전체를 한 
 
 행동 수: 82.
 
-신경망 크기: 작은 CNN backbone, spatial policy head, global average pooling value head.
+신경망 크기: preset 가능한 CNN backbone, spatial policy head, global average pooling value head.
 
 MCTS 시뮬레이션: 수당 50회.
 
@@ -652,7 +652,15 @@ Playout Cap Randomization 사용 시: full search 25%, full 100회, fast 16회�
 
 데이터 증강: 8방향 대칭 사용.
 
-처음에는 작은 설정으로 시작하고, 정상 작동이 확인되면 점진적으로 키운다.
+로컬에서는 small preset으로 빠른 smoke test를 유지한다. Runpod RTX 4090 24GB에서는 시간당 과금 구조를 고려해 medium preset도 초기부터 함께 확인하고, 기본 루프가 안정되면 large preset을 처리량과 arena 승률로 비교한다.
+
+권장 모델 preset은 다음과 같이 시작한다.
+
+| preset | channels | residual blocks | 용도 |
+| --- | --- | --- | --- |
+| small | 64 | 3-5 | 로컬 smoke test, 빠른 회귀 테스트 |
+| medium | 128 | 6-8 | Runpod 초기 학습, 기본 비교 기준 |
+| large | 192 | 10-12 | M10 이후 RTX 4090 24GB 처리량/승률 실험 |
 
 ---
 
@@ -678,4 +686,4 @@ MCTS는 신경망의 정책과 가치를 사용하되, 합법 수 마스크와 �
 
 # 한 줄 요약
 
-이 AI는 **규칙 엔진으로 합법 수와 즉시 승패를 정확히 처리하고, 작은 CNN이 정책과 가치를 예측하며, MCTS가 그 예측을 개선하고, 자가대국 결과로 다시 CNN을 학습하는 AlphaZero-lite 구조**로 만든다.
+이 AI는 **규칙 엔진으로 합법 수와 즉시 승패를 정확히 처리하고, preset 가능한 CNN이 정책과 가치를 예측하며, MCTS가 그 예측을 개선하고, 자가대국 결과로 다시 CNN을 학습하는 AlphaZero-lite 구조**로 만든다.

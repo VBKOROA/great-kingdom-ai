@@ -28,7 +28,7 @@
 | M3 | Python 바인딩 연결 | PyO3 API, Python import | Python에서 `GameState` 조작 가능 |
 | M4 | 랜덤 self-play 검증 | 랜덤 플레이어, 게임 로그 | 수천 판 smoke test에서 panic 없음 |
 | M5 | Rust MCTS 1차 구현 | PUCT, uniform prior, value 0 | MCTS가 합법 수만 선택 |
-| M6 | PyTorch 모델 연결 | 작은 CNN policy-value network | batch inference smoke test 통과 |
+| M6 | PyTorch 모델 연결 | preset 가능한 CNN policy-value network | batch inference smoke test 통과 |
 | M7 | self-play 데이터 파이프라인 | replay buffer, target 저장 | 한 판의 학습 샘플 저장과 로드 가능 |
 | M8 | 학습 루프 구현 | train script, checkpoint | 작은 batch로 loss가 계산되고 저장됨 |
 | M9 | 평가와 모델 교체 | arena 평가, best model 관리 | 후보 모델과 best model 비교 가능 |
@@ -115,7 +115,7 @@ Python API는 테스트하기 쉬운 작은 메서드 중심으로 시작한다.
 | --- | --- | --- |
 | feature plane 생성 API 노출 | `rust/great_kingdom_core/src/` | shape와 값 범위 테스트 |
 | feature tensor 변환 | `python/great_kingdom_ai/` | `[batch, channels, 9, 9]` 확인 |
-| 작은 CNN policy-value network | `python/great_kingdom_ai/model.py` | policy 82개와 value scalar shape 테스트 |
+| preset 가능한 CNN policy-value network | `python/great_kingdom_ai/model.py` | small/medium 설정에서 policy 82개와 value scalar shape 테스트 |
 | spatial policy head 구현 | `python/great_kingdom_ai/model.py` | 81개 위치 logit과 pass logit 분리 확인 |
 | global average pooling value head 구현 | `python/great_kingdom_ai/model.py` | 9x9 flatten 없이 value scalar 출력 |
 | 현재 플레이어 관점 정규화 | `rust/great_kingdom_core/src/`, `python/great_kingdom_ai/` | 색상과 차례가 바뀌어도 내 성/상대 성 채널 일관 |
@@ -124,7 +124,7 @@ Python API는 테스트하기 쉬운 작은 메서드 중심으로 시작한다.
 | Python batch inference 연결 | `python/great_kingdom_ai/` | policy 82개, value scalar 반환 |
 | Rust MCTS prior masking | `rust/great_kingdom_core/src/` | 불법 수 prior가 탐색 후보에서 제외 |
 
-모델은 로컬 smoke test가 가능한 작은 CNN으로 시작한다. 초기 구조는 `alphazero-lite.md` 기준으로 작은 CNN backbone, spatial policy head, global average pooling value head를 사용한다. policy head의 global context 결합은 기본 파이프라인이 안정된 뒤 실험 옵션으로 둔다. 학습 처리량 최적화는 Runpod RTX 4090 24GB 환경에서 학습 루프가 닫힌 뒤 별도 작업으로 둔다.
+모델 구현은 로컬 smoke test가 가능한 small preset을 반드시 포함하되, 구조 자체는 channels와 residual block 수를 설정으로 바꿀 수 있게 만든다. Runpod RTX 4090 24GB는 시간당 과금 구조이므로 M6 이후 GPU smoke test에서는 small만 고집하지 않고 medium preset도 초기에 함께 확인한다. 초기 구조는 `alphazero-lite.md` 기준으로 CNN backbone, spatial policy head, global average pooling value head를 사용한다. policy head의 global context 결합은 기본 파이프라인이 안정된 뒤 실험 옵션으로 둔다.
 
 ### M7. self-play 데이터 파이프라인
 
@@ -173,9 +173,11 @@ Python API는 테스트하기 쉬운 작은 메서드 중심으로 시작한다.
 | Playout Cap Randomization 옵션 | `python/great_kingdom_ai/` | full search 턴만 학습 샘플로 저장 |
 | leaf batch inference 최적화 | `python/great_kingdom_ai/`, `rust/great_kingdom_core/src/` | 여러 self-play 게임의 leaf state를 batch로 평가 |
 | Runpod 학습 preset | 설정 파일 또는 script | RTX 4090 24GB에서 batch, worker, simulation 수 조정 가능 |
+| 모델 스케일 preset | `python/great_kingdom_ai/model.py`, 설정 파일 또는 script | small/medium/large CNN을 같은 학습 루프에서 교체 가능 |
+| 모델 크기별 처리량/승률 비교 | 실험 리포트 또는 로그 | RTX 4090 24GB에서 positions/sec, games/hour, arena 승률 비교 |
 | 실험 지표 확장 | `python/great_kingdom_ai/` | 랜덤 AI 대비 승률, 시뮬레이션 수별 승률, 포획/패스 종료 비율 기록 |
 
-이 단계는 1차 완료 기준에 포함하지 않는다. M5부터 M9까지의 기본 루프가 테스트로 고정된 뒤, 학습 품질과 처리량을 개선하기 위한 실험 단계로 둔다.
+이 단계는 1차 완료 기준에 포함하지 않는다. M5부터 M9까지의 기본 루프가 테스트로 고정된 뒤, 학습 품질과 처리량을 개선하기 위한 실험 단계로 둔다. 다만 Runpod 비용은 시간당 과금이므로, M6 이후에는 medium preset의 GPU smoke test를 병행해 너무 작은 모델로만 시간을 쓰지 않도록 한다. large preset은 self-play, 학습, 평가 루프가 안정된 뒤 RTX 4090 24GB에서 처리량과 승률을 보고 올린다.
 
 ## 4. 권장 작업 순서
 
