@@ -121,6 +121,14 @@ runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
 학습 코드는 Python 3.11에서 동작해야 하며, 로컬과 CI의 기본 테스트는 GPU 없이 통과해야 합니다. Runpod에서는 `medium` 모델 preset을 초기 학습 기준으로 삼고, `large` preset은 self-play, 학습, 평가 루프가 안정된 뒤 처리량과 승률을 보고 올립니다.
 
+Runpod에서는 이미지에 포함된 PyTorch/CUDA 조합을 유지하기 위해 venv를 system site packages로 만들고, `ai` extra를 설치하지 않습니다. 새 pod에서는 다음 스크립트로 개발 의존성 설치, Rust extension 빌드, Rust/Python 테스트를 한 번에 실행할 수 있습니다.
+
+```bash
+./scripts/setup_runpod.sh
+source .venv/bin/activate
+python scripts/run_m6_smoke.py
+```
+
 ## 수동 규칙 확인 CLI
 
 Rust 규칙 엔진을 빌드한 뒤 사람 둘이 직접 self-play로 규칙을 확인할 수 있습니다.
