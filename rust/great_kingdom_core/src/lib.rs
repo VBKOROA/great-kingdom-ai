@@ -1,6 +1,7 @@
 use pyo3::prelude::*;
 
 mod game;
+mod mcts;
 mod rules;
 mod territory;
 
@@ -8,6 +9,7 @@ pub use game::{
     ACTION_SPACE, Action, BOARD_CELLS, BOARD_SIZE, CASTLES_PER_PLAYER, CENTER_INDEX, Cell,
     GameEndReason, GameOutcome, GameState, InvalidAction, PASS_ACTION, Player,
 };
+pub use mcts::MctsConfig;
 
 #[pyfunction]
 #[must_use]
