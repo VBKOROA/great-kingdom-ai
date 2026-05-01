@@ -20,6 +20,7 @@ impl GameState {
         let mut blue_score = 0;
         let mut orange_score = 0;
 
+        // 영토 점수는 성/중립 성을 제외하고, 연결된 빈 영역 단위로만 더한다.
         for index in 0..BOARD_CELLS {
             if visited[index] || self.board[index] != Cell::Empty {
                 continue;
@@ -51,6 +52,7 @@ impl GameState {
         let mut queue = VecDeque::from([start]);
         visited[start] = true;
 
+        // 빈 칸끼리 상하좌우로 이어진 하나의 후보 영역을 만든다.
         while let Some(index) = queue.pop_front() {
             region.push(index);
 
@@ -73,6 +75,7 @@ impl GameState {
         let mut touches_left = false;
         let mut touches_right = false;
 
+        // 후보 영역의 경계가 누구의 성에 닿는지와 보드 네 변 접촉 여부를 함께 확인한다.
         for index in region {
             let row = index / BOARD_SIZE;
             let col = index % BOARD_SIZE;
@@ -83,13 +86,16 @@ impl GameState {
 
             for neighbor in neighbors(*index) {
                 match self.board[neighbor] {
+                    // 빈 칸은 같은 region에 속해야 하고, 중립 성은 경계로 쓸 수 있다.
                     Cell::Empty | Cell::Neutral => {}
                     cell if cell == player.cell() => has_player_boundary = true,
+                    // 상대 성에 맞닿은 영역은 그 플레이어의 확정 영토가 아니다.
                     Cell::Blue | Cell::Orange => return false,
                 }
             }
         }
 
+        // 플레이어 성이 최소 하나는 경계에 있어야 하며, 네 변 모두에 닿은 열린 영역은 제외한다.
         has_player_boundary && !(touches_top && touches_bottom && touches_left && touches_right)
     }
 }

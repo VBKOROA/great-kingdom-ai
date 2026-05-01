@@ -45,6 +45,7 @@ impl GameState {
         row: usize,
         col: usize,
     ) -> Result<Option<GameOutcome>, InvalidAction> {
+        // 착수 가능 여부는 rule-spec.md 7장/22장의 순서대로 보드 변경 전에 검사한다.
         if row >= BOARD_SIZE || col >= BOARD_SIZE {
             return Err(InvalidAction::OutOfRange);
         }
@@ -66,6 +67,7 @@ impl GameState {
         self.increment_current_player_used();
         self.previous_pass = false;
 
+        // 파괴 판정 순서가 승패를 결정한다. 상대 그룹 파괴가 자살수 판정보다 우선한다.
         if self.has_destroyed_group(player.other().cell()) {
             return Ok(Some(
                 self.finish(GameEndReason::OpponentCastleDestroyed, player),
@@ -84,6 +86,7 @@ impl GameState {
 
     fn apply_pass(&mut self) -> Result<Option<GameOutcome>, InvalidAction> {
         if self.previous_pass {
+            // 두 번째 연속 패스에서만 영토 점수를 계산한다.
             let winner = self.score_winner_after_consecutive_passes();
             self.previous_pass = true;
             return Ok(Some(self.finish(GameEndReason::ConsecutivePasses, winner)));
@@ -111,6 +114,7 @@ impl GameState {
     pub(crate) fn has_destroyed_group(&self, cell: Cell) -> bool {
         let mut visited = [false; BOARD_CELLS];
 
+        // 성 파괴는 개별 성이 아니라 같은 색으로 연결된 그룹 단위로 판정한다.
         for index in 0..BOARD_CELLS {
             if visited[index] || self.board[index] != cell {
                 continue;
@@ -162,6 +166,7 @@ impl GameState {
     }
 
     fn group_has_liberty(&self, group: &[usize]) -> bool {
+        // 자유 공간은 상하좌우 인접 Empty뿐이다. 보드 밖, 대각선, 중립 성은 포함하지 않는다.
         group
             .iter()
             .flat_map(|index| neighbors(*index))
