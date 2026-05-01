@@ -523,25 +523,19 @@ impl MctsSelfPlayBatch {
             let parse_elapsed = parse_start.elapsed();
 
             let backup_start = Instant::now();
-            for (leaf, (policy, value)) in pending_leaves
-                .iter()
-                .zip(eval.policies.into_iter().zip(eval.values.into_iter()))
-            {
-                let search = &mut self.searches[leaf.game_index];
-                unreserve_path(&mut search.nodes, &leaf.path);
-                let child_index = search.expand_node_with_priors(&leaf.state, &policy);
-                if let Some((parent_index, edge_index)) = leaf.path.last().copied() {
-                    search.nodes[parent_index].edges[edge_index].child = Some(child_index);
-                }
-                backup_path_from_leaf_value(&mut search.nodes, &leaf.path, value);
-                completed[leaf.game_index] += 1;
-            }
+            let leaf_count = pending_leaves.len();
+            backup_pending_game_evaluations(
+                &mut self.searches,
+                &mut completed,
+                pending_leaves,
+                eval,
+            );
             let backup_elapsed = backup_start.elapsed();
             profile.wave(MctsWaveProfile {
                 wave,
                 active_games: active_indexes.len(),
                 selected_games,
-                leaves: pending_leaves.len(),
+                leaves: leaf_count,
                 select_elapsed,
                 flatten_elapsed,
                 request_elapsed,
@@ -717,25 +711,19 @@ impl MctsSelfPlayBatch {
             let parse_elapsed = parse_start.elapsed();
 
             let backup_start = Instant::now();
-            for (leaf, (policy, value)) in pending_leaves
-                .iter()
-                .zip(eval.policies.into_iter().zip(eval.values.into_iter()))
-            {
-                let search = &mut self.searches[leaf.game_index];
-                unreserve_path(&mut search.nodes, &leaf.path);
-                let child_index = search.expand_node_with_priors(&leaf.state, &policy);
-                if let Some((parent_index, edge_index)) = leaf.path.last().copied() {
-                    search.nodes[parent_index].edges[edge_index].child = Some(child_index);
-                }
-                backup_path_from_leaf_value(&mut search.nodes, &leaf.path, value);
-                completed[leaf.game_index] += 1;
-            }
+            let leaf_count = pending_leaves.len();
+            backup_pending_game_evaluations(
+                &mut self.searches,
+                &mut completed,
+                pending_leaves,
+                eval,
+            );
             let backup_elapsed = backup_start.elapsed();
             profile.wave(MctsWaveProfile {
                 wave,
                 active_games: active_indexes.len(),
                 selected_games,
-                leaves: pending_leaves.len(),
+                leaves: leaf_count,
                 select_elapsed,
                 flatten_elapsed,
                 request_elapsed,
@@ -1182,6 +1170,13 @@ struct PendingGameLeaf {
     state: GameState,
 }
 
+struct PendingGameEvaluation {
+    path: Vec<(usize, usize)>,
+    state: GameState,
+    policy: [f32; ACTION_SPACE],
+    value: f32,
+}
+
 #[derive(Clone, Debug)]
 enum PendingSimulation {
     NeedsEvaluation {
@@ -1374,6 +1369,44 @@ fn backup_path_from_last_edge(nodes: &mut [Node], path: &[(usize, usize)], last_
         nodes[node_index].edges[edge_index].update(value);
         value = -value;
     }
+}
+
+fn backup_pending_game_evaluations(
+    searches: &mut [MctsSearch],
+    completed: &mut [u32],
+    pending_leaves: Vec<PendingGameLeaf>,
+    eval: EvalBatch,
+) {
+    let mut by_game = (0..searches.len()).map(|_| Vec::new()).collect::<Vec<_>>();
+    for (leaf, (policy, value)) in pending_leaves
+        .into_iter()
+        .zip(eval.policies.into_iter().zip(eval.values.into_iter()))
+    {
+        by_game[leaf.game_index].push(PendingGameEvaluation {
+            path: leaf.path,
+            state: leaf.state,
+            policy,
+            value,
+        });
+    }
+
+    searches
+        .par_iter_mut()
+        .zip(completed.par_iter_mut())
+        .zip(by_game.into_par_iter())
+        .for_each(|((search, comp), evaluations)| {
+            let completed_count = evaluations.len() as u32;
+            for evaluation in evaluations {
+                unreserve_path(&mut search.nodes, &evaluation.path);
+                let child_index =
+                    search.expand_node_with_priors(&evaluation.state, &evaluation.policy);
+                if let Some((parent_index, edge_index)) = evaluation.path.last().copied() {
+                    search.nodes[parent_index].edges[edge_index].child = Some(child_index);
+                }
+                backup_path_from_leaf_value(&mut search.nodes, &evaluation.path, evaluation.value);
+            }
+            *comp += completed_count;
+        });
 }
 
 #[derive(Clone, Copy)]
