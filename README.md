@@ -94,13 +94,16 @@ Python 3.13과 Rust 1.85 이상을 기준으로 합니다.
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install -e '.[dev]'
+source .venv/bin/activate
+python -m pip install -e '.[dev]'
 cd rust/great_kingdom_core
-../../.venv/bin/python -m maturin develop
+python -m maturin develop
 cargo test
 cd ../..
-.venv/bin/python -m pytest
+python -m pytest
 ```
+
+`great-kingdom-play`, `great-kingdom-random-self-play` 같은 venv 명령은 `pip install -e '.[dev]'`가 만든 console script입니다. `pyproject.toml`의 `[project.scripts]`가 바뀐 뒤 명령을 찾지 못하면 venv를 활성화한 상태에서 `python -m pip install -e '.[dev]'`를 다시 실행하세요.
 
 Rust 포맷터와 린터는 Ubuntu/Debian 기준으로 다음 패키지가 필요합니다.
 
