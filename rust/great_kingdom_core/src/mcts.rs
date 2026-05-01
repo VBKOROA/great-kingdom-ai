@@ -124,6 +124,31 @@ impl MctsSearch {
         self.run(state)
     }
 
+    pub fn search_with_priors(
+        &mut self,
+        state: &GameState,
+        priors: Vec<f32>,
+    ) -> PyResult<MctsResult> {
+        if priors.len() != ACTION_SPACE {
+            return Err(PyValueError::new_err(format!(
+                "expected {ACTION_SPACE} priors, got {}",
+                priors.len()
+            )));
+        }
+        if priors
+            .iter()
+            .any(|prior| !prior.is_finite() || *prior < 0.0)
+        {
+            return Err(PyValueError::new_err(
+                "priors must be finite non-negative values",
+            ));
+        }
+
+        let mut prior_array = [0.0; ACTION_SPACE];
+        prior_array.copy_from_slice(&priors);
+        Ok(self.run_with_root_priors(state, &prior_array))
+    }
+
     pub fn root_eval_request(&self, state: &GameState) -> EvalRequest {
         EvalRequest::new(vec![state.clone()])
     }
@@ -141,7 +166,20 @@ impl MctsSearch {
     pub fn run(&mut self, state: &GameState) -> MctsResult {
         self.nodes.clear();
         let root_index = self.expand_node(state);
+        self.run_simulations_from_root(state, root_index)
+    }
 
+    pub fn run_with_root_priors(
+        &mut self,
+        state: &GameState,
+        priors: &[f32; ACTION_SPACE],
+    ) -> MctsResult {
+        self.nodes.clear();
+        let root_index = self.expand_node_with_priors(state, priors);
+        self.run_simulations_from_root(state, root_index)
+    }
+
+    fn run_simulations_from_root(&mut self, state: &GameState, root_index: usize) -> MctsResult {
         for _ in 0..self.config.simulations {
             let mut simulation_state = state.clone();
             self.simulate(root_index, &mut simulation_state);
@@ -192,6 +230,16 @@ impl MctsSearch {
     fn expand_node(&mut self, state: &GameState) -> usize {
         let node_index = self.nodes.len();
         self.nodes.push(Node::expanded_with_uniform_priors(state));
+        node_index
+    }
+
+    fn expand_node_with_priors(
+        &mut self,
+        state: &GameState,
+        priors: &[f32; ACTION_SPACE],
+    ) -> usize {
+        let node_index = self.nodes.len();
+        self.nodes.push(Node::expanded_with_priors(state, priors));
         node_index
     }
 
@@ -265,6 +313,38 @@ impl Node {
             .into_iter()
             .filter_map(Action::from_index)
             .map(|action| EdgeStats::new(action, prior))
+            .collect();
+
+        Self {
+            to_play: state.current_player_value(),
+            visit_count: 0,
+            edges,
+        }
+    }
+
+    fn expanded_with_priors(state: &GameState, priors: &[f32; ACTION_SPACE]) -> Self {
+        let legal_actions = state.legal_action_indexes();
+        let legal_prior_sum = legal_actions
+            .iter()
+            .map(|action| priors[*action])
+            .sum::<f32>();
+        let fallback_prior = if legal_actions.is_empty() {
+            0.0
+        } else {
+            1.0 / legal_actions.len() as f32
+        };
+        let edges = legal_actions
+            .into_iter()
+            .filter_map(Action::from_index)
+            .map(|action| {
+                let action_index = action.to_index();
+                let prior = if legal_prior_sum > 0.0 {
+                    priors[action_index] / legal_prior_sum
+                } else {
+                    fallback_prior
+                };
+                EdgeStats::new(action, prior)
+            })
             .collect();
 
         Self {
@@ -367,6 +447,50 @@ mod tests {
     }
 
     #[test]
+    fn node_expands_model_priors_only_for_legal_actions() {
+        let state = GameState::new();
+        let mut priors = [0.0; ACTION_SPACE];
+        priors[crate::game::CENTER_INDEX] = 100.0;
+        priors[0] = 2.0;
+        priors[PASS_ACTION] = 1.0;
+
+        let node = Node::expanded_with_priors(&state, &priors);
+
+        assert!(
+            !node
+                .edges
+                .iter()
+                .any(|edge| edge.action.to_index() == crate::game::CENTER_INDEX)
+        );
+        let action_zero = node
+            .edges
+            .iter()
+            .find(|edge| edge.action.to_index() == 0)
+            .unwrap();
+        let pass = node
+            .edges
+            .iter()
+            .find(|edge| edge.action == Action::Pass)
+            .unwrap();
+        assert!((action_zero.prior - (2.0 / 3.0)).abs() < f32::EPSILON);
+        assert!((pass.prior - (1.0 / 3.0)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn node_expands_zero_model_priors_with_uniform_legal_fallback() {
+        let state = GameState::new();
+        let priors = [0.0; ACTION_SPACE];
+
+        let node = Node::expanded_with_priors(&state, &priors);
+
+        assert!(
+            node.edges
+                .iter()
+                .all(|edge| { (edge.prior - (1.0 / BOARD_CELLS as f32)).abs() < f32::EPSILON })
+        );
+    }
+
+    #[test]
     fn puct_selection_reflects_prior_and_visit_count() {
         let config = MctsConfig::new(1, 2.0);
         let search = MctsSearch::new(config);
@@ -407,6 +531,24 @@ mod tests {
         assert!(legal_actions.contains(&result.selected_action.unwrap()));
         assert_eq!(result.visit_counts.iter().sum::<u32>(), 8);
         assert_eq!(result.visit_counts[crate::game::CENTER_INDEX], 0);
+    }
+
+    #[test]
+    fn mcts_search_with_priors_masks_illegal_root_actions() {
+        let state = GameState::new();
+        let mut priors = vec![0.0; ACTION_SPACE];
+        priors[crate::game::CENTER_INDEX] = 100.0;
+        priors[0] = 1.0;
+        let mut search = MctsSearch::new(MctsConfig::new(4, 1.5));
+
+        let result = search.search_with_priors(&state, priors).unwrap();
+
+        assert_eq!(result.visit_counts[crate::game::CENTER_INDEX], 0);
+        assert!(
+            state
+                .legal_action_indexes()
+                .contains(&result.selected_action.unwrap())
+        );
     }
 
     #[test]
