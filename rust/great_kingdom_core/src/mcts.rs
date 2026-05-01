@@ -1,3 +1,5 @@
+use pyo3::{exceptions::PyValueError, prelude::*};
+
 use crate::game::{ACTION_SPACE, Action, GameOutcome, GameState, Player};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -25,16 +27,60 @@ impl MctsConfig {
     }
 }
 
+#[pyclass]
 #[derive(Clone, Debug, PartialEq)]
 pub struct MctsResult {
     pub selected_action: Option<usize>,
     pub visit_counts: [u32; ACTION_SPACE],
 }
 
+#[pymethods]
+impl MctsResult {
+    #[must_use]
+    pub fn selected_action(&self) -> Option<usize> {
+        self.selected_action
+    }
+
+    #[must_use]
+    pub fn visit_counts(&self) -> Vec<u32> {
+        self.visit_counts.to_vec()
+    }
+}
+
+#[pyclass]
 #[derive(Clone, Debug)]
 pub struct MctsSearch {
     config: MctsConfig,
     nodes: Vec<Node>,
+}
+
+#[pymethods]
+impl MctsSearch {
+    #[new]
+    #[pyo3(signature = (simulations = 50, c_puct = 1.5))]
+    pub fn py_new(simulations: u32, c_puct: f32) -> PyResult<Self> {
+        if !c_puct.is_finite() || c_puct < 0.0 {
+            return Err(PyValueError::new_err(
+                "c_puct must be a finite non-negative value",
+            ));
+        }
+
+        Ok(Self::new(MctsConfig::new(simulations, c_puct)))
+    }
+
+    #[must_use]
+    pub fn simulations(&self) -> u32 {
+        self.config.simulations
+    }
+
+    #[must_use]
+    pub fn c_puct(&self) -> f32 {
+        self.config.c_puct
+    }
+
+    pub fn search(&mut self, state: &GameState) -> MctsResult {
+        self.run(state)
+    }
 }
 
 impl MctsSearch {
