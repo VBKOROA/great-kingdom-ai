@@ -28,10 +28,11 @@
 | M3 | Python 바인딩 연결 | PyO3 API, Python import | Python에서 `GameState` 조작 가능 |
 | M4 | 랜덤 self-play 검증 | 랜덤 플레이어, 게임 로그 | 수천 판 smoke test에서 panic 없음 |
 | M5 | Rust MCTS 1차 구현 | PUCT, uniform prior, value 0 | MCTS가 합법 수만 선택 |
-| M6 | PyTorch 모델 연결 | 작은 policy-value network | batch inference smoke test 통과 |
+| M6 | PyTorch 모델 연결 | 작은 CNN policy-value network | batch inference smoke test 통과 |
 | M7 | self-play 데이터 파이프라인 | replay buffer, target 저장 | 한 판의 학습 샘플 저장과 로드 가능 |
 | M8 | 학습 루프 구현 | train script, checkpoint | 작은 batch로 loss가 계산되고 저장됨 |
 | M9 | 평가와 모델 교체 | arena 평가, best model 관리 | 후보 모델과 best model 비교 가능 |
+| M10 | 후속 효율화와 실험 | batch leaf eval, Playout Cap Randomization, 지표 분석 | 기본 루프 이후 성능 실험 가능 |
 
 ## 3. 단계별 계획
 
@@ -114,13 +115,16 @@ Python API는 테스트하기 쉬운 작은 메서드 중심으로 시작한다.
 | --- | --- | --- |
 | feature plane 생성 API 노출 | `rust/great_kingdom_core/src/` | shape와 값 범위 테스트 |
 | feature tensor 변환 | `python/great_kingdom_ai/` | `[batch, channels, 9, 9]` 확인 |
-| 작은 policy-value network | `python/great_kingdom_ai/model.py` | forward shape 테스트 |
+| 작은 CNN policy-value network | `python/great_kingdom_ai/model.py` | policy 82개와 value scalar shape 테스트 |
+| spatial policy head 구현 | `python/great_kingdom_ai/model.py` | 81개 위치 logit과 pass logit 분리 확인 |
+| global average pooling value head 구현 | `python/great_kingdom_ai/model.py` | 9x9 flatten 없이 value scalar 출력 |
+| 현재 플레이어 관점 정규화 | `rust/great_kingdom_core/src/`, `python/great_kingdom_ai/` | 색상과 차례가 바뀌어도 내 성/상대 성 채널 일관 |
 | legal mask API 노출 | `rust/great_kingdom_core/src/` | 82차원 mask와 `legal_actions()` 일치 |
 | Rust eval request 구조 | `rust/great_kingdom_core/src/` | leaf state batch 반환 |
 | Python batch inference 연결 | `python/great_kingdom_ai/` | policy 82개, value scalar 반환 |
 | Rust MCTS prior masking | `rust/great_kingdom_core/src/` | 불법 수 prior가 탐색 후보에서 제외 |
 
-모델은 로컬 smoke test가 가능한 작은 CNN으로 시작한다. 학습 처리량 최적화는 Runpod RTX 4090 24GB 환경에서 학습 루프가 닫힌 뒤 별도 작업으로 둔다.
+모델은 로컬 smoke test가 가능한 작은 CNN으로 시작한다. 초기 구조는 `alphazero-lite.md` 기준으로 작은 CNN backbone, spatial policy head, global average pooling value head를 사용한다. policy head의 global context 결합은 기본 파이프라인이 안정된 뒤 실험 옵션으로 둔다. 학습 처리량 최적화는 Runpod RTX 4090 24GB 환경에서 학습 루프가 닫힌 뒤 별도 작업으로 둔다.
 
 ### M7. self-play 데이터 파이프라인
 
@@ -128,6 +132,8 @@ Python API는 테스트하기 쉬운 작은 메서드 중심으로 시작한다.
 | --- | --- | --- |
 | 방문 횟수 기반 policy target 저장 | `python/great_kingdom_ai/` | 합이 1인 82차원 target |
 | value target 계산 | `python/great_kingdom_ai/` | 현재 플레이어 관점 부호 확인 |
+| MCTS 방문 횟수 기반 착수 선택 | `python/great_kingdom_ai/` | 초반 sampling, 후반 argmax 선택 확인 |
+| self-play root 탐험 노이즈 | `python/great_kingdom_ai/` 또는 MCTS config | self-play에서만 적용되고 평가에서는 비활성 |
 | replay buffer 구현 | `python/great_kingdom_ai/replay_buffer.py` | push, sample, save, load 테스트 |
 | 대칭 증강 구현 | `python/great_kingdom_ai/` | 보드와 policy index가 함께 변환 |
 | self-play artifact 저장 | `data/` 또는 설정 경로 | 재시작 후 로드 가능 |
@@ -138,7 +144,7 @@ Python API는 테스트하기 쉬운 작은 메서드 중심으로 시작한다.
 
 | 작업 | 위치 | 검증 |
 | --- | --- | --- |
-| loss 함수 구현 | `python/great_kingdom_ai/train.py` | policy loss와 value loss 계산 |
+| loss 함수 구현 | `python/great_kingdom_ai/train.py` | policy loss, value loss, 정규화 loss 계산 |
 | optimizer와 scheduler 설정 | `python/great_kingdom_ai/train.py` | 1 step 업데이트 성공 |
 | checkpoint 저장 | `python/great_kingdom_ai/` | 모델과 optimizer 상태 저장 |
 | checkpoint 로드 | `python/great_kingdom_ai/` | 로드 후 같은 입력에 같은 출력 |
@@ -151,12 +157,25 @@ Python API는 테스트하기 쉬운 작은 메서드 중심으로 시작한다.
 | 작업 | 위치 | 검증 |
 | --- | --- | --- |
 | arena match runner | `python/great_kingdom_ai/evaluate.py` | 두 모델 대국 실행 |
+| 선후공 균등 평가 | `python/great_kingdom_ai/evaluate.py` | candidate와 best가 선공/후공을 나눠 가짐 |
+| 평가 temperature와 noise 분리 | `python/great_kingdom_ai/evaluate.py` | 평가에서는 deterministic 선택과 root noise off |
 | best model 관리 | `checkpoints/` 또는 설정 경로 | best와 candidate 구분 |
-| 승률 리포트 | `python/great_kingdom_ai/` | seed, 판 수, 승률 기록 |
+| 승률과 품질 지표 리포트 | `python/great_kingdom_ai/` | seed, 판 수, 선후공 승률, 평균 게임 길이 기록 |
 | 모델 교체 조건 | `python/great_kingdom_ai/` | 기준 승률 이상이면 best 갱신 |
 | 회귀 평가 | `tests/` 또는 script | 작은 판 수로 평가 루프 smoke test |
 
 로컬에서는 평가 판 수를 작게 유지하고, 긴 학습과 대량 평가는 Runpod 학습 환경으로 넘긴다.
+
+### M10. 후속 효율화와 실험
+
+| 작업 | 위치 | 검증 |
+| --- | --- | --- |
+| Playout Cap Randomization 옵션 | `python/great_kingdom_ai/` | full search 턴만 학습 샘플로 저장 |
+| leaf batch inference 최적화 | `python/great_kingdom_ai/`, `rust/great_kingdom_core/src/` | 여러 self-play 게임의 leaf state를 batch로 평가 |
+| Runpod 학습 preset | 설정 파일 또는 script | RTX 4090 24GB에서 batch, worker, simulation 수 조정 가능 |
+| 실험 지표 확장 | `python/great_kingdom_ai/` | 랜덤 AI 대비 승률, 시뮬레이션 수별 승률, 포획/패스 종료 비율 기록 |
+
+이 단계는 1차 완료 기준에 포함하지 않는다. M5부터 M9까지의 기본 루프가 테스트로 고정된 뒤, 학습 품질과 처리량을 개선하기 위한 실험 단계로 둔다.
 
 ## 4. 권장 작업 순서
 
@@ -168,6 +187,7 @@ Python API는 테스트하기 쉬운 작은 메서드 중심으로 시작한다.
 6. self-play 데이터 저장과 replay buffer를 만든다.
 7. 학습 루프와 checkpoint를 연결한다.
 8. 평가 루프와 best model 교체를 붙인다.
+9. 기본 루프가 안정되면 Playout Cap Randomization과 batch leaf eval 같은 효율화를 실험한다.
 
 ## 5. 테스트 계획
 
@@ -180,6 +200,7 @@ Python API는 테스트하기 쉬운 작은 메서드 중심으로 시작한다.
 | self-play | smoke test | 무한 루프와 crash 방지 |
 | 학습 루프 | smoke test | 작은 batch로 forward, backward, save 확인 |
 | 평가 루프 | smoke test | 모델 비교가 끝까지 실행되는지 확인 |
+| 효율화 옵션 | 실험 테스트 | Playout Cap Randomization과 batch leaf eval이 기본 루프 의미를 바꾸지 않는지 확인 |
 
 테스트는 빠른 기본 세트와 느린 실험 세트를 분리한다. 기본 세트는 노트북에서 자주 실행할 수 있어야 한다.
 
@@ -201,4 +222,4 @@ Python API는 테스트하기 쉬운 작은 메서드 중심으로 시작한다.
 4. self-play 데이터로 작은 PyTorch 모델을 학습할 수 있다.
 5. candidate model과 best model의 평가 및 교체 루프가 동작한다.
 
-이 기준을 만족하면 이후 작업은 성능 최적화, 학습 품질 개선, 더 큰 모델 실험, UI 또는 분석 도구 추가로 분리해서 진행한다.
+이 기준을 만족하면 이후 작업은 M10의 성능 최적화, 학습 품질 개선, 더 큰 모델 실험, UI 또는 분석 도구 추가로 분리해서 진행한다.
