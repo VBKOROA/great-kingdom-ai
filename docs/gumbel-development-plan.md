@@ -783,7 +783,7 @@ debug 출력은 root와 내부 node별로 다음 값을 포함한다.
 5. virtual reservation 또는 equivalent pending guard로 같은 wave 안 중복 leaf 평가를 방지한다.
 6. evaluator logits/value로 child node expand → uniform fallback 제거
 
-### Phase 6. Improved policy target
+### ~~Phase 6. Improved policy target~~
 
 1. 논문식 completed Q transform 구현.
 2. root improved logits 계산.

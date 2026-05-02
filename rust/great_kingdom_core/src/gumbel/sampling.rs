@@ -51,6 +51,7 @@ pub(crate) fn sample_root_candidates(
     scored
 }
 
+#[cfg(test)]
 pub(crate) fn softmax_candidates(candidates: &[RootCandidate]) -> [f32; ACTION_SPACE] {
     let mut policy = [0.0; ACTION_SPACE];
     if candidates.is_empty() {

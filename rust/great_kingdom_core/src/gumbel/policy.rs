@@ -4,7 +4,18 @@ use pyo3::{PyResult, exceptions::PyValueError};
 
 use crate::game::ACTION_SPACE;
 
+use super::{
+    node::GumbelNode,
+    selection::{completed_q_values, prior_probabilities, transformed_completed_q},
+};
+
 pub(crate) const PRIOR_EPSILON: f32 = 1.0e-8;
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RootImprovedPolicy {
+    pub(crate) selected_action: Option<usize>,
+    pub(crate) policy_target: [f32; ACTION_SPACE],
+}
 
 pub(crate) fn log_priors_from_logits(
     legal_actions: &[usize],
@@ -72,6 +83,69 @@ pub(crate) fn log_priors_from_priors(
     Ok(log_priors)
 }
 
+#[must_use]
+pub(crate) fn root_improved_policy_target(
+    root: &GumbelNode,
+    c_visit: f32,
+    c_scale: f32,
+) -> RootImprovedPolicy {
+    let mut policy_target = [0.0; ACTION_SPACE];
+    if root.edges.is_empty() {
+        return RootImprovedPolicy {
+            selected_action: None,
+            policy_target,
+        };
+    }
+
+    let edge_stats = root
+        .edges
+        .iter()
+        .map(|edge| edge.inner_stats())
+        .collect::<Vec<_>>();
+    let prior_probs = prior_probabilities(&edge_stats);
+    let completed_q = completed_q_values(&edge_stats, &prior_probs, root.node_value);
+    let q_bonus = transformed_completed_q(&edge_stats, &completed_q, c_visit, c_scale);
+    let improved_logits = root
+        .edges
+        .iter()
+        .zip(q_bonus)
+        .map(|(edge, bonus)| {
+            let action = edge.action_index();
+            let logit = edge.gumbel.unwrap_or(0.0) + edge.log_prior + bonus;
+            (action, logit)
+        })
+        .collect::<Vec<_>>();
+
+    let selected_action = improved_logits
+        .iter()
+        .max_by(|(left_action, left_logit), (right_action, right_logit)| {
+            left_logit
+                .total_cmp(right_logit)
+                .then_with(|| right_action.cmp(left_action))
+        })
+        .map(|(action, _)| *action);
+
+    let max_logit = improved_logits
+        .iter()
+        .map(|(_, logit)| *logit)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let sum_exp = improved_logits
+        .iter()
+        .map(|(_, logit)| (*logit - max_logit).exp())
+        .sum::<f32>();
+
+    if sum_exp.is_finite() && sum_exp > 0.0 {
+        for (action, logit) in improved_logits {
+            policy_target[action] = (logit - max_logit).exp() / sum_exp;
+        }
+    }
+
+    RootImprovedPolicy {
+        selected_action,
+        policy_target,
+    }
+}
+
 fn validate_policy_len(row: &[f32], name: &str) -> PyResult<()> {
     if row.len() != ACTION_SPACE {
         return Err(PyValueError::new_err(format!(
@@ -93,8 +167,14 @@ fn validate_legal_values(legal_actions: &[usize], row: &[f32], name: &str) -> Py
 
 #[cfg(test)]
 mod tests {
-    use super::{log_priors_from_logits, log_priors_from_priors};
-    use crate::game::{ACTION_SPACE, CENTER_INDEX};
+    use super::{log_priors_from_logits, log_priors_from_priors, root_improved_policy_target};
+    use crate::{
+        game::{ACTION_SPACE, CENTER_INDEX, GameState},
+        gumbel::{
+            node::GumbelNode,
+            sampling::{RootCandidate, softmax_candidates},
+        },
+    };
     use pretty_assertions::assert_eq;
 
     fn assert_close(left: f32, right: f32) {
@@ -152,5 +232,36 @@ mod tests {
         assert_eq!(log_priors[0], expected);
         assert_eq!(log_priors[2], expected);
         assert_eq!(log_priors[4], expected);
+    }
+
+    #[test]
+    fn root_improved_policy_uses_completed_q_not_visit_count_normalization() {
+        let candidates = [
+            RootCandidate {
+                action: 0,
+                log_prior: 0.5_f32.ln(),
+                gumbel: 0.0,
+                score: 0.5_f32.ln(),
+            },
+            RootCandidate {
+                action: 1,
+                log_prior: 0.5_f32.ln(),
+                gumbel: 0.0,
+                score: 0.5_f32.ln(),
+            },
+        ];
+        let mut root = GumbelNode::root_from_candidates(&GameState::new(), &candidates);
+        root.edges[0].visit_count = 10;
+        root.edges[0].value_sum = -10.0;
+        root.edges[1].visit_count = 1;
+        root.edges[1].value_sum = 1.0;
+
+        let improved = root_improved_policy_target(&root, 1.0, 1.0);
+        let prior_only = softmax_candidates(&candidates);
+
+        assert_eq!(improved.selected_action, Some(1));
+        assert!(improved.policy_target[1] > improved.policy_target[0]);
+        assert!(improved.policy_target[1] > prior_only[1]);
+        assert_close(improved.policy_target.iter().sum::<f32>(), 1.0);
     }
 }

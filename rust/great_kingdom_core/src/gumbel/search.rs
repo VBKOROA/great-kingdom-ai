@@ -3,9 +3,9 @@ use pyo3::{buffer::PyBuffer, exceptions::PyValueError, prelude::*};
 use super::{
     config::GumbelConfig,
     node::GumbelNode,
-    policy::{log_priors_from_logits, log_priors_from_priors},
+    policy::{log_priors_from_logits, log_priors_from_priors, root_improved_policy_target},
     result::GumbelResult,
-    sampling::{RootCandidate, sample_root_candidates, softmax_candidates},
+    sampling::{RootCandidate, sample_root_candidates},
     selection::select_inner_action,
     sequential_halving::RootSequentialHalving,
 };
@@ -343,18 +343,15 @@ impl GumbelSearch {
             scheduler.record_visit(root_action);
         }
 
-        let selected_action = candidates
-            .iter()
-            .max_by(|left, right| {
-                left.score
-                    .total_cmp(&right.score)
-                    .then_with(|| right.action.cmp(&left.action))
-            })
-            .map(|candidate| candidate.action);
+        let improved = root_improved_policy_target(
+            &self.nodes[root_index],
+            self.config.c_visit,
+            self.config.c_scale,
+        );
 
         GumbelResult {
-            selected_action,
-            policy_target: softmax_candidates(candidates),
+            selected_action: improved.selected_action,
+            policy_target: improved.policy_target,
             visit_counts: self.nodes[root_index].visit_counts(),
         }
     }
@@ -458,18 +455,15 @@ impl GumbelSearch {
             }
         }
 
-        let selected_action = candidates
-            .iter()
-            .max_by(|left, right| {
-                left.score
-                    .total_cmp(&right.score)
-                    .then_with(|| right.action.cmp(&left.action))
-            })
-            .map(|candidate| candidate.action);
+        let improved = root_improved_policy_target(
+            &self.nodes[root_index],
+            self.config.c_visit,
+            self.config.c_scale,
+        );
 
         Ok(GumbelResult {
-            selected_action,
-            policy_target: softmax_candidates(candidates),
+            selected_action: improved.selected_action,
+            policy_target: improved.policy_target,
             visit_counts: self.nodes[root_index].visit_counts(),
         })
     }

@@ -106,7 +106,7 @@ pub(crate) fn select_by_visit_ratio(policy: &[InnerPolicyEntry]) -> Option<usize
         .map(|entry| entry.action)
 }
 
-fn prior_probabilities(edges: &[InnerEdgeStats]) -> Vec<f32> {
+pub(crate) fn prior_probabilities(edges: &[InnerEdgeStats]) -> Vec<f32> {
     let max_log_prior = edges
         .iter()
         .map(|edge| edge.log_prior)
@@ -122,7 +122,7 @@ fn prior_probabilities(edges: &[InnerEdgeStats]) -> Vec<f32> {
         .collect()
 }
 
-fn completed_q_values(
+pub(crate) fn completed_q_values(
     edges: &[InnerEdgeStats],
     prior_probs: &[f32],
     node_raw_value: f32,
@@ -155,7 +155,7 @@ fn completed_q_values(
         .collect()
 }
 
-fn transformed_completed_q(
+pub(crate) fn transformed_completed_q(
     edges: &[InnerEdgeStats],
     completed_q: &[f32],
     c_visit: f32,
