@@ -222,9 +222,17 @@ impl GumbelSelfPlayBatch {
 impl GumbelSelfPlayBatch {
     #[must_use]
     pub fn new(game_count: usize, config: GumbelConfig) -> Self {
+        let searches = (0..game_count)
+            .map(|index| {
+                let mut game_config = config;
+                game_config.seed = config.seed.wrapping_add(index as u64);
+                GumbelSearch::new(game_config)
+            })
+            .collect();
+
         Self {
             states: vec![GameState::new(); game_count],
-            searches: vec![GumbelSearch::new(config); game_count],
+            searches,
         }
     }
 
@@ -674,4 +682,22 @@ fn env_flag(name: &str) -> bool {
         env::var(name).as_deref(),
         Err(_) | Ok("") | Ok("0") | Ok("false") | Ok("False") | Ok("no") | Ok("No")
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GumbelSelfPlayBatch;
+    use crate::gumbel::config::GumbelConfig;
+
+    #[test]
+    fn new_offsets_search_seed_per_game() {
+        let mut batch = GumbelSelfPlayBatch::new(3, GumbelConfig::new(4, 2, 50.0, 1.0, 7));
+
+        assert_eq!(batch.searches[0].seed(), 7);
+        assert_eq!(batch.searches[1].seed(), 8);
+        assert_eq!(batch.searches[2].seed(), 9);
+        assert_eq!(batch.searches[0].next_root_seed(), 7);
+        assert_eq!(batch.searches[1].next_root_seed(), 8);
+        assert_eq!(batch.searches[2].next_root_seed(), 9);
+    }
 }

@@ -836,10 +836,10 @@ fn parse_gumbel_policy_row(row: Vec<f32>, row_index: usize) -> PyResult<[f32; AC
 
 #[cfg(test)]
 mod tests {
-    use super::{GumbelEvalBatch, GumbelSearch};
+    use super::{GumbelEvalBatch, GumbelSearch, backup_path};
     use crate::{
         game::{ACTION_SPACE, CENTER_INDEX, Cell, GameState, Player, state_with_board},
-        gumbel::config::GumbelConfig,
+        gumbel::{config::GumbelConfig, node::GumbelNode},
     };
 
     fn index(row: usize, col: usize) -> usize {
@@ -893,6 +893,23 @@ mod tests {
         assert_eq!(result.selected_action, Some(winning_action));
         assert_eq!(result.visit_counts[winning_action], 4);
         assert_eq!(search.nodes[0].edges[0].mean_q(), Some(1.0));
+    }
+
+    #[test]
+    fn leaf_backup_flips_value_sign_at_each_depth() {
+        let state = GameState::new();
+        let mut nodes = vec![
+            GumbelNode::from_uniform_log_priors(&state, 0.0),
+            GumbelNode::from_uniform_log_priors(&state, 0.0),
+            GumbelNode::from_uniform_log_priors(&state, 0.0),
+        ];
+        let path = [(0, 0), (1, 0), (2, 0)];
+
+        backup_path(&mut nodes, &path, 0.75, true);
+
+        assert_eq!(nodes[2].edges[0].mean_q(), Some(-0.75));
+        assert_eq!(nodes[1].edges[0].mean_q(), Some(0.75));
+        assert_eq!(nodes[0].edges[0].mean_q(), Some(-0.75));
     }
 
     #[test]
