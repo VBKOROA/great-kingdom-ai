@@ -3,7 +3,10 @@ use pyo3::{buffer::PyBuffer, exceptions::PyValueError, prelude::*};
 use super::{
     config::GumbelConfig,
     node::GumbelNode,
-    policy::{log_priors_from_logits, log_priors_from_priors, root_improved_policy_target},
+    policy::{
+        log_priors_from_logits, log_priors_from_priors, root_improved_logits,
+        root_improved_policy_target,
+    },
     result::GumbelResult,
     sampling::{RootCandidate, sample_root_candidates},
     selection::select_inner_action,
@@ -19,6 +22,7 @@ use crate::{
 pub struct GumbelSearch {
     pub(crate) config: GumbelConfig,
     pub(crate) nodes: Vec<GumbelNode>,
+    root_search_count: u64,
 }
 
 #[pymethods]
@@ -78,6 +82,7 @@ impl GumbelSearch {
 
     pub fn set_seed(&mut self, seed: u64) {
         self.config.seed = seed;
+        self.root_search_count = 0;
     }
 
     pub fn search_with_logits(
@@ -137,7 +142,14 @@ impl GumbelSearch {
         Self {
             config,
             nodes: Vec::new(),
+            root_search_count: 0,
         }
+    }
+
+    pub(crate) fn next_root_seed(&mut self) -> u64 {
+        let seed = self.config.seed.wrapping_add(self.root_search_count);
+        self.root_search_count = self.root_search_count.wrapping_add(1);
+        seed
     }
 
     #[must_use]
@@ -225,7 +237,7 @@ impl GumbelSearch {
             log_priors,
             self.config.max_considered_actions,
             self.config.simulations,
-            self.config.seed,
+            self.next_root_seed(),
         );
         self.run_tree_search(state, &candidates)
     }
@@ -255,7 +267,7 @@ impl GumbelSearch {
             log_priors,
             self.config.max_considered_actions,
             self.config.simulations,
-            self.config.seed,
+            self.next_root_seed(),
         );
         self.run_tree_search_with_evaluator(
             state,
@@ -322,10 +334,12 @@ impl GumbelSearch {
         );
 
         for _ in 0..self.config.simulations {
-            let Some(root_action) = scheduler
-                .next_action()
-                .or_else(|| self.best_root_action(root_index))
-            else {
+            let Some(root_action) = scheduler.next_action().or_else(|| {
+                scheduler
+                    .is_finished()
+                    .then(|| self.best_root_action(root_index))
+                    .flatten()
+            }) else {
                 break;
             };
             let mut simulation_state = state.clone();
@@ -340,7 +354,12 @@ impl GumbelSearch {
                 path_value.value,
                 path_value.is_leaf,
             );
-            scheduler.record_visit(root_action);
+            scheduler.reserve_visit(root_action);
+            scheduler.complete_reserved_visits(&root_ranking_scores(
+                &self.nodes[root_index],
+                self.config.c_visit,
+                self.config.c_scale,
+            ));
         }
 
         let improved = root_improved_policy_target(
@@ -398,10 +417,12 @@ impl GumbelSearch {
                 if completed + pending.len() as u32 >= self.config.simulations {
                     break;
                 }
-                let Some(root_action) = scheduler
-                    .next_action()
-                    .or_else(|| self.best_available_root_action(root_index))
-                else {
+                let Some(root_action) = scheduler.next_action().or_else(|| {
+                    scheduler
+                        .is_finished()
+                        .then(|| self.best_available_root_action(root_index))
+                        .flatten()
+                }) else {
                     break;
                 };
                 let mut simulation_state = state.clone();
@@ -411,7 +432,7 @@ impl GumbelSearch {
                         state: leaf_state,
                     } => {
                         reserve_path(&mut self.nodes, &path);
-                        scheduler.record_visit(root_action);
+                        scheduler.reserve_visit(root_action);
                         pending.push(PendingGumbelLeaf {
                             path,
                             state: leaf_state,
@@ -419,7 +440,12 @@ impl GumbelSearch {
                     }
                     PendingGumbelSimulation::Terminal { path, value } => {
                         backup_path(&mut self.nodes, &path, value, false);
-                        scheduler.record_visit(root_action);
+                        scheduler.reserve_visit(root_action);
+                        scheduler.complete_reserved_visits(&root_ranking_scores(
+                            &self.nodes[root_index],
+                            self.config.c_visit,
+                            self.config.c_scale,
+                        ));
                         completed += 1;
                     }
                     PendingGumbelSimulation::BlockedPending => break,
@@ -451,6 +477,11 @@ impl GumbelSearch {
                     self.nodes[parent_index].edges[edge_index].child = Some(child_index);
                 }
                 backup_path(&mut self.nodes, &leaf.path, value, true);
+                scheduler.complete_reserved_visits(&root_ranking_scores(
+                    &self.nodes[root_index],
+                    self.config.c_visit,
+                    self.config.c_scale,
+                ));
                 completed += 1;
             }
         }
@@ -684,6 +715,14 @@ fn select_inner_action_index(node: &GumbelNode, c_visit: f32, c_scale: f32) -> O
     select_inner_action(&edges, node.node_value, c_visit, c_scale)
 }
 
+pub(crate) fn root_ranking_scores(
+    root: &GumbelNode,
+    c_visit: f32,
+    c_scale: f32,
+) -> Vec<(usize, f32)> {
+    root_improved_logits(root, c_visit, c_scale)
+}
+
 pub(crate) fn backup_path(
     nodes: &mut [GumbelNode],
     path: &[(usize, usize)],
@@ -808,6 +847,20 @@ mod tests {
 
     fn index(row: usize, col: usize) -> usize {
         row * 9 + col
+    }
+
+    #[test]
+    fn root_seed_advances_per_search_and_resets_when_seed_is_set() {
+        let mut search = GumbelSearch::new(GumbelConfig::new(4, 2, 50.0, 1.0, 7));
+
+        assert_eq!(search.seed(), 7);
+        assert_eq!(search.next_root_seed(), 7);
+        assert_eq!(search.next_root_seed(), 8);
+
+        search.set_seed(42);
+
+        assert_eq!(search.seed(), 42);
+        assert_eq!(search.next_root_seed(), 42);
     }
 
     #[test]

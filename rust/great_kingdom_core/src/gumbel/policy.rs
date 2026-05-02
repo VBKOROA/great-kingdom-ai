@@ -97,24 +97,7 @@ pub(crate) fn root_improved_policy_target(
         };
     }
 
-    let edge_stats = root
-        .edges
-        .iter()
-        .map(|edge| edge.inner_stats())
-        .collect::<Vec<_>>();
-    let prior_probs = prior_probabilities(&edge_stats);
-    let completed_q = completed_q_values(&edge_stats, &prior_probs, root.node_value);
-    let q_bonus = transformed_completed_q(&edge_stats, &completed_q, c_visit, c_scale);
-    let improved_logits = root
-        .edges
-        .iter()
-        .zip(q_bonus)
-        .map(|(edge, bonus)| {
-            let action = edge.action_index();
-            let logit = edge.gumbel.unwrap_or(0.0) + edge.log_prior + bonus;
-            (action, logit)
-        })
-        .collect::<Vec<_>>();
+    let improved_logits = root_improved_logits(root, c_visit, c_scale);
 
     let selected_action = improved_logits
         .iter()
@@ -144,6 +127,31 @@ pub(crate) fn root_improved_policy_target(
         selected_action,
         policy_target,
     }
+}
+
+#[must_use]
+pub(crate) fn root_improved_logits(
+    root: &GumbelNode,
+    c_visit: f32,
+    c_scale: f32,
+) -> Vec<(usize, f32)> {
+    let edge_stats = root
+        .edges
+        .iter()
+        .map(|edge| edge.inner_stats())
+        .collect::<Vec<_>>();
+    let prior_probs = prior_probabilities(&edge_stats);
+    let completed_q = completed_q_values(&edge_stats, &prior_probs, root.node_value);
+    let q_bonus = transformed_completed_q(&edge_stats, &completed_q, c_visit, c_scale);
+    root.edges
+        .iter()
+        .zip(q_bonus)
+        .map(|(edge, bonus)| {
+            let action = edge.action_index();
+            let logit = edge.gumbel.unwrap_or(0.0) + edge.log_prior + bonus;
+            (action, logit)
+        })
+        .collect()
 }
 
 fn validate_policy_len(row: &[f32], name: &str) -> PyResult<()> {

@@ -10,7 +10,7 @@ use super::{
     sampling::sample_root_candidates,
     search::{
         GumbelSearch, PendingGumbelSimulation, backup_path, parse_gumbel_eval_response,
-        reserve_path, unreserve_path,
+        reserve_path, root_ranking_scores, unreserve_path,
     },
     sequential_halving::RootSequentialHalving,
 };
@@ -308,7 +308,7 @@ impl GumbelSelfPlayBatch {
                 &log_priors,
                 search.config.max_considered_actions,
                 search.config.simulations,
-                search.config.seed,
+                search.next_root_seed(),
             );
             if candidates.is_empty() {
                 continue;
@@ -362,10 +362,12 @@ impl GumbelSelfPlayBatch {
                             if *comp + local_pending.len() as u32 >= search.config.simulations {
                                 break;
                             }
-                            let Some(root_action) = scheduler
-                                .next_action()
-                                .or_else(|| search.best_available_root_action(root_index))
-                            else {
+                            let Some(root_action) = scheduler.next_action().or_else(|| {
+                                scheduler
+                                    .is_finished()
+                                    .then(|| search.best_available_root_action(root_index))
+                                    .flatten()
+                            }) else {
                                 break;
                             };
                             let mut simulation_state = state.clone();
@@ -379,7 +381,7 @@ impl GumbelSelfPlayBatch {
                                     state: leaf_state,
                                 } => {
                                     reserve_path(&mut search.nodes, &path);
-                                    scheduler.record_visit(root_action);
+                                    scheduler.reserve_visit(root_action);
                                     local_pending.push(PendingBatchLeaf {
                                         game_index,
                                         path,
@@ -388,7 +390,12 @@ impl GumbelSelfPlayBatch {
                                 }
                                 PendingGumbelSimulation::Terminal { path, value } => {
                                     backup_path(&mut search.nodes, &path, value, false);
-                                    scheduler.record_visit(root_action);
+                                    scheduler.reserve_visit(root_action);
+                                    scheduler.complete_reserved_visits(&root_ranking_scores(
+                                        &search.nodes[root_index],
+                                        search.config.c_visit,
+                                        search.config.c_scale,
+                                    ));
                                     *comp += 1;
                                 }
                                 PendingGumbelSimulation::BlockedPending => break,
@@ -440,8 +447,10 @@ impl GumbelSelfPlayBatch {
             self.searches
                 .par_iter_mut()
                 .zip(completed.par_iter_mut())
+                .zip(root_indexes.par_iter())
+                .zip(schedulers.par_iter_mut())
                 .zip(by_game.into_par_iter())
-                .try_for_each(|((search, comp), evaluations)| -> Result<(), String> {
+                .try_for_each(|((((search, comp), root_index), scheduler), evaluations)| {
                     let completed_count = evaluations.len() as u32;
                     for evaluation in evaluations {
                         unreserve_path(&mut search.nodes, &evaluation.path);
@@ -458,8 +467,21 @@ impl GumbelSelfPlayBatch {
                         }
                         backup_path(&mut search.nodes, &evaluation.path, evaluation.value, true);
                     }
+                    if completed_count > 0 {
+                        let root_index = root_index.ok_or_else(|| {
+                            "missing Gumbel root index for completed evaluations".to_string()
+                        })?;
+                        let scheduler = scheduler.as_mut().ok_or_else(|| {
+                            "missing Gumbel scheduler for completed evaluations".to_string()
+                        })?;
+                        scheduler.complete_reserved_visits(&root_ranking_scores(
+                            &search.nodes[root_index],
+                            search.config.c_visit,
+                            search.config.c_scale,
+                        ));
+                    }
                     *comp += completed_count;
-                    Ok(())
+                    Ok::<(), String>(())
                 })
                 .map_err(|err| {
                     PyValueError::new_err(format!("failed to expand Gumbel evaluation: {err}"))

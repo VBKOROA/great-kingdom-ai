@@ -42,7 +42,6 @@ impl RootSequentialHalving {
     }
 
     #[must_use]
-    #[cfg(test)]
     pub(crate) fn is_finished(&self) -> bool {
         self.finished
     }
@@ -90,6 +89,11 @@ impl RootSequentialHalving {
     }
 
     pub(crate) fn record_visit(&mut self, action: usize) {
+        self.reserve_visit(action);
+        self.advance_if_round_complete();
+    }
+
+    pub(crate) fn reserve_visit(&mut self, action: usize) {
         if let Some(candidate) = self
             .active
             .iter_mut()
@@ -97,7 +101,22 @@ impl RootSequentialHalving {
         {
             candidate.completed_visits = candidate.completed_visits.saturating_add(1);
         }
+    }
+
+    pub(crate) fn complete_reserved_visits(&mut self, ranking_scores: &[(usize, f32)]) {
+        self.update_ranking_scores(ranking_scores);
         self.advance_if_round_complete();
+    }
+
+    fn update_ranking_scores(&mut self, ranking_scores: &[(usize, f32)]) {
+        for candidate in &mut self.active {
+            if let Some((_, score)) = ranking_scores
+                .iter()
+                .find(|(action, _)| *action == candidate.action)
+            {
+                candidate.ranking_score = *score;
+            }
+        }
     }
 
     fn advance_if_round_complete(&mut self) {
@@ -204,6 +223,20 @@ mod tests {
         }
 
         assert_eq!(scheduler.active_actions(), vec![4, 1, 2]);
+    }
+
+    #[test]
+    fn completed_round_uses_latest_ranking_scores() {
+        let mut scheduler =
+            RootSequentialHalving::new(vec![(0, 3.0), (1, 2.0), (2, 1.0), (3, 0.0)], 8);
+
+        while scheduler.round_index() == 0 {
+            let action = scheduler.next_action().unwrap();
+            scheduler.reserve_visit(action);
+            scheduler.complete_reserved_visits(&[(0, 0.0), (1, 1.0), (2, 2.0), (3, 3.0)]);
+        }
+
+        assert_eq!(scheduler.active_actions(), vec![3, 2]);
     }
 
     #[test]
