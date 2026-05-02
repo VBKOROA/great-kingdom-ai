@@ -752,7 +752,7 @@ debug 출력은 root와 내부 node별로 다음 값을 포함한다.
 4. PyO3 export를 추가한다.
 5. 기본 constructor/config validation 테스트를 추가한다.
 
-### Phase 2. Root sampling and scheduler
+### ~~Phase 2. Root sampling and scheduler~~
 
 1. legal action stable log-softmax from raw logits.
 2. deterministic root Gumbel sampling.

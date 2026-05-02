@@ -1,6 +1,12 @@
 use pyo3::{exceptions::PyValueError, prelude::*};
 
-use super::{config::GumbelConfig, result::GumbelResult};
+use super::{
+    config::GumbelConfig,
+    policy::{log_priors_from_logits, log_priors_from_priors},
+    result::GumbelResult,
+    sampling::{RootCandidate, sample_root_candidates, softmax_candidates},
+    sequential_halving::RootSequentialHalving,
+};
 use crate::game::{ACTION_SPACE, GameState};
 
 #[pyclass]
@@ -73,8 +79,7 @@ impl GumbelSearch {
         state: &GameState,
         policy_logits: Vec<f32>,
     ) -> PyResult<GumbelResult> {
-        validate_policy_row(&policy_logits, "policy_logits")?;
-        Ok(self.skeleton_result(state, Some(&policy_logits)))
+        self.result_from_logits(state, &policy_logits)
     }
 
     #[pyo3(signature = (state, policy_logits, evaluator, leaf_batch_size = 16))]
@@ -97,8 +102,7 @@ impl GumbelSearch {
         state: &GameState,
         priors: Vec<f32>,
     ) -> PyResult<GumbelResult> {
-        validate_priors(&priors)?;
-        Ok(self.skeleton_result(state, Some(&priors)))
+        self.result_from_priors(state, &priors)
     }
 
     #[pyo3(signature = (state, priors, evaluator, leaf_batch_size = 16))]
@@ -121,6 +125,100 @@ impl GumbelSearch {
     #[must_use]
     pub const fn new(config: GumbelConfig) -> Self {
         Self { config }
+    }
+
+    #[must_use]
+    pub(crate) fn result_from_logits(
+        &self,
+        state: &GameState,
+        logits: &[f32],
+    ) -> PyResult<GumbelResult> {
+        let legal_actions = state.legal_action_indexes();
+        let log_priors = log_priors_from_logits(&legal_actions, logits)?;
+        Ok(self.result_from_log_priors(state, &legal_actions, &log_priors))
+    }
+
+    pub(crate) fn result_from_priors(
+        &self,
+        state: &GameState,
+        priors: &[f32],
+    ) -> PyResult<GumbelResult> {
+        let legal_actions = state.legal_action_indexes();
+        let log_priors = log_priors_from_priors(&legal_actions, priors)?;
+        Ok(self.result_from_log_priors(state, &legal_actions, &log_priors))
+    }
+
+    #[must_use]
+    pub(crate) fn result_from_log_priors(
+        &self,
+        state: &GameState,
+        legal_actions: &[usize],
+        log_priors: &[f32; ACTION_SPACE],
+    ) -> GumbelResult {
+        if legal_actions.is_empty() || state.is_terminal() {
+            return GumbelResult {
+                selected_action: None,
+                policy_target: [0.0; ACTION_SPACE],
+                visit_counts: [0; ACTION_SPACE],
+            };
+        }
+
+        let candidates = sample_root_candidates(
+            legal_actions,
+            log_priors,
+            self.config.max_considered_actions,
+            self.config.simulations,
+            self.config.seed,
+        );
+        self.result_from_candidates(&candidates)
+    }
+
+    #[must_use]
+    pub(crate) fn result_from_candidates(&self, candidates: &[RootCandidate]) -> GumbelResult {
+        if candidates.is_empty() {
+            return GumbelResult {
+                selected_action: None,
+                policy_target: [0.0; ACTION_SPACE],
+                visit_counts: [0; ACTION_SPACE],
+            };
+        }
+
+        let selected_action = candidates
+            .iter()
+            .max_by(|left, right| {
+                left.score
+                    .total_cmp(&right.score)
+                    .then_with(|| right.action.cmp(&left.action))
+            })
+            .map(|candidate| candidate.action);
+
+        let mut scheduler = RootSequentialHalving::new(
+            candidates
+                .iter()
+                .map(|candidate| (candidate.action, candidate.score))
+                .collect(),
+            self.config.simulations,
+        );
+        for _ in 0..self.config.simulations {
+            let Some(action) = scheduler.next_action() else {
+                break;
+            };
+            scheduler.record_visit(action);
+            if scheduler.is_finished() {
+                break;
+            }
+        }
+
+        let mut visit_counts = [0; ACTION_SPACE];
+        for (action, visits) in scheduler.completed_visits() {
+            visit_counts[action] = visits;
+        }
+
+        GumbelResult {
+            selected_action,
+            policy_target: softmax_candidates(candidates),
+            visit_counts,
+        }
     }
 
     #[must_use]
@@ -155,29 +253,4 @@ impl GumbelSearch {
             visit_counts: [0; ACTION_SPACE],
         }
     }
-}
-
-fn validate_policy_row(row: &[f32], name: &str) -> PyResult<()> {
-    if row.len() != ACTION_SPACE {
-        return Err(PyValueError::new_err(format!(
-            "expected {ACTION_SPACE} {name} values, got {}",
-            row.len()
-        )));
-    }
-    if row.iter().any(|value| !value.is_finite()) {
-        return Err(PyValueError::new_err(format!(
-            "{name} values must be finite"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_priors(priors: &[f32]) -> PyResult<()> {
-    validate_policy_row(priors, "prior")?;
-    if priors.iter().any(|value| *value < 0.0) {
-        return Err(PyValueError::new_err(
-            "prior values must be finite non-negative values",
-        ));
-    }
-    Ok(())
 }
