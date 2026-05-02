@@ -1850,6 +1850,146 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "debug helper for inspecting root stats in a consecutive-pass loss position"]
+    fn debug_consecutive_pass_loss_root_stats() {
+        let mut state = GameState::new();
+        state.apply(Action::from_index(15).unwrap()).unwrap();
+        state.apply(Action::Pass).unwrap();
+        assert_eq!(state.current_player_value(), Player::Blue);
+
+        for (label, pass_prior) in [("uniform", 1.0_f32), ("pass10", 10.0), ("pass100", 100.0)] {
+            let mut priors = [1.0_f32; ACTION_SPACE];
+            priors[crate::game::CENTER_INDEX] = 0.0;
+            priors[PASS_ACTION] = pass_prior;
+            let mut search = MctsSearch::new(MctsConfig::new(200, 1.5));
+
+            let result = search.run_with_root_priors(&state, &priors);
+            let root = &search.nodes[0];
+            let mut rows = root
+                .edges
+                .iter()
+                .map(|edge| {
+                    (
+                        edge.action.to_index(),
+                        edge.prior,
+                        edge.visit_count,
+                        edge.value_sum,
+                        edge.mean_value(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            rows.sort_by(|left, right| {
+                right
+                    .2
+                    .cmp(&left.2)
+                    .then_with(|| {
+                        right
+                            .4
+                            .partial_cmp(&left.4)
+                            .expect("mean value must be finite")
+                    })
+                    .then_with(|| left.0.cmp(&right.0))
+            });
+            let pass = rows
+                .iter()
+                .find(|(action, _, _, _, _)| *action == PASS_ACTION)
+                .copied()
+                .unwrap();
+            println!(
+                "\n[{label}] selected={:?} pass_prior_input={pass_prior} root_visits={}",
+                result.selected_action, root.visit_count
+            );
+            println!(
+                "pass: action={} prior={:.6} visits={} value_sum={:.3} mean={:.3}",
+                pass.0, pass.1, pass.2, pass.3, pass.4
+            );
+            println!("top root edges:");
+            for (rank, (action, prior, visits, value_sum, mean)) in rows.iter().take(12).enumerate() {
+                println!(
+                    "#{:02} action={:02} prior={:.6} visits={:03} value_sum={:.3} mean={:.3}",
+                    rank + 1,
+                    action,
+                    prior,
+                    visits,
+                    value_sum,
+                    mean
+                );
+            }
+        }
+
+        for (label, pass_prior) in [
+            ("eval0_uniform", 1.0_f32),
+            ("eval0_pass10", 10.0),
+            ("eval0_pass100", 100.0),
+        ] {
+            let mut priors = [1.0_f32; ACTION_SPACE];
+            priors[crate::game::CENTER_INDEX] = 0.0;
+            priors[PASS_ACTION] = pass_prior;
+            let mut search = MctsSearch::new(MctsConfig::new(200, 1.5));
+            let result = search
+                .run_with_root_priors_and_leaf_evaluator(&state, &priors, 16, |request| {
+                    let policy = [1.0_f32; ACTION_SPACE];
+                    Ok(EvalBatch::new(
+                        vec![policy; request.len()],
+                        vec![0.0; request.len()],
+                    ))
+                })
+                .unwrap();
+            let root = &search.nodes[0];
+            let mut rows = root
+                .edges
+                .iter()
+                .map(|edge| {
+                    (
+                        edge.action.to_index(),
+                        edge.prior,
+                        edge.visit_count,
+                        edge.value_sum,
+                        edge.mean_value(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            rows.sort_by(|left, right| {
+                right
+                    .2
+                    .cmp(&left.2)
+                    .then_with(|| {
+                        right
+                            .4
+                            .partial_cmp(&left.4)
+                            .expect("mean value must be finite")
+                    })
+                    .then_with(|| left.0.cmp(&right.0))
+            });
+            let pass = rows
+                .iter()
+                .find(|(action, _, _, _, _)| *action == PASS_ACTION)
+                .copied()
+                .unwrap();
+            println!(
+                "\n[{label}] selected={:?} pass_prior_input={pass_prior} root_visits={}",
+                result.selected_action, root.visit_count
+            );
+            println!(
+                "pass: action={} prior={:.6} visits={} value_sum={:.3} mean={:.3}",
+                pass.0, pass.1, pass.2, pass.3, pass.4
+            );
+            println!("top root edges:");
+            for (rank, (action, prior, visits, value_sum, mean)) in rows.iter().take(12).enumerate() {
+                println!(
+                    "#{:02} action={:02} prior={:.6} visits={:03} value_sum={:.3} mean={:.3}",
+                    rank + 1,
+                    action,
+                    prior,
+                    visits,
+                    value_sum,
+                    mean
+                );
+            }
+        }
+    }
+
+    #[test]
     fn terminal_win_is_backed_up_to_parent_edge() {
         let mut board = [crate::game::Cell::Empty; crate::game::BOARD_CELLS];
         board[crate::game::CENTER_INDEX] = crate::game::Cell::Neutral;
