@@ -774,7 +774,7 @@ debug 출력은 root와 내부 node별로 다음 값을 포함한다.
 4. terminal transition evaluation과 backup을 구현한다.
 5. depth > 1 traversal 테스트를 추가한다.
 
-### Phase 5. Batched leaf evaluator
+### ~~Phase 5. Batched leaf evaluator~~
 
 1. pending leaf request batching.
 2. existing `EvalRequest` 재사용.
