@@ -760,7 +760,7 @@ debug 출력은 root와 내부 node별로 다음 값을 포함한다.
 4. root sequential halving scheduler state 구현.
 5. candidate list와 root halving transition deterministic test.
 
-### Phase 3. Inner deterministic selection
+### ~~Phase 3. Inner deterministic selection~~
 
 1. 내부 node improved policy 계산 구현.
 2. `ImprovedPolicy(a) - VisitCount(a) / (1 + Sum(TotalVisits))` selection 구현.
