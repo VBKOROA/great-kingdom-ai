@@ -282,6 +282,8 @@ impl GumbelSelfPlayBatch {
         }
 
         let mut root_indexes = vec![None; self.states.len()];
+        let mut root_legal_actions = vec![None; self.states.len()];
+        let mut root_log_priors = vec![None; self.states.len()];
         let mut completed = vec![0_u32; self.states.len()];
         let mut schedulers = vec![None; self.states.len()];
 
@@ -320,6 +322,8 @@ impl GumbelSelfPlayBatch {
                 &candidates,
             ));
             root_indexes[game_index] = Some(root_index);
+            root_legal_actions[game_index] = Some(legal_actions);
+            root_log_priors[game_index] = Some(log_priors);
             schedulers[game_index] = Some(RootSequentialHalving::new(
                 candidates
                     .iter()
@@ -510,8 +514,16 @@ impl GumbelSelfPlayBatch {
                 continue;
             };
             let root = &self.searches[game_index].nodes[root_index];
+            let legal_actions = root_legal_actions[game_index]
+                .as_deref()
+                .ok_or_else(|| PyValueError::new_err("missing Gumbel root legal actions"))?;
+            let log_priors = root_log_priors[game_index]
+                .as_ref()
+                .ok_or_else(|| PyValueError::new_err("missing Gumbel root log priors"))?;
             let improved = root_improved_policy_target(
                 root,
+                legal_actions,
+                log_priors,
                 self.searches[game_index].config.c_visit,
                 self.searches[game_index].config.c_scale,
             );

@@ -86,20 +86,22 @@ pub(crate) fn log_priors_from_priors(
 #[must_use]
 pub(crate) fn root_improved_policy_target(
     root: &GumbelNode,
+    legal_actions: &[usize],
+    log_priors: &[f32; ACTION_SPACE],
     c_visit: f32,
     c_scale: f32,
 ) -> RootImprovedPolicy {
     let mut policy_target = [0.0; ACTION_SPACE];
-    if root.edges.is_empty() {
+    if legal_actions.is_empty() {
         return RootImprovedPolicy {
             selected_action: None,
             policy_target,
         };
     }
 
-    let improved_logits = root_improved_logits(root, c_visit, c_scale);
+    let action_logits = root_improved_action_logits(root, c_visit, c_scale);
 
-    let selected_action = improved_logits
+    let selected_action = action_logits
         .iter()
         .max_by(|(left_action, left_logit), (right_action, right_logit)| {
             left_logit
@@ -108,6 +110,8 @@ pub(crate) fn root_improved_policy_target(
         })
         .map(|(action, _)| *action);
 
+    let improved_logits =
+        root_policy_target_logits(root, legal_actions, log_priors, c_visit, c_scale);
     let max_logit = improved_logits
         .iter()
         .map(|(_, logit)| *logit)
@@ -130,7 +134,7 @@ pub(crate) fn root_improved_policy_target(
 }
 
 #[must_use]
-pub(crate) fn root_improved_logits(
+pub(crate) fn root_improved_action_logits(
     root: &GumbelNode,
     c_visit: f32,
     c_scale: f32,
@@ -151,6 +155,34 @@ pub(crate) fn root_improved_logits(
             let logit = edge.gumbel.unwrap_or(0.0) + edge.log_prior + bonus;
             (action, logit)
         })
+        .collect()
+}
+
+#[must_use]
+pub(crate) fn root_policy_target_logits(
+    root: &GumbelNode,
+    legal_actions: &[usize],
+    log_priors: &[f32; ACTION_SPACE],
+    c_visit: f32,
+    c_scale: f32,
+) -> Vec<(usize, f32)> {
+    let edge_stats = legal_actions
+        .iter()
+        .map(|action| {
+            root.edge_index_for_action(*action).map_or_else(
+                || super::selection::InnerEdgeStats::new(*action, log_priors[*action], 0, 0.0),
+                |edge_index| root.edges[edge_index].inner_stats(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let prior_probs = prior_probabilities(&edge_stats);
+    let completed_q = completed_q_values(&edge_stats, &prior_probs, root.node_value);
+    let q_bonus = transformed_completed_q(&edge_stats, &completed_q, c_visit, c_scale);
+
+    legal_actions
+        .iter()
+        .zip(q_bonus)
+        .map(|(action, bonus)| (*action, log_priors[*action] + bonus))
         .collect()
 }
 
@@ -264,12 +296,66 @@ mod tests {
         root.edges[1].visit_count = 1;
         root.edges[1].value_sum = 1.0;
 
-        let improved = root_improved_policy_target(&root, 1.0, 1.0);
+        let legal = [0, 1];
+        let mut log_priors = [f32::NEG_INFINITY; ACTION_SPACE];
+        log_priors[0] = 0.5_f32.ln();
+        log_priors[1] = 0.5_f32.ln();
+
+        let improved = root_improved_policy_target(&root, &legal, &log_priors, 1.0, 1.0);
         let prior_only = softmax_candidates(&candidates);
 
         assert_eq!(improved.selected_action, Some(1));
         assert!(improved.policy_target[1] > improved.policy_target[0]);
         assert!(improved.policy_target[1] > prior_only[1]);
+        assert_close(improved.policy_target.iter().sum::<f32>(), 1.0);
+    }
+
+    #[test]
+    fn root_policy_target_excludes_gumbel_noise() {
+        let candidates = [
+            RootCandidate {
+                action: 0,
+                log_prior: 0.5_f32.ln(),
+                gumbel: 100.0,
+                score: 100.0 + 0.5_f32.ln(),
+            },
+            RootCandidate {
+                action: 1,
+                log_prior: 0.5_f32.ln(),
+                gumbel: -100.0,
+                score: -100.0 + 0.5_f32.ln(),
+            },
+        ];
+        let root = GumbelNode::root_from_candidates(&GameState::new(), &candidates);
+        let legal = [0, 1];
+        let mut log_priors = [f32::NEG_INFINITY; ACTION_SPACE];
+        log_priors[0] = 0.5_f32.ln();
+        log_priors[1] = 0.5_f32.ln();
+
+        let improved = root_improved_policy_target(&root, &legal, &log_priors, 1.0, 1.0);
+
+        assert_eq!(improved.selected_action, Some(0));
+        assert_close(improved.policy_target[0], 0.5);
+        assert_close(improved.policy_target[1], 0.5);
+    }
+
+    #[test]
+    fn root_policy_target_keeps_unconsidered_legal_actions() {
+        let candidates = [RootCandidate {
+            action: 0,
+            log_prior: 0.5_f32.ln(),
+            gumbel: 0.0,
+            score: 0.5_f32.ln(),
+        }];
+        let root = GumbelNode::root_from_candidates(&GameState::new(), &candidates);
+        let legal = [0, 1];
+        let mut log_priors = [f32::NEG_INFINITY; ACTION_SPACE];
+        log_priors[0] = 0.5_f32.ln();
+        log_priors[1] = 0.5_f32.ln();
+
+        let improved = root_improved_policy_target(&root, &legal, &log_priors, 1.0, 1.0);
+
+        assert!(improved.policy_target[1] > 0.0);
         assert_close(improved.policy_target.iter().sum::<f32>(), 1.0);
     }
 }

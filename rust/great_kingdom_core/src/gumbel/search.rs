@@ -4,7 +4,7 @@ use super::{
     config::GumbelConfig,
     node::GumbelNode,
     policy::{
-        log_priors_from_logits, log_priors_from_priors, root_improved_logits,
+        log_priors_from_logits, log_priors_from_priors, root_improved_action_logits,
         root_improved_policy_target,
     },
     result::GumbelResult,
@@ -239,7 +239,7 @@ impl GumbelSearch {
             self.config.simulations,
             self.next_root_seed(),
         );
-        self.run_tree_search(state, &candidates)
+        self.run_tree_search(state, legal_actions, log_priors, &candidates)
     }
 
     fn result_from_log_priors_with_evaluator<F>(
@@ -271,6 +271,8 @@ impl GumbelSearch {
         );
         self.run_tree_search_with_evaluator(
             state,
+            legal_actions,
+            log_priors,
             &candidates,
             leaf_batch_size,
             evaluator,
@@ -311,7 +313,13 @@ impl GumbelSearch {
         }
     }
 
-    fn run_tree_search(&mut self, state: &GameState, candidates: &[RootCandidate]) -> GumbelResult {
+    fn run_tree_search(
+        &mut self,
+        state: &GameState,
+        legal_actions: &[usize],
+        log_priors: &[f32; ACTION_SPACE],
+        candidates: &[RootCandidate],
+    ) -> GumbelResult {
         if candidates.is_empty() {
             return GumbelResult {
                 selected_action: None,
@@ -364,6 +372,8 @@ impl GumbelSearch {
 
         let improved = root_improved_policy_target(
             &self.nodes[root_index],
+            legal_actions,
+            log_priors,
             self.config.c_visit,
             self.config.c_scale,
         );
@@ -378,6 +388,8 @@ impl GumbelSearch {
     fn run_tree_search_with_evaluator<F>(
         &mut self,
         state: &GameState,
+        legal_actions: &[usize],
+        log_priors: &[f32; ACTION_SPACE],
         candidates: &[RootCandidate],
         leaf_batch_size: usize,
         mut evaluator: F,
@@ -488,6 +500,8 @@ impl GumbelSearch {
 
         let improved = root_improved_policy_target(
             &self.nodes[root_index],
+            legal_actions,
+            log_priors,
             self.config.c_visit,
             self.config.c_scale,
         );
@@ -720,7 +734,7 @@ pub(crate) fn root_ranking_scores(
     c_visit: f32,
     c_scale: f32,
 ) -> Vec<(usize, f32)> {
-    root_improved_logits(root, c_visit, c_scale)
+    root_improved_action_logits(root, c_visit, c_scale)
 }
 
 pub(crate) fn backup_path(
