@@ -10,6 +10,8 @@ import pytest
 def test_gumbel_search_constructor_exposes_config() -> None:
     import great_kingdom_core as core  # type: ignore[import-untyped]
 
+    assert core.rayon_thread_count() >= 1
+
     search = core.GumbelSearch(
         simulations=32,
         max_considered_actions=8,

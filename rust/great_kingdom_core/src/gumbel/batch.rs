@@ -1,5 +1,6 @@
 use pyo3::{exceptions::PyValueError, prelude::*};
 use rayon::prelude::*;
+use std::{env, time::Instant};
 
 use super::{
     config::GumbelConfig,
@@ -266,6 +267,11 @@ impl GumbelSelfPlayBatch {
         evaluator: &Bound<'_, PyAny>,
         leaf_batch_size: usize,
     ) -> PyResult<Vec<Option<GumbelResult>>> {
+        let profile = GumbelBatchProfile::new(if logits {
+            "search_active_with_logits_and_evaluator"
+        } else {
+            "search_active_with_priors_and_evaluator"
+        });
         let active_indexes = self.active_indexes();
         if rows.len() != active_indexes.len() {
             return Err(PyValueError::new_err(format!(
@@ -279,6 +285,7 @@ impl GumbelSelfPlayBatch {
         let mut completed = vec![0_u32; self.states.len()];
         let mut schedulers = vec![None; self.states.len()];
 
+        let root_start = Instant::now();
         for (game_index, row) in active_indexes.iter().copied().zip(rows.into_iter()) {
             if row.len() != ACTION_SPACE {
                 return Err(PyValueError::new_err(format!(
@@ -321,12 +328,16 @@ impl GumbelSelfPlayBatch {
                 search.config.simulations,
             ));
         }
+        profile.root(active_indexes.len(), root_start.elapsed());
 
+        let mut wave = 0_u64;
         while active_indexes
             .iter()
             .any(|index| completed[*index] < self.searches[*index].config.simulations)
         {
             evaluator.py().check_signals()?;
+            wave += 1;
+            let select_start = Instant::now();
             let pending_by_game: Vec<Vec<_>> = self
                 .states
                 .par_iter()
@@ -387,20 +398,32 @@ impl GumbelSelfPlayBatch {
                     },
                 )
                 .collect();
+            let select_elapsed = select_start.elapsed();
+            let flatten_start = Instant::now();
             let pending = pending_by_game.into_iter().flatten().collect::<Vec<_>>();
+            let flatten_elapsed = flatten_start.elapsed();
             if pending.is_empty() {
+                profile.empty_wave(wave, active_indexes.len(), select_elapsed, flatten_elapsed);
                 continue;
             }
 
+            let request_start = Instant::now();
             let request_states = pending
                 .iter()
                 .map(|leaf| leaf.state.clone())
                 .collect::<Vec<_>>();
-            let response =
-                evaluator.call1((EvalRequest::new_with_precomputed_bytes(request_states),))?;
+            let request = EvalRequest::new_with_precomputed_bytes(request_states);
+            let request_elapsed = request_start.elapsed();
+            let eval_start = Instant::now();
+            let response = evaluator.call1((request,))?;
+            let eval_elapsed = eval_start.elapsed();
+            let parse_start = Instant::now();
             let eval = parse_gumbel_eval_response(&response)?;
             eval.validate_len(pending.len())?;
+            let parse_elapsed = parse_start.elapsed();
 
+            let backup_start = Instant::now();
+            let leaves = pending.len();
             for (leaf, (policy_row, value)) in pending
                 .into_iter()
                 .zip(eval.policies.into_iter().zip(eval.values.into_iter()))
@@ -415,6 +438,17 @@ impl GumbelSelfPlayBatch {
                 backup_path(&mut search.nodes, &leaf.path, value, true);
                 completed[leaf.game_index] += 1;
             }
+            profile.wave(GumbelBatchWaveProfile {
+                wave,
+                active_games: active_indexes.len(),
+                leaves,
+                select_elapsed,
+                flatten_elapsed,
+                request_elapsed,
+                eval_elapsed,
+                parse_elapsed,
+                backup_elapsed: backup_start.elapsed(),
+            });
         }
 
         let mut results = vec![None; self.states.len()];
@@ -448,4 +482,103 @@ struct PendingBatchLeaf {
     game_index: usize,
     path: Vec<(usize, usize)>,
     state: GameState,
+}
+
+#[derive(Clone, Copy)]
+struct GumbelBatchProfile {
+    enabled: bool,
+    interval: u64,
+    name: &'static str,
+}
+
+struct GumbelBatchWaveProfile {
+    wave: u64,
+    active_games: usize,
+    leaves: usize,
+    select_elapsed: std::time::Duration,
+    flatten_elapsed: std::time::Duration,
+    request_elapsed: std::time::Duration,
+    eval_elapsed: std::time::Duration,
+    parse_elapsed: std::time::Duration,
+    backup_elapsed: std::time::Duration,
+}
+
+impl GumbelBatchProfile {
+    fn new(name: &'static str) -> Self {
+        Self {
+            enabled: env_flag("GKA_GUMBEL_PROFILE"),
+            interval: env::var("GKA_GUMBEL_PROFILE_INTERVAL")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(1),
+            name,
+        }
+    }
+
+    fn root(&self, active_games: usize, elapsed: std::time::Duration) {
+        if !self.enabled {
+            return;
+        }
+        eprintln!(
+            "[gka-gumbel-profile] fn={} root active_games={} rayon_threads={} init={:.3}s",
+            self.name,
+            active_games,
+            rayon::current_num_threads(),
+            elapsed.as_secs_f64(),
+        );
+    }
+
+    fn empty_wave(
+        &self,
+        wave: u64,
+        active_games: usize,
+        select_elapsed: std::time::Duration,
+        flatten_elapsed: std::time::Duration,
+    ) {
+        if !self.enabled || wave % self.interval != 0 {
+            return;
+        }
+        eprintln!(
+            "[gka-gumbel-profile] fn={} wave={} empty active_games={} select={:.3}s flatten={:.3}s",
+            self.name,
+            wave,
+            active_games,
+            select_elapsed.as_secs_f64(),
+            flatten_elapsed.as_secs_f64(),
+        );
+    }
+
+    fn wave(&self, profile: GumbelBatchWaveProfile) {
+        if !self.enabled || profile.wave % self.interval != 0 {
+            return;
+        }
+        let total = profile.select_elapsed
+            + profile.flatten_elapsed
+            + profile.request_elapsed
+            + profile.eval_elapsed
+            + profile.parse_elapsed
+            + profile.backup_elapsed;
+        eprintln!(
+            "[gka-gumbel-profile] fn={} wave={} active_games={} leaves={} select={:.3}s flatten={:.3}s request={:.3}s eval_call={:.3}s parse={:.3}s backup={:.3}s total={:.3}s",
+            self.name,
+            profile.wave,
+            profile.active_games,
+            profile.leaves,
+            profile.select_elapsed.as_secs_f64(),
+            profile.flatten_elapsed.as_secs_f64(),
+            profile.request_elapsed.as_secs_f64(),
+            profile.eval_elapsed.as_secs_f64(),
+            profile.parse_elapsed.as_secs_f64(),
+            profile.backup_elapsed.as_secs_f64(),
+            total.as_secs_f64(),
+        );
+    }
+}
+
+fn env_flag(name: &str) -> bool {
+    !matches!(
+        env::var(name).as_deref(),
+        Err(_) | Ok("") | Ok("0") | Ok("false") | Ok("False") | Ok("no") | Ok("No")
+    )
 }

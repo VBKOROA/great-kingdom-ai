@@ -20,6 +20,12 @@ pub fn action_space() -> usize {
     ACTION_SPACE
 }
 
+#[pyfunction]
+#[must_use]
+pub fn rayon_thread_count() -> usize {
+    rayon::current_num_threads()
+}
+
 #[pymodule]
 fn great_kingdom_core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<GameState>()?;
@@ -32,6 +38,7 @@ fn great_kingdom_core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<MctsSearch>()?;
     module.add_class::<MctsSelfPlayBatch>()?;
     module.add_function(wrap_pyfunction!(action_space, module)?)?;
+    module.add_function(wrap_pyfunction!(rayon_thread_count, module)?)?;
     module.add("BOARD_SIZE", BOARD_SIZE)?;
     module.add("BOARD_CELLS", BOARD_CELLS)?;
     module.add("PASS_ACTION", PASS_ACTION)?;
