@@ -117,3 +117,40 @@ def test_gumbel_search_with_evaluator_batches_leaf_logits() -> None:
 
     assert max(request_lengths) > 1
     assert sum(result.visit_counts()) == 6
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("great_kingdom_core") is None,
+    reason="great_kingdom_core extension is not installed",
+)
+def test_gumbel_self_play_batch_batches_active_game_leaf_eval() -> None:
+    import great_kingdom_core as core  # type: ignore[import-untyped]
+
+    request_lengths: list[int] = []
+
+    def evaluator(request: object) -> tuple[list[list[float]], list[float]]:
+        request_len = request.len()  # type: ignore[attr-defined]
+        request_lengths.append(request_len)
+        rows = []
+        for _ in range(request_len):
+            logits = [-3.0] * core.action_space()
+            logits[0] = 4.0
+            rows.append(logits)
+        return rows, [0.0] * request_len
+
+    batch = core.GumbelSelfPlayBatch(
+        game_count=2,
+        simulations=4,
+        max_considered_actions=2,
+        seed=7,
+    )
+    root_logits = [[0.0] * core.action_space() for _ in range(2)]
+
+    results = batch.search_active_with_logits_and_evaluator(
+        root_logits,
+        evaluator,
+        leaf_batch_size=4,
+    )
+
+    assert max(request_lengths) >= 2
+    assert [sum(result.visit_counts()) for result in results if result is not None] == [4, 4]

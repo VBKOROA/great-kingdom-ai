@@ -1,6 +1,18 @@
 use pyo3::{exceptions::PyValueError, prelude::*};
+use rayon::prelude::*;
 
-use super::{config::GumbelConfig, result::GumbelResult, search::GumbelSearch};
+use super::{
+    config::GumbelConfig,
+    node::GumbelNode,
+    policy::{log_priors_from_logits, log_priors_from_priors, root_improved_policy_target},
+    result::GumbelResult,
+    sampling::sample_root_candidates,
+    search::{
+        GumbelSearch, PendingGumbelSimulation, backup_path, parse_gumbel_eval_response,
+        reserve_path, unreserve_path,
+    },
+    sequential_halving::RootSequentialHalving,
+};
 use crate::{
     game::{ACTION_SPACE, Action, GameState},
     mcts::EvalRequest,
@@ -62,7 +74,7 @@ impl GumbelSelfPlayBatch {
 
     #[must_use]
     pub fn active_eval_request(&self) -> EvalRequest {
-        EvalRequest::new(
+        EvalRequest::new_with_precomputed_bytes(
             self.active_indexes()
                 .into_iter()
                 .map(|index| self.states[index].clone())
@@ -263,31 +275,177 @@ impl GumbelSelfPlayBatch {
             )));
         }
 
-        let mut results = vec![None; self.states.len()];
-        for (game_index, row) in active_indexes.into_iter().zip(rows.into_iter()) {
+        let mut root_indexes = vec![None; self.states.len()];
+        let mut completed = vec![0_u32; self.states.len()];
+        let mut schedulers = vec![None; self.states.len()];
+
+        for (game_index, row) in active_indexes.iter().copied().zip(rows.into_iter()) {
             if row.len() != ACTION_SPACE {
                 return Err(PyValueError::new_err(format!(
                     "expected {ACTION_SPACE} policy values for game {game_index}, got {}",
                     row.len()
                 )));
             }
-            let result = if logits {
-                self.searches[game_index].search_with_logits_and_evaluator(
-                    &self.states[game_index],
-                    row,
-                    evaluator,
-                    leaf_batch_size,
-                )?
+            let legal_actions = self.states[game_index].legal_action_indexes();
+            if legal_actions.is_empty() || self.states[game_index].is_terminal() {
+                continue;
+            }
+            let log_priors = if logits {
+                log_priors_from_logits(&legal_actions, &row)?
             } else {
-                self.searches[game_index].search_with_priors_and_evaluator(
-                    &self.states[game_index],
-                    row,
-                    evaluator,
-                    leaf_batch_size,
-                )?
+                log_priors_from_priors(&legal_actions, &row)?
             };
-            results[game_index] = Some(result);
+            let search = &mut self.searches[game_index];
+            let candidates = sample_root_candidates(
+                &legal_actions,
+                &log_priors,
+                search.config.max_considered_actions,
+                search.config.simulations,
+                search.config.seed,
+            );
+            if candidates.is_empty() {
+                continue;
+            }
+            search.nodes.clear();
+            let root_index = search.nodes.len();
+            search.nodes.push(GumbelNode::root_from_candidates(
+                &self.states[game_index],
+                &candidates,
+            ));
+            root_indexes[game_index] = Some(root_index);
+            schedulers[game_index] = Some(RootSequentialHalving::new(
+                candidates
+                    .iter()
+                    .map(|candidate| (candidate.action, candidate.score))
+                    .collect(),
+                search.config.simulations,
+            ));
+        }
+
+        while active_indexes
+            .iter()
+            .any(|index| completed[*index] < self.searches[*index].config.simulations)
+        {
+            evaluator.py().check_signals()?;
+            let pending_by_game: Vec<Vec<_>> = self
+                .states
+                .par_iter()
+                .zip(self.searches.par_iter_mut())
+                .zip(completed.par_iter_mut())
+                .zip(root_indexes.par_iter())
+                .zip(schedulers.par_iter_mut())
+                .enumerate()
+                .map(
+                    |(game_index, ((((state, search), comp), root_index), scheduler))| {
+                        let Some(root_index) = *root_index else {
+                            return Vec::new();
+                        };
+                        let Some(scheduler) = scheduler.as_mut() else {
+                            return Vec::new();
+                        };
+                        let batch_target = (search.config.simulations - *comp)
+                            .min(leaf_batch_size as u32)
+                            as usize;
+                        let mut local_pending = Vec::with_capacity(batch_target);
+                        for _ in 0..batch_target {
+                            if *comp + local_pending.len() as u32 >= search.config.simulations {
+                                break;
+                            }
+                            let Some(root_action) = scheduler
+                                .next_action()
+                                .or_else(|| search.best_available_root_action(root_index))
+                            else {
+                                break;
+                            };
+                            let mut simulation_state = state.clone();
+                            match search.select_eval_leaf(
+                                root_index,
+                                root_action,
+                                &mut simulation_state,
+                            ) {
+                                PendingGumbelSimulation::NeedsEvaluation {
+                                    path,
+                                    state: leaf_state,
+                                } => {
+                                    reserve_path(&mut search.nodes, &path);
+                                    scheduler.record_visit(root_action);
+                                    local_pending.push(PendingBatchLeaf {
+                                        game_index,
+                                        path,
+                                        state: leaf_state,
+                                    });
+                                }
+                                PendingGumbelSimulation::Terminal { path, value } => {
+                                    backup_path(&mut search.nodes, &path, value, false);
+                                    scheduler.record_visit(root_action);
+                                    *comp += 1;
+                                }
+                                PendingGumbelSimulation::BlockedPending => break,
+                            }
+                        }
+                        local_pending
+                    },
+                )
+                .collect();
+            let pending = pending_by_game.into_iter().flatten().collect::<Vec<_>>();
+            if pending.is_empty() {
+                continue;
+            }
+
+            let request_states = pending
+                .iter()
+                .map(|leaf| leaf.state.clone())
+                .collect::<Vec<_>>();
+            let response =
+                evaluator.call1((EvalRequest::new_with_precomputed_bytes(request_states),))?;
+            let eval = parse_gumbel_eval_response(&response)?;
+            eval.validate_len(pending.len())?;
+
+            for (leaf, (policy_row, value)) in pending
+                .into_iter()
+                .zip(eval.policies.into_iter().zip(eval.values.into_iter()))
+            {
+                let search = &mut self.searches[leaf.game_index];
+                unreserve_path(&mut search.nodes, &leaf.path);
+                let child_index =
+                    search.expand_evaluated_node(&leaf.state, &policy_row, value, logits)?;
+                if let Some((parent_index, edge_index)) = leaf.path.last().copied() {
+                    search.nodes[parent_index].edges[edge_index].child = Some(child_index);
+                }
+                backup_path(&mut search.nodes, &leaf.path, value, true);
+                completed[leaf.game_index] += 1;
+            }
+        }
+
+        let mut results = vec![None; self.states.len()];
+        for game_index in active_indexes {
+            let Some(root_index) = root_indexes[game_index] else {
+                results[game_index] = Some(GumbelResult {
+                    selected_action: None,
+                    policy_target: [0.0; ACTION_SPACE],
+                    visit_counts: [0; ACTION_SPACE],
+                });
+                continue;
+            };
+            let root = &self.searches[game_index].nodes[root_index];
+            let improved = root_improved_policy_target(
+                root,
+                self.searches[game_index].config.c_visit,
+                self.searches[game_index].config.c_scale,
+            );
+            results[game_index] = Some(GumbelResult {
+                selected_action: improved.selected_action,
+                policy_target: improved.policy_target,
+                visit_counts: root.visit_counts(),
+            });
         }
         Ok(results)
     }
+}
+
+#[derive(Clone, Debug)]
+struct PendingBatchLeaf {
+    game_index: usize,
+    path: Vec<(usize, usize)>,
+    state: GameState,
 }

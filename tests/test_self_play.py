@@ -308,6 +308,27 @@ class FakeCoreBatch:
         assert len(values) == self.active_count()
         return self.search_active_with_priors(priors)
 
+    def search_active_with_logits(self, policy_logits: list[list[float]]):
+        assert len(policy_logits) == self.active_count()
+        policy = [0.0] * 82
+        policy[1] = 1.0
+        results = [None] * self._game_count
+        for index in self.active_game_indexes():
+            results[index] = FakeGumbelResult(1, policy)
+        return results
+
+    def search_active_with_logits_and_evaluator(
+        self,
+        policy_logits: list[list[float]],
+        evaluator,
+        leaf_batch_size: int = 8,
+    ):
+        self.leaf_batch_sizes.append(leaf_batch_size)
+        policies, values = evaluator(self.active_eval_request())
+        assert len(policies) == self.active_count()
+        assert len(values) == self.active_count()
+        return self.search_active_with_logits(policy_logits)
+
     def apply_actions(self, actions: list[int | None]) -> list[int | None]:
         self.applied_actions.extend(actions)
         for index, action in enumerate(actions):
@@ -534,7 +555,7 @@ def test_play_mcts_games_batched_uses_core_batch_when_available(monkeypatch) -> 
     fake_batch = FakeCoreBatch(game_count=2)
     batch_sizes: list[int] = []
 
-    monkeypatch.setattr(self_play_module, "_can_create_core_self_play_batch", lambda: True)
+    monkeypatch.setattr(self_play_module, "_can_create_core_self_play_batch", lambda *_args: True)
     monkeypatch.setattr(
         self_play_module,
         "create_core_mcts_self_play_batch",
@@ -571,7 +592,7 @@ def test_play_mcts_games_batched_passes_leaf_evaluator_to_core_batch(monkeypatch
     fake_batch = FakeCoreBatch(game_count=2)
     evaluator_batch_sizes: list[int] = []
 
-    monkeypatch.setattr(self_play_module, "_can_create_core_self_play_batch", lambda: True)
+    monkeypatch.setattr(self_play_module, "_can_create_core_self_play_batch", lambda *_args: True)
     monkeypatch.setattr(
         self_play_module,
         "create_core_mcts_self_play_batch",
@@ -611,7 +632,7 @@ def test_play_mcts_games_batched_can_use_core_request_fast_path(monkeypatch) -> 
     prior_batch_sizes: list[int] = []
     evaluator_batch_sizes: list[int] = []
 
-    monkeypatch.setattr(self_play_module, "_can_create_core_self_play_batch", lambda: True)
+    monkeypatch.setattr(self_play_module, "_can_create_core_self_play_batch", lambda *_args: True)
     monkeypatch.setattr(
         self_play_module,
         "create_core_mcts_self_play_batch",
@@ -650,6 +671,48 @@ def test_play_mcts_games_batched_can_use_core_request_fast_path(monkeypatch) -> 
     assert prior_batch_sizes == [2]
     assert evaluator_batch_sizes == [2]
     assert fake_batch.leaf_batch_sizes == [16]
+
+
+def test_play_mcts_games_batched_uses_gumbel_core_batch(monkeypatch) -> None:
+    fake_batch = FakeCoreBatch(game_count=2)
+    seen_backend: list[str] = []
+    root_batch_sizes: list[int] = []
+
+    def can_create(search_backend: str = "mcts") -> bool:
+        seen_backend.append(search_backend)
+        return search_backend == "gumbel"
+
+    monkeypatch.setattr(self_play_module, "_can_create_core_self_play_batch", can_create)
+    monkeypatch.setattr(
+        self_play_module,
+        "create_core_self_play_batch_backend",
+        lambda _config, **_kwargs: fake_batch,
+    )
+
+    def feature_batch_prior_provider(features, masks) -> list[list[float]]:
+        assert len(features) == len(masks)
+        root_batch_sizes.append(len(features))
+        logits = [-1.0] * 82
+        logits[1] = 5.0
+        return [logits for _features in features]
+
+    results = play_mcts_games_batched(
+        seeds=[51, 52],
+        search_factory=lambda: FakeGumbelSearch(1, [0.0] * 82),
+        config=MctsSelfPlayConfig(
+            search_backend="gumbel",
+            max_turns=5,
+            temperature_turns=10,
+            root_noise=True,
+        ),
+        feature_batch_prior_provider=feature_batch_prior_provider,
+    )
+
+    logs = [log for log, _samples in results]
+    assert seen_backend == ["gumbel"]
+    assert root_batch_sizes == [2]
+    assert fake_batch.applied_actions == [1, 1]
+    assert [log.moves[0].action for log in logs] == [1, 1]
 
 
 def test_play_mcts_game_applies_root_noise_only_when_enabled() -> None:

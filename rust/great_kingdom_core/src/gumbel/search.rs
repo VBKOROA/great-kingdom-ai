@@ -17,8 +17,8 @@ use crate::{
 #[pyclass]
 #[derive(Clone, Debug)]
 pub struct GumbelSearch {
-    config: GumbelConfig,
-    nodes: Vec<GumbelNode>,
+    pub(crate) config: GumbelConfig,
+    pub(crate) nodes: Vec<GumbelNode>,
 }
 
 #[pymethods]
@@ -472,7 +472,7 @@ impl GumbelSearch {
         self.best_root_action_matching(root_index, |_| true)
     }
 
-    fn best_available_root_action(&self, root_index: usize) -> Option<usize> {
+    pub(crate) fn best_available_root_action(&self, root_index: usize) -> Option<usize> {
         self.best_root_action_matching(root_index, |edge| {
             edge.child.is_some() || !edge.pending_evaluation
         })
@@ -497,7 +497,7 @@ impl GumbelSearch {
             .map(|edge| edge.action_index())
     }
 
-    fn expand_evaluated_node(
+    pub(crate) fn expand_evaluated_node(
         &mut self,
         state: &GameState,
         policy_row: &[f32; ACTION_SPACE],
@@ -566,7 +566,7 @@ impl GumbelSearch {
         }
     }
 
-    fn select_eval_leaf(
+    pub(crate) fn select_eval_leaf(
         &self,
         root_index: usize,
         root_action: usize,
@@ -644,7 +644,7 @@ impl GumbelEvalBatch {
         Self { policies, values }
     }
 
-    fn validate_len(&self, expected: usize) -> PyResult<()> {
+    pub(crate) fn validate_len(&self, expected: usize) -> PyResult<()> {
         if self.policies.len() != expected || self.values.len() != expected {
             return Err(PyValueError::new_err(format!(
                 "expected {expected} policy/value rows, got {}/{}",
@@ -663,7 +663,7 @@ struct PendingGumbelLeaf {
 }
 
 #[derive(Clone, Debug)]
-enum PendingGumbelSimulation {
+pub(crate) enum PendingGumbelSimulation {
     NeedsEvaluation {
         path: Vec<(usize, usize)>,
         state: GameState,
@@ -684,7 +684,12 @@ fn select_inner_action_index(node: &GumbelNode, c_visit: f32, c_scale: f32) -> O
     select_inner_action(&edges, node.node_value, c_visit, c_scale)
 }
 
-fn backup_path(nodes: &mut [GumbelNode], path: &[(usize, usize)], value: f32, is_leaf: bool) {
+pub(crate) fn backup_path(
+    nodes: &mut [GumbelNode],
+    path: &[(usize, usize)],
+    value: f32,
+    is_leaf: bool,
+) {
     let mut edge_value = value;
     for (node_index, edge_index) in path.iter().rev().copied() {
         if is_leaf {
@@ -698,13 +703,13 @@ fn backup_path(nodes: &mut [GumbelNode], path: &[(usize, usize)], value: f32, is
     }
 }
 
-fn reserve_path(nodes: &mut [GumbelNode], path: &[(usize, usize)]) {
+pub(crate) fn reserve_path(nodes: &mut [GumbelNode], path: &[(usize, usize)]) {
     if let Some((node_index, edge_index)) = path.last().copied() {
         nodes[node_index].edges[edge_index].pending_evaluation = true;
     }
 }
 
-fn unreserve_path(nodes: &mut [GumbelNode], path: &[(usize, usize)]) {
+pub(crate) fn unreserve_path(nodes: &mut [GumbelNode], path: &[(usize, usize)]) {
     if let Some((node_index, edge_index)) = path.last().copied() {
         nodes[node_index].edges[edge_index].pending_evaluation = false;
     }
@@ -714,7 +719,7 @@ fn value_for_player(outcome: GameOutcome, player: Player) -> f32 {
     if outcome.winner == player { 1.0 } else { -1.0 }
 }
 
-fn parse_gumbel_eval_response(response: &Bound<'_, PyAny>) -> PyResult<GumbelEvalBatch> {
+pub(crate) fn parse_gumbel_eval_response(response: &Bound<'_, PyAny>) -> PyResult<GumbelEvalBatch> {
     if let Ok((policy_obj, value_obj)) = response.extract::<(Bound<'_, PyAny>, Bound<'_, PyAny>)>()
     {
         if let Ok(eval) = parse_gumbel_eval_response_buffers(&policy_obj, &value_obj) {

@@ -388,7 +388,7 @@ def play_mcts_games_batched(
     if (
         state_factory is None
         and (prior_provider is not None or feature_batch_prior_provider is not None)
-        and _can_create_core_self_play_batch()
+        and _can_create_core_self_play_batch(config.search_backend)
     ):
         return _play_mcts_games_core_batched(
             seeds=seeds,
