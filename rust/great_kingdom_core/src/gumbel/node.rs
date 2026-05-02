@@ -12,6 +12,7 @@ pub(crate) struct GumbelEdge {
     pub(crate) visit_count: u32,
     pub(crate) value_sum: f32,
     pub(crate) child: Option<usize>,
+    pub(crate) pending_evaluation: bool,
 }
 
 impl GumbelEdge {
@@ -24,6 +25,7 @@ impl GumbelEdge {
             visit_count: 0,
             value_sum: 0.0,
             child: None,
+            pending_evaluation: false,
         }
     }
 
@@ -33,6 +35,7 @@ impl GumbelEdge {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn mean_q(&self) -> Option<f32> {
         (self.visit_count > 0).then_some(self.value_sum / self.visit_count as f32)
     }

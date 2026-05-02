@@ -157,7 +157,10 @@ mod tests {
 
         let blue_state = state_with_board(board, Player::Blue);
         let blue_planes = blue_state.feature_planes_array();
-        assert_eq!(value(&blue_planes, FeatureChannel::CurrentPlayerIsBlue, 2), 1.0);
+        assert_eq!(
+            value(&blue_planes, FeatureChannel::CurrentPlayerIsBlue, 2),
+            1.0
+        );
     }
 
     #[test]

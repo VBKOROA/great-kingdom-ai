@@ -42,6 +42,7 @@ impl RootSequentialHalving {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn is_finished(&self) -> bool {
         self.finished
     }

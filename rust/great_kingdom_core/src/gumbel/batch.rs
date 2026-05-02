@@ -112,11 +112,10 @@ impl GumbelSelfPlayBatch {
         evaluator: &Bound<'_, PyAny>,
         leaf_batch_size: usize,
     ) -> PyResult<Vec<Option<GumbelResult>>> {
-        let _ = evaluator;
         if leaf_batch_size == 0 {
             return Err(PyValueError::new_err("leaf_batch_size must be positive"));
         }
-        self.search_active_with_logits(policy_logits)
+        self.search_active_with_evaluator(policy_logits, true, evaluator, leaf_batch_size)
     }
 
     pub fn search_active_with_priors(
@@ -133,11 +132,10 @@ impl GumbelSelfPlayBatch {
         evaluator: &Bound<'_, PyAny>,
         leaf_batch_size: usize,
     ) -> PyResult<Vec<Option<GumbelResult>>> {
-        let _ = evaluator;
         if leaf_batch_size == 0 {
             return Err(PyValueError::new_err("leaf_batch_size must be positive"));
         }
-        self.search_active_with_priors(priors)
+        self.search_active_with_evaluator(priors, false, evaluator, leaf_batch_size)
     }
 
     pub fn apply_actions(&mut self, actions: Vec<Option<usize>>) -> PyResult<Vec<Option<u8>>> {
@@ -243,6 +241,50 @@ impl GumbelSelfPlayBatch {
                 self.searches[game_index].search_with_logits(&self.states[game_index], row)?
             } else {
                 self.searches[game_index].search_with_priors(&self.states[game_index], row)?
+            };
+            results[game_index] = Some(result);
+        }
+        Ok(results)
+    }
+
+    fn search_active_with_evaluator(
+        &mut self,
+        rows: Vec<Vec<f32>>,
+        logits: bool,
+        evaluator: &Bound<'_, PyAny>,
+        leaf_batch_size: usize,
+    ) -> PyResult<Vec<Option<GumbelResult>>> {
+        let active_indexes = self.active_indexes();
+        if rows.len() != active_indexes.len() {
+            return Err(PyValueError::new_err(format!(
+                "expected {} policy rows for active games, got {}",
+                active_indexes.len(),
+                rows.len()
+            )));
+        }
+
+        let mut results = vec![None; self.states.len()];
+        for (game_index, row) in active_indexes.into_iter().zip(rows.into_iter()) {
+            if row.len() != ACTION_SPACE {
+                return Err(PyValueError::new_err(format!(
+                    "expected {ACTION_SPACE} policy values for game {game_index}, got {}",
+                    row.len()
+                )));
+            }
+            let result = if logits {
+                self.searches[game_index].search_with_logits_and_evaluator(
+                    &self.states[game_index],
+                    row,
+                    evaluator,
+                    leaf_batch_size,
+                )?
+            } else {
+                self.searches[game_index].search_with_priors_and_evaluator(
+                    &self.states[game_index],
+                    row,
+                    evaluator,
+                    leaf_batch_size,
+                )?
             };
             results[game_index] = Some(result);
         }

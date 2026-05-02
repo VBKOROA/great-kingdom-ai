@@ -1904,7 +1904,8 @@ mod tests {
                 pass.0, pass.1, pass.2, pass.3, pass.4
             );
             println!("top root edges:");
-            for (rank, (action, prior, visits, value_sum, mean)) in rows.iter().take(12).enumerate() {
+            for (rank, (action, prior, visits, value_sum, mean)) in rows.iter().take(12).enumerate()
+            {
                 println!(
                     "#{:02} action={:02} prior={:.6} visits={:03} value_sum={:.3} mean={:.3}",
                     rank + 1,
@@ -1975,7 +1976,8 @@ mod tests {
                 pass.0, pass.1, pass.2, pass.3, pass.4
             );
             println!("top root edges:");
-            for (rank, (action, prior, visits, value_sum, mean)) in rows.iter().take(12).enumerate() {
+            for (rank, (action, prior, visits, value_sum, mean)) in rows.iter().take(12).enumerate()
+            {
                 println!(
                     "#{:02} action={:02} prior={:.6} visits={:03} value_sum={:.3} mean={:.3}",
                     rank + 1,
