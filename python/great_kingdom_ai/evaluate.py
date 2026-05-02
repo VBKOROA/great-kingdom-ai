@@ -131,12 +131,13 @@ def play_arena_game(
         raise ValueError("candidate_player must be 1 or 2")
 
     game_state = state if state is not None else create_core_game_state()
-    make_search = (
-        search_factory
-        if search_factory is not None
-        else lambda: create_core_search_backend(config)
-    )
-    searches = {BLUE: make_search(), ORANGE: make_search()}
+    if search_factory is None:
+        searches = {
+            BLUE: create_core_search_backend(config, seed_offset=seed * 2),
+            ORANGE: create_core_search_backend(config, seed_offset=seed * 2 + 1),
+        }
+    else:
+        searches = {BLUE: search_factory(), ORANGE: search_factory()}
     best_player = _other_player(candidate_player)
     moves: list[MoveLog] = []
 

@@ -221,6 +221,38 @@ def test_play_arena_game_uses_gumbel_logits_backend() -> None:
     assert result.moves == [MoveLog(turn=0, player=1, action=2)]
 
 
+def test_play_arena_game_offsets_default_search_seeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_offsets: list[int] = []
+
+    def fake_create_core_search_backend(
+        config: ArenaConfig,
+        *,
+        seed_offset: int = 0,
+    ) -> PriorSearch:
+        del config
+        seen_offsets.append(seed_offset)
+        return PriorSearch()
+
+    monkeypatch.setattr(
+        evaluate_module,
+        "create_core_search_backend",
+        fake_create_core_search_backend,
+    )
+
+    play_arena_game(
+        seed=7,
+        candidate_model=FakeNetwork(2),
+        best_model=FakeNetwork(3),
+        candidate_player=1,
+        config=ArenaConfig(games=1, max_turns=4, simulations=1),
+        state=OneMoveState(),
+    )
+
+    assert seen_offsets == [14, 15]
+
+
 def test_run_arena_reports_progress_after_each_game() -> None:
     progress: list[tuple[int, int, int]] = []
 
