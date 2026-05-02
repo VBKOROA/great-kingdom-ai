@@ -5,7 +5,6 @@ Great Kingdom AI는 9x9 추상 전략 게임 **Great Kingdom**의 규칙 엔진�
 현재 코드는 다음을 포함합니다.
 
 - Rust 규칙 엔진과 PyO3 Python extension
-- PUCT MCTS backend
 - Gumbel AlphaZero 스타일 tree search backend
 - PyTorch policy-value network
 - self-play replay 생성, replay buffer 저장/로드
@@ -13,7 +12,7 @@ Great Kingdom AI는 9x9 추상 전략 게임 **Great Kingdom**의 규칙 엔진�
 - end-to-end pipeline
 - 로컬 CPU smoke config와 Runpod GPU config
 
-규칙의 기준 문서는 [docs/rule-spec.md](docs/rule-spec.md)입니다. Gumbel backend 구현 방향은 [docs/gumbel-development-plan.md](docs/gumbel-development-plan.md)를 기준으로 합니다.
+규칙의 기준 문서는 [docs/rule-spec.md](docs/rule-spec.md)입니다.
 
 ## Game
 
@@ -30,12 +29,9 @@ Great Kingdom은 두 플레이어가 번갈아 성을 놓으며 영토를 만드
 
 자세한 규칙은 [docs/rule-spec.md](docs/rule-spec.md)를 보세요.
 
-## Search Backends
+## Search
 
-`search_backend`는 두 값을 지원합니다.
-
-- `mcts`: 기존 PUCT MCTS baseline
-- `gumbel`: Gumbel root sampling, root sequential halving, 내부 node deterministic selection, improved policy target을 사용하는 backend
+검색은 Gumbel root sampling, root sequential halving, 내부 node deterministic selection, improved policy target을 사용하는 Gumbel backend로 고정되어 있습니다.
 
 Gumbel backend는 replay policy target으로 visit count normalization이 아니라 `policy_target()`을 사용합니다. Self-play와 arena에서 실제 착수는 기본적으로 `selected_action()`을 사용합니다.
 
@@ -43,13 +39,11 @@ Gumbel 관련 주요 config:
 
 ```json
 {
-  "search_backend": "gumbel",
   "gumbel_simulations": 128,
   "gumbel_max_considered_actions": 16,
   "gumbel_c_visit": 50.0,
   "gumbel_c_scale": 1.0,
   "gumbel_seed": 2026,
-  "root_noise": false,
   "sampling_temperature": 0.0
 }
 ```
@@ -70,7 +64,7 @@ rust/great_kingdom_core/
   src/game.rs           GameState and PyO3 bindings
   src/rules.rs          move legality and terminal rules
   src/territory.rs      territory scoring
-  src/mcts.rs           PUCT MCTS backend
+  src/eval_request.rs   batched neural evaluation request
   src/gumbel/           Gumbel search backend
 
 configs/test/
@@ -229,26 +223,21 @@ work_dir/
 
 ## Configs
 
-Main Gumbel configs:
+Main configs:
 
 ```text
-configs/test/gumbel/cpu/
-  train-smoke.json
-  arena-smoke.json
+configs/test/
+  train-test.json
+  m8-train-smoke.json
+  m9-arena-smoke.json
   pipeline-smoke.json
+  pipeline-test.json
 
-configs/test/gumbel/gpu/
-  train-smoke.json
-  arena-smoke.json
-  pipeline-smoke.json
-
-configs/runpod/gumbel/
+configs/runpod/
   train-runpod.json
   arena-runpod.json
   pipeline-runpod.json
 ```
-
-Baseline MCTS configs are still available under `configs/test/` and `configs/runpod/`.
 
 ## CLI Reference
 
@@ -270,7 +259,7 @@ Train from replay:
 python -m great_kingdom_ai.train \
   --replay data/path/replay.npz \
   --checkpoint data/path/checkpoint.pt \
-  --config configs/test/gumbel/cpu/train-smoke.json
+  --config configs/test/m8-train-smoke.json
 ```
 
 Arena evaluation:
@@ -280,16 +269,16 @@ python -m great_kingdom_ai.evaluate \
   --candidate data/path/candidate.pt \
   --best data/path/best.pt \
   --report data/path/arena-report.json \
-  --config configs/test/gumbel/cpu/arena-smoke.json
+  --config configs/test/m9-arena-smoke.json
 ```
 
 End-to-end pipeline:
 
 ```bash
 python -m great_kingdom_ai.pipeline \
-  --pipeline-config configs/test/gumbel/cpu/pipeline-smoke.json \
-  --train-config configs/test/gumbel/cpu/train-smoke.json \
-  --arena-config configs/test/gumbel/cpu/arena-smoke.json \
+  --pipeline-config configs/test/pipeline-smoke.json \
+  --train-config configs/test/m8-train-smoke.json \
+  --arena-config configs/test/m9-arena-smoke.json \
   --device cpu \
   --json
 ```
@@ -300,8 +289,7 @@ python -m great_kingdom_ai.pipeline \
 - Python should run inside `.venv`.
 - Runpod should use the provided PyTorch image and CUDA package stack.
 - Rust owns the game rules. Python should not duplicate rule logic.
-- Do not add tactical heuristics to the search backends. Terminal outcomes come from the rules engine.
-- Keep `mcts` as the baseline backend. Use `gumbel` explicitly in experiment configs.
+- Do not add tactical heuristics to the search backend. Terminal outcomes come from the rules engine.
 
 ## Useful Docs
 

@@ -14,8 +14,6 @@ from typing import Any, NoReturn
 from great_kingdom_ai.evaluate import (
     ArenaConfig,
     ArenaReport,
-    evaluate_state_policies,
-    evaluate_state_policy,
     evaluate_state_policy_logits,
     evaluate_state_policy_logits_batch,
     load_arena_config,
@@ -28,11 +26,10 @@ from great_kingdom_ai.evaluator import evaluate_feature_batch, evaluate_request_
 from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
 from great_kingdom_ai.self_play import (
     GameLog,
-    MctsSelfPlayConfig,
-    create_core_mcts_search,
-    create_core_search_backend,
-    play_mcts_game,
-    play_mcts_games_batched,
+    SelfPlayConfig,
+    create_core_search_engine,
+    play_self_play_game,
+    play_self_play_games_batched,
 )
 from great_kingdom_ai.train import (
     TrainingConfig,
@@ -45,7 +42,6 @@ from great_kingdom_ai.train import (
 
 @dataclass(frozen=True)
 class PipelineConfig:
-    search_backend: str = "mcts"
     work_dir: Path = Path("data/pipeline")
     iterations: int = 1
     self_play_games: int = 2
@@ -54,8 +50,6 @@ class PipelineConfig:
     self_play_batch_size: int = 1
     seed_start: int = 0
     replay_capacity: int = 10000
-    mcts_simulations: int = 8
-    mcts_c_puct: float = 1.5
     gumbel_simulations: int = 128
     gumbel_max_considered_actions: int = 16
     gumbel_c_visit: float = 50.0
@@ -65,7 +59,6 @@ class PipelineConfig:
     self_play_max_turns: int = 200
     temperature_turns: int = 10
     sampling_temperature: float = 1.0
-    root_noise: bool = True
     playout_cap_randomization: bool = False
     playout_cap_full_search_fraction: float = 0.25
     playout_cap_fast_simulations: int = 16
@@ -184,7 +177,7 @@ def run_pipeline(
     train_config: TrainingConfig,
     arena_config: ArenaConfig,
     printer: PipelinePrinter | None = None,
-    self_play_runner: Callable[[int, MctsSelfPlayConfig], tuple[GameLog, list[ReplaySample]]]
+    self_play_runner: Callable[[int, SelfPlayConfig], tuple[GameLog, list[ReplaySample]]]
     | None = None,
 ) -> PipelineSummary:
     _validate_pipeline_config(pipeline_config)
@@ -238,13 +231,11 @@ def run_pipeline(
         if self_play_model is not None:
 
             def _prior_provider(state: Any, model: Any = self_play_model) -> list[float]:
-                if pipeline_config.search_backend == "gumbel":
-                    return evaluate_state_policy_logits(
-                        model,
-                        state,
-                        device=train_config.device,
-                    )
-                return evaluate_state_policy(model, state, device=train_config.device)
+                return evaluate_state_policy_logits(
+                    model,
+                    state,
+                    device=train_config.device,
+                )
 
             prior_provider = _prior_provider
 
@@ -252,13 +243,11 @@ def run_pipeline(
                 states: Sequence[Any],
                 model: Any = self_play_model,
             ) -> list[list[float]]:
-                if pipeline_config.search_backend == "gumbel":
-                    return evaluate_state_policy_logits_batch(
-                        model,
-                        states,
-                        device=train_config.device,
-                    )
-                return evaluate_state_policies(model, states, device=train_config.device)
+                return evaluate_state_policy_logits_batch(
+                    model,
+                    states,
+                    device=train_config.device,
+                )
 
             batch_prior_provider = _batch_prior_provider
 
@@ -273,11 +262,7 @@ def run_pipeline(
                     [list(row) for row in mask_rows],
                     device=train_config.device,
                 )
-                policy_rows = (
-                    evaluation.policy_logits
-                    if pipeline_config.search_backend == "gumbel"
-                    else evaluation.policy
-                )
+                policy_rows = evaluation.policy_logits
                 return [[float(value) for value in policy] for policy in policy_rows]
 
             feature_batch_prior_provider = _feature_batch_prior_provider
@@ -292,11 +277,7 @@ def run_pipeline(
                     [state.legal_mask() for state in states],
                     device=train_config.device,
                 )
-                policy_rows = (
-                    evaluation.policy_logits
-                    if pipeline_config.search_backend == "gumbel"
-                    else evaluation.policy
-                )
+                policy_rows = evaluation.policy_logits
                 return (
                     [[float(value) for value in policy] for policy in policy_rows],
                     [float(value) for value in evaluation.value],
@@ -313,11 +294,7 @@ def run_pipeline(
                     request,
                     device=train_config.device,
                 )
-                policy_rows = (
-                    evaluation.policy_logits
-                    if pipeline_config.search_backend == "gumbel"
-                    else evaluation.policy
-                )
+                policy_rows = evaluation.policy_logits
                 return policy_rows, evaluation.value
 
             request_evaluator_provider = _request_evaluator_provider
@@ -441,7 +418,7 @@ def generate_self_play_samples(
     *,
     pipeline_config: PipelineConfig,
     seed_start: int | None = None,
-    runner: Callable[[int, MctsSelfPlayConfig], tuple[GameLog, list[ReplaySample]]] | None = None,
+    runner: Callable[[int, SelfPlayConfig], tuple[GameLog, list[ReplaySample]]] | None = None,
     printer: PipelinePrinter | None = None,
     prior_provider: Callable[[Any], list[float]] | None = None,
     batch_prior_provider: Callable[[Sequence[Any]], list[list[float]]] | None = None,
@@ -462,10 +439,8 @@ def generate_self_play_samples(
     | None = None,
 ) -> tuple[list[GameLog], list[ReplaySample]]:
     printer = printer if printer is not None else PipelinePrinter()
-    config = MctsSelfPlayConfig(
-        search_backend=pipeline_config.search_backend,
+    config = SelfPlayConfig(
         max_turns=pipeline_config.self_play_max_turns,
-        c_puct=pipeline_config.mcts_c_puct,
         gumbel_simulations=pipeline_config.gumbel_simulations,
         gumbel_max_considered_actions=pipeline_config.gumbel_max_considered_actions,
         gumbel_c_visit=pipeline_config.gumbel_c_visit,
@@ -473,27 +448,19 @@ def generate_self_play_samples(
         gumbel_seed=pipeline_config.gumbel_seed,
         temperature_turns=pipeline_config.temperature_turns,
         sampling_temperature=pipeline_config.sampling_temperature,
-        root_noise=pipeline_config.root_noise,
         playout_cap_randomization=pipeline_config.playout_cap_randomization,
         playout_cap_full_search_fraction=pipeline_config.playout_cap_full_search_fraction,
-        playout_cap_full_simulations=pipeline_config.mcts_simulations,
+        playout_cap_full_simulations=pipeline_config.gumbel_simulations,
         playout_cap_fast_simulations=pipeline_config.playout_cap_fast_simulations,
         leaf_batch_size=pipeline_config.leaf_batch_size,
     )
 
     def default_runner(
         seed: int,
-        game_config: MctsSelfPlayConfig,
+        game_config: SelfPlayConfig,
     ) -> tuple[GameLog, list[ReplaySample]]:
-        search = (
-            create_core_mcts_search(
-                simulations=pipeline_config.mcts_simulations,
-                c_puct=pipeline_config.mcts_c_puct,
-            )
-            if pipeline_config.search_backend == "mcts"
-            else create_core_search_backend(game_config, seed_offset=seed)
-        )
-        return play_mcts_game(
+        search = create_core_search_engine(game_config, seed_offset=seed)
+        return play_self_play_game(
             seed=seed,
             search=search,
             config=game_config,
@@ -512,7 +479,7 @@ def generate_self_play_samples(
         f"games>={pipeline_config.self_play_games}, "
         f"samples>={pipeline_config.min_replay_samples}, "
         f"batch={pipeline_config.self_play_batch_size}, "
-        f"sims={pipeline_config.mcts_simulations}, "
+        f"sims={pipeline_config.gumbel_simulations}, "
         f"leaf_batch={pipeline_config.leaf_batch_size}, "
         f"pcr={_pcr_summary(pipeline_config)}"
     )
@@ -540,9 +507,9 @@ def generate_self_play_samples(
         if runner is None and batch_prior_provider is not None and batch_size > 1:
             seeds = list(range(seed, seed + batch_size))
             printer.step(f"game seeds={seeds[0]}..{seeds[-1]}")
-            batch_results = play_mcts_games_batched(
+            batch_results = play_self_play_games_batched(
                 seeds=seeds,
-                search_factory=lambda: create_core_search_backend(config),
+                search_factory=lambda: create_core_search_engine(config),
                 config=config,
                 prior_provider=batch_prior_provider,
                 evaluator_provider=batch_evaluator_provider,
@@ -602,8 +569,8 @@ def _print_self_play_progress(
 def _self_play_config_summary(config: PipelineConfig) -> str:
     return (
         f"games>={config.self_play_games}, samples>={config.min_replay_samples}, "
-        f"backend={config.search_backend}, batch={config.self_play_batch_size}, "
-        f"sims={config.mcts_simulations}, "
+        f"batch={config.self_play_batch_size}, "
+        f"sims={config.gumbel_simulations}, "
         f"leaf_batch={config.leaf_batch_size}, pcr={_pcr_summary(config)}"
     )
 
@@ -615,7 +582,6 @@ def _arena_config_for_pipeline(
     data = asdict(arena_config)
     data.update(
         {
-            "search_backend": pipeline_config.search_backend,
             "gumbel_simulations": pipeline_config.gumbel_simulations,
             "gumbel_max_considered_actions": pipeline_config.gumbel_max_considered_actions,
             "gumbel_c_visit": pipeline_config.gumbel_c_visit,
@@ -681,8 +647,6 @@ def _ensure_pipeline_dirs(config: PipelineConfig) -> None:
 
 
 def _validate_pipeline_config(config: PipelineConfig) -> None:
-    if config.search_backend not in {"mcts", "gumbel"}:
-        raise ValueError("search_backend must be 'mcts' or 'gumbel'")
     if config.iterations <= 0:
         raise ValueError("iterations must be positive")
     if config.self_play_games < 0:
@@ -698,8 +662,6 @@ def _validate_pipeline_config(config: PipelineConfig) -> None:
         raise ValueError("self_play_batch_size must be positive")
     if config.replay_capacity <= 0:
         raise ValueError("replay_capacity must be positive")
-    if config.mcts_simulations <= 0:
-        raise ValueError("mcts_simulations must be positive")
     if config.gumbel_simulations <= 0:
         raise ValueError("gumbel_simulations must be positive")
     if config.gumbel_max_considered_actions <= 0:
@@ -760,7 +722,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run Great Kingdom self-play, training, arena evaluation, and promotion.",
         epilog=(
             "Example:\n"
-            "  great-kingdom-pipeline --allow-cpu --pipeline-config configs/pipeline-smoke.json"
+            "  great-kingdom-pipeline --allow-cpu --pipeline-config configs/test/pipeline-smoke.json"
         ),
     )
     config_group = parser.add_argument_group("config files")
@@ -773,13 +735,13 @@ def build_parser() -> argparse.ArgumentParser:
     config_group.add_argument(
         "--train-config",
         type=Path,
-        default=Path("configs/m8-train-smoke.json"),
+        default=Path("configs/test/m8-train-smoke.json"),
         help="TrainingConfig JSON",
     )
     config_group.add_argument(
         "--arena-config",
         type=Path,
-        default=Path("configs/m9-arena-smoke.json"),
+        default=Path("configs/test/m9-arena-smoke.json"),
         help="ArenaConfig JSON",
     )
 
@@ -816,12 +778,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     self_play_group = parser.add_argument_group("self-play")
     self_play_group.add_argument(
-        "--search-backend",
-        choices=["mcts", "gumbel"],
-        default=None,
-        help="tree search backend",
-    )
-    self_play_group.add_argument(
         "--self-play-games",
         type=int,
         default=None,
@@ -832,12 +788,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="minimum new replay samples per iteration",
-    )
-    self_play_group.add_argument(
-        "--mcts-simulations",
-        type=int,
-        default=None,
-        help="MCTS simulations per self-play move",
     )
     self_play_group.add_argument(
         "--gumbel-simulations",
@@ -861,7 +811,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--leaf-batch-size",
         type=int,
         default=None,
-        help="neural leaf evaluations to batch per Rust MCTS callback",
+        help="neural leaf evaluations to batch per Rust search callback",
     )
     self_play_group.add_argument(
         "--playout-cap-randomization",
@@ -878,7 +828,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--playout-cap-fast-simulations",
         type=int,
         default=None,
-        help="MCTS simulations for fast self-play turns",
+        help="Gumbel simulations for fast self-play turns",
     )
 
     train_group = parser.add_argument_group("training and arena")
@@ -906,11 +856,9 @@ def _configs_from_args(
     pipeline_data = asdict(pipeline)
     for key, value in {
         "work_dir": args.work_dir,
-        "search_backend": args.search_backend,
         "iterations": args.iterations,
         "self_play_games": args.self_play_games,
         "min_replay_samples": args.min_replay_samples,
-        "mcts_simulations": args.mcts_simulations,
         "gumbel_simulations": args.gumbel_simulations,
         "gumbel_max_considered_actions": args.gumbel_max_considered_actions,
         "self_play_batch_size": args.self_play_batch_size,

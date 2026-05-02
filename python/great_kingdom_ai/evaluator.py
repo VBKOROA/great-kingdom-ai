@@ -1,4 +1,4 @@
-"""Batch neural-network evaluation helpers for Rust MCTS requests."""
+"""Batch neural-network evaluation helpers for Rust search requests."""
 
 from __future__ import annotations
 

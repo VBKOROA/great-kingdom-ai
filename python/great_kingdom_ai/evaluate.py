@@ -24,20 +24,6 @@ class ArenaSearchResultLike(Protocol):
 
 
 class ArenaSearchLike(Protocol):
-    def search_with_priors(
-        self,
-        state: SelfPlayState,
-        priors: list[float],
-    ) -> ArenaSearchResultLike: ...
-
-    def search_with_priors_and_evaluator(
-        self,
-        state: SelfPlayState,
-        priors: list[float],
-        evaluator: Callable[[Any], tuple[list[list[float]], list[float]]],
-        leaf_batch_size: int = 8,
-    ) -> ArenaSearchResultLike: ...
-
     def search_with_logits_and_evaluator(
         self,
         state: SelfPlayState,
@@ -50,12 +36,9 @@ class ArenaSearchLike(Protocol):
 
 @dataclass(frozen=True)
 class ArenaConfig:
-    search_backend: str = "mcts"
     games: int = 20
     seed_start: int = 0
     max_turns: int = 200
-    simulations: int = 100
-    c_puct: float = 1.5
     gumbel_simulations: int = 128
     gumbel_max_considered_actions: int = 16
     gumbel_c_visit: float = 50.0
@@ -126,7 +109,7 @@ def play_arena_game(
 ) -> ArenaGameResult:
     """Play one deterministic candidate-vs-best game.
 
-    Evaluation uses model priors and disables self-play-only root noise and temperature.
+    Evaluation uses model logits and deterministic action selection.
     """
     if candidate_player not in {BLUE, ORANGE}:
         raise ValueError("candidate_player must be 1 or 2")
@@ -134,8 +117,8 @@ def play_arena_game(
     game_state = state if state is not None else create_core_game_state()
     if search_factory is None:
         searches = {
-            BLUE: create_core_search_backend(config, seed_offset=seed * 2),
-            ORANGE: create_core_search_backend(config, seed_offset=seed * 2 + 1),
+            BLUE: create_core_search_engine(config, seed_offset=seed * 2),
+            ORANGE: create_core_search_engine(config, seed_offset=seed * 2 + 1),
         }
     else:
         searches = {BLUE: search_factory(), ORANGE: search_factory()}
@@ -154,7 +137,6 @@ def play_arena_game(
             [game_state.legal_mask()],
             device=config.device,
         )
-        priors = [float(value) for value in root_evaluation.policy[0]]
         root_logits = getattr(root_evaluation, "policy_logits", root_evaluation.policy)[0]
         logits = [float(value) for value in root_logits]
         root_value = float(root_evaluation.value[0])
@@ -165,32 +147,20 @@ def play_arena_game(
             evaluation = evaluate_feature_batch(
                 m, feature_rows, mask_rows, device=config.device
             )
-            policy_rows = (
-                getattr(evaluation, "policy_logits", evaluation.policy)
-                if config.search_backend == "gumbel"
-                else evaluation.policy
-            )
+            policy_rows = getattr(evaluation, "policy_logits", evaluation.policy)
             return (
                 [[float(value) for value in policy] for policy in policy_rows],
                 [float(value) for value in evaluation.value],
             )
 
-        if config.search_backend == "gumbel":
-            result = searches[player].search_with_logits_and_evaluator(
-                game_state,
-                logits,
-                evaluator,
-                root_value,
-                config.leaf_batch_size,
-            )
-        else:
-            result = searches[player].search_with_priors_and_evaluator(
-                game_state,
-                priors,
-                evaluator,
-                config.leaf_batch_size,
-            )
-        action = _deterministic_action(result, priors, game_state.legal_actions())
+        result = searches[player].search_with_logits_and_evaluator(
+            game_state,
+            logits,
+            evaluator,
+            root_value,
+            config.leaf_batch_size,
+        )
+        action = _deterministic_action(result, logits, game_state.legal_actions())
 
         moves.append(MoveLog(turn=turn, player=player, action=action))
         game_state.apply_action(action)
@@ -229,8 +199,16 @@ def run_arena(
         raise ValueError("max_turns must be positive")
     if not 0.0 <= config.promotion_threshold <= 1.0:
         raise ValueError("promotion_threshold must be between 0 and 1")
-    if config.search_backend not in {"mcts", "gumbel"}:
-        raise ValueError("search_backend must be 'mcts' or 'gumbel'")
+    if config.gumbel_simulations <= 0:
+        raise ValueError("gumbel_simulations must be positive")
+    if config.gumbel_max_considered_actions <= 0:
+        raise ValueError("gumbel_max_considered_actions must be positive")
+    if config.gumbel_c_visit <= 0.0:
+        raise ValueError("gumbel_c_visit must be positive")
+    if config.gumbel_c_scale <= 0.0:
+        raise ValueError("gumbel_c_scale must be positive")
+    if config.leaf_batch_size <= 0:
+        raise ValueError("leaf_batch_size must be positive")
 
     make_state = state_factory if state_factory is not None else create_core_game_state
     games = []
@@ -374,18 +352,7 @@ def load_model_from_checkpoint(path: str | Path, *, device: str = "cpu") -> Any:
     return state.model
 
 
-def create_core_mcts_search(*, simulations: int, c_puct: float) -> ArenaSearchLike:
-    try:
-        import great_kingdom_core as core
-    except ModuleNotFoundError as exc:
-        raise RuntimeError(
-            "great_kingdom_core is not installed. Build it with maturin before arena evaluation."
-        ) from exc
-
-    return cast(ArenaSearchLike, core.MctsSearch(simulations=simulations, c_puct=c_puct))
-
-
-def create_core_search_backend(
+def create_core_search_engine(
     config: ArenaConfig,
     *,
     seed_offset: int = 0,
@@ -397,23 +364,16 @@ def create_core_search_backend(
             "great_kingdom_core is not installed. Build it with maturin before arena evaluation."
         ) from exc
 
-    if config.search_backend == "mcts":
-        return cast(
-            ArenaSearchLike,
-            core.MctsSearch(simulations=config.simulations, c_puct=config.c_puct),
-        )
-    if config.search_backend == "gumbel":
-        return cast(
-            ArenaSearchLike,
-            core.GumbelSearch(
-                simulations=config.gumbel_simulations,
-                max_considered_actions=config.gumbel_max_considered_actions,
-                c_visit=config.gumbel_c_visit,
-                c_scale=config.gumbel_c_scale,
-                seed=config.gumbel_seed + seed_offset,
-            ),
-        )
-    raise ValueError("search_backend must be 'mcts' or 'gumbel'")
+    return cast(
+        ArenaSearchLike,
+        core.GumbelSearch(
+            simulations=config.gumbel_simulations,
+            max_considered_actions=config.gumbel_max_considered_actions,
+            c_visit=config.gumbel_c_visit,
+            c_scale=config.gumbel_c_scale,
+            seed=config.gumbel_seed + seed_offset,
+        ),
+    )
 
 
 def load_arena_config(path: str | Path) -> ArenaConfig:
@@ -456,7 +416,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, default=None, help="JSON ArenaConfig override")
     parser.add_argument("--device", choices=["cpu", "cuda"], default=None)
     parser.add_argument("--games", type=int, default=None)
-    parser.add_argument("--simulations", type=int, default=None)
+    parser.add_argument("--gumbel-simulations", type=int, default=None)
     parser.add_argument(
         "--promote",
         action="store_true",
@@ -470,7 +430,7 @@ def _config_from_args(args: argparse.Namespace) -> ArenaConfig:
     overrides = {
         "device": args.device,
         "games": args.games,
-        "simulations": args.simulations,
+        "gumbel_simulations": args.gumbel_simulations,
     }
     data = asdict(config)
     data.update({key: value for key, value in overrides.items() if value is not None})
@@ -519,7 +479,7 @@ __all__ = [
     "ArenaGameResult",
     "ArenaReport",
     "ArenaSummary",
-    "create_core_search_backend",
+    "create_core_search_engine",
     "evaluate_state_policy",
     "evaluate_state_policy_logits",
     "evaluate_state_policy_logits_batch",

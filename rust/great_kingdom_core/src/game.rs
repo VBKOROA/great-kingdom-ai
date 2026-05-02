@@ -220,6 +220,13 @@ impl Default for GameState {
     }
 }
 
+impl GameState {
+    #[must_use]
+    pub(crate) const fn current_player_value(&self) -> Player {
+        self.current_player
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn state_with_board(board: [Cell; BOARD_CELLS], current_player: Player) -> GameState {
     GameState {

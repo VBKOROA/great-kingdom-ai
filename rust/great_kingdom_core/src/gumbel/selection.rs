@@ -282,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn select_inner_action_is_deterministic_without_root_gumbel_or_puct_inputs() {
+    fn select_inner_action_is_deterministic_without_root_noise_inputs() {
         let edges = [
             InnerEdgeStats::new(7, 0.5_f32.ln(), 10, 10.0),
             InnerEdgeStats::new(3, 0.5_f32.ln(), 0, 0.0),

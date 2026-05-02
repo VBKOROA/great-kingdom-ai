@@ -15,8 +15,8 @@ use super::{
     sequential_halving::RootSequentialHalving,
 };
 use crate::{
+    eval_request::EvalRequest,
     game::{ACTION_SPACE, Action, GameState},
-    mcts::EvalRequest,
 };
 
 #[pyclass]

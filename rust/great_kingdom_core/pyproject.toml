@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "great-kingdom-core"
 version = "0.1.0"
-description = "Rust rules engine and MCTS core for Great Kingdom AI."
+description = "Rust rules engine and Gumbel search core for Great Kingdom AI."
 requires-python = ">=3.11"
 
 [tool.maturin]

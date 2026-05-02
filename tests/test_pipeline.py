@@ -17,7 +17,7 @@ from great_kingdom_ai.pipeline import (
     run_pipeline,
 )
 from great_kingdom_ai.replay_buffer import ReplaySample
-from great_kingdom_ai.self_play import GameLog, MctsSelfPlayConfig, MoveLog
+from great_kingdom_ai.self_play import GameLog, SelfPlayConfig, MoveLog
 from great_kingdom_ai.train import TrainingConfig
 
 
@@ -31,7 +31,7 @@ def make_sample(index: int) -> ReplaySample:
 
 def fake_self_play_runner(
     seed: int,
-    config: MctsSelfPlayConfig,
+    config: SelfPlayConfig,
 ) -> tuple[GameLog, list[ReplaySample]]:
     return (
         GameLog(
@@ -85,11 +85,11 @@ def test_generate_self_play_samples_can_run_without_game_cap() -> None:
 
 
 def test_generate_self_play_samples_passes_playout_cap_config() -> None:
-    seen_configs: list[MctsSelfPlayConfig] = []
+    seen_configs: list[SelfPlayConfig] = []
 
     def recording_runner(
         seed: int,
-        config: MctsSelfPlayConfig,
+        config: SelfPlayConfig,
     ) -> tuple[GameLog, list[ReplaySample]]:
         seen_configs.append(config)
         return fake_self_play_runner(seed, config)
@@ -98,7 +98,7 @@ def test_generate_self_play_samples_passes_playout_cap_config() -> None:
         pipeline_config=PipelineConfig(
             self_play_games=1,
             min_replay_samples=1,
-            mcts_simulations=100,
+            gumbel_simulations=100,
             playout_cap_randomization=True,
             playout_cap_full_search_fraction=0.25,
             playout_cap_fast_simulations=16,
@@ -113,19 +113,18 @@ def test_generate_self_play_samples_passes_playout_cap_config() -> None:
     assert seen_configs[0].playout_cap_fast_simulations == 16
 
 
-def test_generate_self_play_samples_passes_gumbel_backend_config() -> None:
-    seen_configs: list[MctsSelfPlayConfig] = []
+def test_generate_self_play_samples_passes_gumbel_config() -> None:
+    seen_configs: list[SelfPlayConfig] = []
 
     def recording_runner(
         seed: int,
-        config: MctsSelfPlayConfig,
+        config: SelfPlayConfig,
     ) -> tuple[GameLog, list[ReplaySample]]:
         seen_configs.append(config)
         return fake_self_play_runner(seed, config)
 
     generate_self_play_samples(
         pipeline_config=PipelineConfig(
-            search_backend="gumbel",
             self_play_games=1,
             min_replay_samples=1,
             gumbel_simulations=32,
@@ -136,7 +135,6 @@ def test_generate_self_play_samples_passes_gumbel_backend_config() -> None:
         printer=PipelinePrinter(enabled=False),
     )
 
-    assert seen_configs[0].search_backend == "gumbel"
     assert seen_configs[0].gumbel_simulations == 32
     assert seen_configs[0].gumbel_max_considered_actions == 8
     assert seen_configs[0].gumbel_seed == 7
@@ -167,7 +165,7 @@ def test_generate_self_play_samples_uses_batched_model_priors(monkeypatch) -> No
         seen_batches.append(seeds)
         return [fake_self_play_runner(seed, kwargs["config"]) for seed in seeds]
 
-    monkeypatch.setattr(pipeline_module, "play_mcts_games_batched", fake_batched_games)
+    monkeypatch.setattr(pipeline_module, "play_self_play_games_batched", fake_batched_games)
 
     logs, samples = generate_self_play_samples(
         pipeline_config=PipelineConfig(

@@ -102,6 +102,17 @@ class PriorSearch:
         del evaluator, leaf_batch_size
         return self.search_with_priors(state, priors)
 
+    def search_with_logits_and_evaluator(
+        self,
+        state: OneMoveState,
+        policy_logits: list[float],
+        evaluator: Any,
+        root_value: float,
+        leaf_batch_size: int = 8,
+    ) -> PriorSearchResult:
+        del evaluator, root_value, leaf_batch_size
+        return self.search_with_priors(state, policy_logits)
+
 
 class LogitSearch:
     def __init__(self) -> None:
@@ -177,7 +188,7 @@ def test_evaluate_state_policy_masks_and_normalizes_legal_actions() -> None:
 
 def test_play_arena_game_uses_candidate_when_candidate_has_current_turn() -> None:
     state = OneMoveState()
-    config = ArenaConfig(games=1, max_turns=4, simulations=1)
+    config = ArenaConfig(games=1, max_turns=4, gumbel_simulations=1)
 
     result = play_arena_game(
         seed=7,
@@ -201,10 +212,9 @@ def test_play_arena_game_uses_gumbel_logits_backend() -> None:
     state = OneMoveState()
     search = LogitSearch()
     config = ArenaConfig(
-        search_backend="gumbel",
         games=1,
         max_turns=4,
-        simulations=1,
+        gumbel_simulations=1,
     )
 
     result = play_arena_game(
@@ -227,7 +237,7 @@ def test_play_arena_game_offsets_default_search_seeds(
 ) -> None:
     seen_offsets: list[int] = []
 
-    def fake_create_core_search_backend(
+    def fake_create_core_search_engine(
         config: ArenaConfig,
         *,
         seed_offset: int = 0,
@@ -238,8 +248,8 @@ def test_play_arena_game_offsets_default_search_seeds(
 
     monkeypatch.setattr(
         evaluate_module,
-        "create_core_search_backend",
-        fake_create_core_search_backend,
+        "create_core_search_engine",
+        fake_create_core_search_engine,
     )
 
     play_arena_game(
@@ -247,7 +257,7 @@ def test_play_arena_game_offsets_default_search_seeds(
         candidate_model=FakeNetwork(2),
         best_model=FakeNetwork(3),
         candidate_player=1,
-        config=ArenaConfig(games=1, max_turns=4, simulations=1),
+        config=ArenaConfig(games=1, max_turns=4, gumbel_simulations=1),
         state=OneMoveState(),
     )
 
@@ -260,7 +270,7 @@ def test_run_arena_reports_progress_after_each_game() -> None:
     report = run_arena(
         candidate_model=FakeNetwork(2),
         best_model=FakeNetwork(3),
-        config=ArenaConfig(games=2, max_turns=4, simulations=1),
+        config=ArenaConfig(games=2, max_turns=4, gumbel_simulations=1),
         state_factory=OneMoveState,
         search_factory=PriorSearch,
         progress_callback=lambda current, total, game: progress.append(

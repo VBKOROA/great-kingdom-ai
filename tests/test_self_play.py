@@ -4,10 +4,10 @@ import random
 import great_kingdom_ai.self_play as self_play_module
 import pytest
 from great_kingdom_ai.self_play import (
-    MctsSelfPlayConfig,
+    SelfPlayConfig,
     choose_random_legal_action,
-    play_mcts_game,
-    play_mcts_games_batched,
+    play_self_play_game,
+    play_self_play_games_batched,
     play_random_game,
     play_random_games,
     summarize_logs,
@@ -83,7 +83,7 @@ class NonTerminalState:
         return (0, 0)
 
 
-class ScriptedMctsState:
+class ScriptedSearchState:
     def __init__(self) -> None:
         self.applied_actions: list[int] = []
         self._current_player = 1
@@ -124,7 +124,7 @@ class ScriptedMctsState:
         return (0, 0)
 
 
-class MultiTurnMctsState(ScriptedMctsState):
+class MultiTurnSearchState(ScriptedSearchState):
     def __init__(self, terminal_after: int) -> None:
         super().__init__()
         self._terminal_after = terminal_after
@@ -135,7 +135,7 @@ class MultiTurnMctsState(ScriptedMctsState):
         return 1 if self._terminal else None
 
 
-class FakeMctsResult:
+class FakeSearchResult:
     def __init__(self, visits: list[int]) -> None:
         self._visits = visits
 
@@ -146,7 +146,7 @@ class FakeMctsResult:
         return self._visits
 
 
-class FakeGumbelResult(FakeMctsResult):
+class FakeGumbelResult(FakeSearchResult):
     def __init__(self, selected: int, policy: list[float]) -> None:
         visits = [0] * 82
         visits[selected] = 1
@@ -161,43 +161,68 @@ class FakeGumbelResult(FakeMctsResult):
         return self._policy
 
 
-class FakeMctsSearch:
+class FakeSearchSearch:
     def __init__(self, visits: list[int]) -> None:
         self.visits = visits
-        self.noisy_priors: list[float] | None = None
+        self.root_logits: list[float] | None = None
         self.search_calls = 0
 
-    def search(self, state: ScriptedMctsState) -> FakeMctsResult:
+    def search(self, state: ScriptedSearchState) -> FakeSearchResult:
         self.search_calls += 1
-        return FakeMctsResult(self.visits)
+        return FakeSearchResult(self.visits)
 
     def search_with_priors(
         self,
-        state: ScriptedMctsState,
+        state: ScriptedSearchState,
         priors: list[float],
-    ) -> FakeMctsResult:
-        self.noisy_priors = priors
-        return FakeMctsResult(self.visits)
+    ) -> FakeSearchResult:
+        self.root_logits = priors
+        return FakeSearchResult(self.visits)
 
     def search_with_priors_and_evaluator(
         self,
-        state: ScriptedMctsState,
+        state: ScriptedSearchState,
         priors: list[float],
         evaluator,
         leaf_batch_size: int = 8,
-    ) -> FakeMctsResult:
-        self.noisy_priors = priors
+    ) -> FakeSearchResult:
+        self.root_logits = priors
         policies, values = evaluator(_SingleStateEvalRequest(state))
         assert len(policies) == 1
         assert len(values) == 1
         assert leaf_batch_size == 8
-        return FakeMctsResult(self.visits)
+        return FakeSearchResult(self.visits)
+
+    def search_with_logits(
+        self,
+        state: ScriptedSearchState,
+        policy_logits: list[float],
+    ) -> FakeSearchResult:
+        del state
+        self.root_logits = policy_logits
+        return FakeSearchResult(self.visits)
+
+    def search_with_logits_and_evaluator(
+        self,
+        state: ScriptedSearchState,
+        policy_logits: list[float],
+        evaluator,
+        root_value: float,
+        leaf_batch_size: int = 8,
+    ) -> FakeSearchResult:
+        del root_value
+        self.root_logits = policy_logits
+        policies, values = evaluator(_SingleStateEvalRequest(state))
+        assert len(policies) == 1
+        assert len(values) == 1
+        assert leaf_batch_size == 8
+        return FakeSearchResult(self.visits)
 
     def set_simulations(self, simulations: int) -> None:
         del simulations
 
 
-class FakeGumbelSearch(FakeMctsSearch):
+class FakeGumbelSearch(FakeSearchSearch):
     def __init__(self, selected: int, policy: list[float]) -> None:
         super().__init__([0] * 82)
         self._selected = selected
@@ -206,7 +231,7 @@ class FakeGumbelSearch(FakeMctsSearch):
 
     def search_with_logits(
         self,
-        state: ScriptedMctsState,
+        state: ScriptedSearchState,
         policy_logits: list[float],
     ) -> FakeGumbelResult:
         del state
@@ -215,7 +240,7 @@ class FakeGumbelSearch(FakeMctsSearch):
 
     def search_with_logits_and_evaluator(
         self,
-        state: ScriptedMctsState,
+        state: ScriptedSearchState,
         policy_logits: list[float],
         evaluator,
         root_value: float,
@@ -229,7 +254,7 @@ class FakeGumbelSearch(FakeMctsSearch):
         return FakeGumbelResult(self._selected, self._policy)
 
 
-class BudgetRecordingMctsSearch(FakeMctsSearch):
+class BudgetRecordingSearch(FakeSearchSearch):
     def __init__(self, visits: list[int]) -> None:
         super().__init__(visits)
         self.simulation_budgets: list[int] = []
@@ -294,7 +319,7 @@ class FakeCoreBatch:
         visits[1] = 1
         results = [None] * self._game_count
         for index in self.active_game_indexes():
-            results[index] = FakeMctsResult(visits)
+            results[index] = FakeSearchResult(visits)
         return results
 
     def search_active_with_priors_and_evaluator(
@@ -346,7 +371,7 @@ class FakeCoreBatch:
 
 
 class _SingleStateEvalRequest:
-    def __init__(self, state: ScriptedMctsState) -> None:
+    def __init__(self, state: ScriptedSearchState) -> None:
         self._state = state
 
     def feature_planes(self) -> list[list[float]]:
@@ -408,21 +433,20 @@ def test_play_random_game_records_reproducible_log() -> None:
     assert log.to_dict()["moves"] == [{"turn": 0, "player": 1, "action": 10}]
 
 
-def test_play_mcts_game_records_policy_and_final_value_targets() -> None:
+def test_play_self_play_game_records_policy_and_final_value_targets() -> None:
     visits = [0] * 82
     visits[1] = 2
     visits[2] = 8
-    state = ScriptedMctsState()
-    search = FakeMctsSearch(visits)
+    state = ScriptedSearchState()
+    search = FakeSearchSearch(visits)
 
-    log, samples = play_mcts_game(
+    log, samples = play_self_play_game(
         seed=41,
         state=state,
         search=search,
-        config=MctsSelfPlayConfig(
+        config=SelfPlayConfig(
             max_turns=5,
             temperature_turns=0,
-            root_noise=False,
         ),
     )
 
@@ -435,26 +459,24 @@ def test_play_mcts_game_records_policy_and_final_value_targets() -> None:
     assert samples[0].value == 1.0
 
 
-def test_play_mcts_game_uses_gumbel_policy_target_and_selected_action() -> None:
+def test_play_self_play_game_uses_gumbel_policy_target_and_selected_action() -> None:
     policy = [0.0] * 82
     policy[1] = 0.1
     policy[2] = 0.9
     logits = [-10.0] * 82
     logits[1] = 4.0
     logits[2] = 9.0
-    state = ScriptedMctsState()
+    state = ScriptedSearchState()
     search = FakeGumbelSearch(selected=1, policy=policy)
 
-    log, samples = play_mcts_game(
+    log, samples = play_self_play_game(
         seed=41,
         state=state,
         search=search,
-        config=MctsSelfPlayConfig(
-            search_backend="gumbel",
+        config=SelfPlayConfig(
             max_turns=5,
             temperature_turns=10,
             sampling_temperature=1.0,
-            root_noise=True,
         ),
         prior_provider=lambda current_state: logits,
     )
@@ -467,24 +489,23 @@ def test_play_mcts_game_uses_gumbel_policy_target_and_selected_action() -> None:
     assert samples[0].policy[2] == pytest.approx(0.9)
 
 
-def test_mcts_self_play_config_samples_only_opening_turns_by_default() -> None:
-    assert MctsSelfPlayConfig().temperature_turns == 10
+def test_search_self_play_config_samples_only_opening_turns_by_default() -> None:
+    assert SelfPlayConfig().temperature_turns == 10
 
 
-def test_play_mcts_game_can_skip_fast_playout_cap_turns() -> None:
+def test_play_self_play_game_can_skip_fast_playout_cap_turns() -> None:
     visits = [0] * 82
     visits[1] = 1
-    state = MultiTurnMctsState(terminal_after=3)
-    search = BudgetRecordingMctsSearch(visits)
+    state = MultiTurnSearchState(terminal_after=3)
+    search = BudgetRecordingSearch(visits)
 
-    log, samples = play_mcts_game(
+    log, samples = play_self_play_game(
         seed=1,
         state=state,
         search=search,
-        config=MctsSelfPlayConfig(
+        config=SelfPlayConfig(
             max_turns=5,
             temperature_turns=0,
-            root_noise=False,
             playout_cap_randomization=True,
             playout_cap_full_search_fraction=0.01,
             playout_cap_full_simulations=100,
@@ -497,20 +518,19 @@ def test_play_mcts_game_can_skip_fast_playout_cap_turns() -> None:
     assert search.simulation_budgets == [16, 16, 16]
 
 
-def test_play_mcts_game_keeps_full_playout_cap_turns_as_samples() -> None:
+def test_play_self_play_game_keeps_full_playout_cap_turns_as_samples() -> None:
     visits = [0] * 82
     visits[1] = 1
-    state = MultiTurnMctsState(terminal_after=2)
-    search = BudgetRecordingMctsSearch(visits)
+    state = MultiTurnSearchState(terminal_after=2)
+    search = BudgetRecordingSearch(visits)
 
-    log, samples = play_mcts_game(
+    log, samples = play_self_play_game(
         seed=3,
         state=state,
         search=search,
-        config=MctsSelfPlayConfig(
+        config=SelfPlayConfig(
             max_turns=5,
             temperature_turns=0,
-            root_noise=False,
             playout_cap_randomization=True,
             playout_cap_full_search_fraction=1.0,
             playout_cap_full_simulations=100,
@@ -523,7 +543,7 @@ def test_play_mcts_game_keeps_full_playout_cap_turns_as_samples() -> None:
     assert search.simulation_budgets == [100, 100]
 
 
-def test_play_mcts_games_batched_evaluates_root_priors_together() -> None:
+def test_play_self_play_games_batched_evaluates_root_priors_together() -> None:
     visits = [0] * 82
     visits[1] = 1
     batch_sizes: list[int] = []
@@ -534,14 +554,13 @@ def test_play_mcts_games_batched_evaluates_root_priors_together() -> None:
         priors[1] = 1.0
         return [priors for _ in states]
 
-    results = play_mcts_games_batched(
+    results = play_self_play_games_batched(
         seeds=[11, 12],
-        search_factory=lambda: FakeMctsSearch(visits),
-        state_factory=lambda: MultiTurnMctsState(terminal_after=1),
-        config=MctsSelfPlayConfig(
+        search_factory=lambda: FakeSearchSearch(visits),
+        state_factory=lambda: MultiTurnSearchState(terminal_after=1),
+        config=SelfPlayConfig(
             max_turns=5,
             temperature_turns=0,
-            root_noise=False,
         ),
         prior_provider=batch_prior_provider,
     )
@@ -554,15 +573,15 @@ def test_play_mcts_games_batched_evaluates_root_priors_together() -> None:
     assert batch_sizes == [2]
 
 
-def test_play_mcts_games_batched_uses_core_batch_when_available(monkeypatch) -> None:
+def test_play_self_play_games_batched_uses_core_batch_when_available(monkeypatch) -> None:
     fake_batch = FakeCoreBatch(game_count=2)
     batch_sizes: list[int] = []
 
     monkeypatch.setattr(self_play_module, "_can_create_core_self_play_batch", lambda *_args: True)
     monkeypatch.setattr(
         self_play_module,
-        "create_core_mcts_self_play_batch",
-        lambda **_kwargs: fake_batch,
+        "create_core_self_play_batch",
+        lambda *_args, **_kwargs: fake_batch,
     )
 
     def batch_prior_provider(states) -> list[list[float]]:
@@ -571,13 +590,12 @@ def test_play_mcts_games_batched_uses_core_batch_when_available(monkeypatch) -> 
         priors[1] = 1.0
         return [priors for _state in states]
 
-    results = play_mcts_games_batched(
+    results = play_self_play_games_batched(
         seeds=[21, 22],
-        search_factory=lambda: FakeMctsSearch([0] * 82),
-        config=MctsSelfPlayConfig(
+        search_factory=lambda: FakeSearchSearch([0] * 82),
+        config=SelfPlayConfig(
             max_turns=5,
             temperature_turns=0,
-            root_noise=False,
         ),
         prior_provider=batch_prior_provider,
     )
@@ -591,15 +609,15 @@ def test_play_mcts_games_batched_uses_core_batch_when_available(monkeypatch) -> 
     assert len(samples) == 2
 
 
-def test_play_mcts_games_batched_passes_leaf_evaluator_to_core_batch(monkeypatch) -> None:
+def test_play_self_play_games_batched_passes_leaf_evaluator_to_core_batch(monkeypatch) -> None:
     fake_batch = FakeCoreBatch(game_count=2)
     evaluator_batch_sizes: list[int] = []
 
     monkeypatch.setattr(self_play_module, "_can_create_core_self_play_batch", lambda *_args: True)
     monkeypatch.setattr(
         self_play_module,
-        "create_core_mcts_self_play_batch",
-        lambda **_kwargs: fake_batch,
+        "create_core_self_play_batch",
+        lambda *_args, **_kwargs: fake_batch,
     )
 
     def batch_prior_provider(states) -> list[list[float]]:
@@ -613,24 +631,23 @@ def test_play_mcts_games_batched_passes_leaf_evaluator_to_core_batch(monkeypatch
         policy[1] = 1.0
         return [policy for _state in states], [0.25 for _state in states]
 
-    play_mcts_games_batched(
+    play_self_play_games_batched(
         seeds=[31, 32],
-        search_factory=lambda: FakeMctsSearch([0] * 82),
-        config=MctsSelfPlayConfig(
+        search_factory=lambda: FakeSearchSearch([0] * 82),
+        config=SelfPlayConfig(
             max_turns=5,
             temperature_turns=0,
-            root_noise=False,
             leaf_batch_size=32,
         ),
         prior_provider=batch_prior_provider,
         evaluator_provider=evaluator_provider,
     )
 
-    assert evaluator_batch_sizes == [2]
+    assert evaluator_batch_sizes == [2, 2]
     assert fake_batch.leaf_batch_sizes == [32]
 
 
-def test_play_mcts_games_batched_can_use_core_request_fast_path(monkeypatch) -> None:
+def test_play_self_play_games_batched_can_use_core_request_fast_path(monkeypatch) -> None:
     fake_batch = FakeCoreBatch(game_count=2)
     prior_batch_sizes: list[int] = []
     evaluator_batch_sizes: list[int] = []
@@ -638,8 +655,8 @@ def test_play_mcts_games_batched_can_use_core_request_fast_path(monkeypatch) -> 
     monkeypatch.setattr(self_play_module, "_can_create_core_self_play_batch", lambda *_args: True)
     monkeypatch.setattr(
         self_play_module,
-        "create_core_mcts_self_play_batch",
-        lambda **_kwargs: fake_batch,
+        "create_core_self_play_batch",
+        lambda *_args, **_kwargs: fake_batch,
     )
 
     def feature_batch_prior_provider(features, masks) -> list[list[float]]:
@@ -658,37 +675,30 @@ def test_play_mcts_games_batched_can_use_core_request_fast_path(monkeypatch) -> 
         policy[1] = 1.0
         return [policy for _features in features], [0.25 for _features in features]
 
-    play_mcts_games_batched(
+    play_self_play_games_batched(
         seeds=[41, 42],
-        search_factory=lambda: FakeMctsSearch([0] * 82),
-        config=MctsSelfPlayConfig(
+        search_factory=lambda: FakeSearchSearch([0] * 82),
+        config=SelfPlayConfig(
             max_turns=5,
             temperature_turns=0,
-            root_noise=False,
             leaf_batch_size=16,
         ),
         feature_batch_prior_provider=feature_batch_prior_provider,
         request_evaluator_provider=request_evaluator_provider,
     )
 
-    assert prior_batch_sizes == [2]
-    assert evaluator_batch_sizes == [2]
+    assert prior_batch_sizes == []
+    assert evaluator_batch_sizes == [2, 2]
     assert fake_batch.leaf_batch_sizes == [16]
 
 
-def test_play_mcts_games_batched_uses_gumbel_core_batch(monkeypatch) -> None:
+def test_play_self_play_games_batched_uses_core_batch(monkeypatch) -> None:
     fake_batch = FakeCoreBatch(game_count=2)
-    seen_backend: list[str] = []
     root_batch_sizes: list[int] = []
-
-    def can_create(search_backend: str = "mcts") -> bool:
-        seen_backend.append(search_backend)
-        return search_backend == "gumbel"
-
-    monkeypatch.setattr(self_play_module, "_can_create_core_self_play_batch", can_create)
+    monkeypatch.setattr(self_play_module, "_can_create_core_self_play_batch", lambda: True)
     monkeypatch.setattr(
         self_play_module,
-        "create_core_self_play_batch_backend",
+        "create_core_self_play_batch",
         lambda _config, **_kwargs: fake_batch,
     )
 
@@ -699,73 +709,49 @@ def test_play_mcts_games_batched_uses_gumbel_core_batch(monkeypatch) -> None:
         logits[1] = 5.0
         return [logits for _features in features]
 
-    results = play_mcts_games_batched(
+    results = play_self_play_games_batched(
         seeds=[51, 52],
         search_factory=lambda: FakeGumbelSearch(1, [0.0] * 82),
-        config=MctsSelfPlayConfig(
-            search_backend="gumbel",
+        config=SelfPlayConfig(
             max_turns=5,
             temperature_turns=10,
-            root_noise=True,
         ),
         feature_batch_prior_provider=feature_batch_prior_provider,
     )
 
     logs = [log for log, _samples in results]
-    assert seen_backend == ["gumbel"]
     assert root_batch_sizes == [2]
     assert fake_batch.applied_actions == [1, 1]
     assert [log.moves[0].action for log in logs] == [1, 1]
 
 
-def test_play_mcts_game_applies_root_noise_only_when_enabled() -> None:
+def test_play_self_play_game_can_use_model_root_logits() -> None:
     visits = [0] * 82
     visits[1] = 1
-    state = ScriptedMctsState()
-    search = FakeMctsSearch(visits)
-
-    play_mcts_game(
-        seed=43,
-        state=state,
-        search=search,
-        config=MctsSelfPlayConfig(root_noise=True),
-    )
-
-    assert search.noisy_priors is not None
-    assert sum(search.noisy_priors) == pytest.approx(1.0)
-    assert search.noisy_priors[1] > 0.0
-    assert search.noisy_priors[2] > 0.0
-    assert search.noisy_priors[81] > 0.0
-    assert search.search_calls == 0
-
-
-def test_play_mcts_game_can_use_model_root_priors_without_noise() -> None:
-    visits = [0] * 82
-    visits[1] = 1
-    state = ScriptedMctsState()
-    search = FakeMctsSearch(visits)
+    state = ScriptedSearchState()
+    search = FakeSearchSearch(visits)
     priors = [0.0] * 82
     priors[1] = 0.2
     priors[2] = 0.7
     priors[81] = 0.1
 
-    play_mcts_game(
+    play_self_play_game(
         seed=47,
         state=state,
         search=search,
-        config=MctsSelfPlayConfig(root_noise=False),
+        config=SelfPlayConfig(),
         prior_provider=lambda current_state: priors,
     )
 
-    assert search.noisy_priors == priors
+    assert search.root_logits == priors
     assert search.search_calls == 0
 
 
-def test_play_mcts_game_passes_leaf_evaluator_when_available() -> None:
+def test_play_self_play_game_passes_leaf_evaluator_when_available() -> None:
     visits = [0] * 82
     visits[1] = 1
-    state = ScriptedMctsState()
-    search = FakeMctsSearch(visits)
+    state = ScriptedSearchState()
+    search = FakeSearchSearch(visits)
     seen_players: list[int] = []
 
     def evaluator_provider(states) -> tuple[list[list[float]], list[float]]:
@@ -774,17 +760,17 @@ def test_play_mcts_game_passes_leaf_evaluator_when_available() -> None:
         policy[1] = 1.0
         return [policy for _state in states], [0.5 for _state in states]
 
-    play_mcts_game(
+    play_self_play_game(
         seed=49,
         state=state,
         search=search,
-        config=MctsSelfPlayConfig(root_noise=False),
+        config=SelfPlayConfig(),
         prior_provider=lambda current_state: [1.0 / 82.0] * 82,
         evaluator_provider=evaluator_provider,
     )
 
-    assert seen_players == [1]
-    assert search.noisy_priors == [1.0 / 82.0] * 82
+    assert seen_players == [1, 1]
+    assert search.root_logits == [1.0 / 82.0] * 82
     assert search.search_calls == 0
 
 
