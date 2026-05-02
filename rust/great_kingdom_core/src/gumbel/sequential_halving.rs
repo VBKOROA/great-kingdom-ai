@@ -99,14 +99,6 @@ impl RootSequentialHalving {
         self.advance_if_round_complete();
     }
 
-    #[must_use]
-    pub(crate) fn completed_visits(&self) -> Vec<(usize, u32)> {
-        self.active
-            .iter()
-            .map(|candidate| (candidate.action, candidate.completed_visits))
-            .collect()
-    }
-
     fn advance_if_round_complete(&mut self) {
         if self.finished || self.next_action().is_some() {
             return;

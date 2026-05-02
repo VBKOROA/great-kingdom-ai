@@ -1,1 +1,174 @@
 //! Tree node and edge storage for the Gumbel search backend.
+
+use crate::game::{ACTION_SPACE, Action, GameState, Player};
+
+use super::{sampling::RootCandidate, selection::InnerEdgeStats};
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct GumbelEdge {
+    pub(crate) action: Action,
+    pub(crate) log_prior: f32,
+    pub(crate) gumbel: Option<f32>,
+    pub(crate) visit_count: u32,
+    pub(crate) value_sum: f32,
+    pub(crate) child: Option<usize>,
+}
+
+impl GumbelEdge {
+    #[must_use]
+    pub(crate) const fn new(action: Action, log_prior: f32, gumbel: Option<f32>) -> Self {
+        Self {
+            action,
+            log_prior,
+            gumbel,
+            visit_count: 0,
+            value_sum: 0.0,
+            child: None,
+        }
+    }
+
+    pub(crate) fn update(&mut self, value: f32) {
+        self.visit_count = self.visit_count.saturating_add(1);
+        self.value_sum += value;
+    }
+
+    #[must_use]
+    pub(crate) fn mean_q(&self) -> Option<f32> {
+        (self.visit_count > 0).then_some(self.value_sum / self.visit_count as f32)
+    }
+
+    #[must_use]
+    pub(crate) fn action_index(&self) -> usize {
+        self.action.to_index()
+    }
+
+    #[must_use]
+    pub(crate) fn inner_stats(&self) -> InnerEdgeStats {
+        InnerEdgeStats::new(
+            self.action_index(),
+            self.log_prior,
+            self.visit_count,
+            self.value_sum,
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct GumbelNode {
+    pub(crate) to_play: Player,
+    pub(crate) visit_count: u32,
+    pub(crate) node_value: f32,
+    pub(crate) edges: Vec<GumbelEdge>,
+}
+
+impl GumbelNode {
+    #[must_use]
+    pub(crate) fn root_from_candidates(state: &GameState, candidates: &[RootCandidate]) -> Self {
+        let edges = candidates
+            .iter()
+            .filter_map(|candidate| {
+                Action::from_index(candidate.action).map(|action| {
+                    GumbelEdge::new(action, candidate.log_prior, Some(candidate.gumbel))
+                })
+            })
+            .collect();
+
+        Self {
+            to_play: state.current_player_value(),
+            visit_count: 0,
+            node_value: 0.0,
+            edges,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn from_log_priors(
+        state: &GameState,
+        log_priors: &[f32; ACTION_SPACE],
+        node_value: f32,
+    ) -> Self {
+        let edges = state
+            .legal_action_indexes()
+            .into_iter()
+            .filter_map(Action::from_index)
+            .map(|action| {
+                let action_index = action.to_index();
+                GumbelEdge::new(action, log_priors[action_index], None)
+            })
+            .collect();
+
+        Self {
+            to_play: state.current_player_value(),
+            visit_count: 0,
+            node_value,
+            edges,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn from_uniform_log_priors(state: &GameState, node_value: f32) -> Self {
+        let legal_actions = state.legal_action_indexes();
+        let uniform_log_prior = if legal_actions.is_empty() {
+            f32::NEG_INFINITY
+        } else {
+            (1.0 / legal_actions.len() as f32).ln()
+        };
+        let edges = legal_actions
+            .into_iter()
+            .filter_map(Action::from_index)
+            .map(|action| GumbelEdge::new(action, uniform_log_prior, None))
+            .collect();
+
+        Self {
+            to_play: state.current_player_value(),
+            visit_count: 0,
+            node_value,
+            edges,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn edge_index_for_action(&self, action_index: usize) -> Option<usize> {
+        self.edges
+            .iter()
+            .position(|edge| edge.action.to_index() == action_index)
+    }
+
+    #[must_use]
+    pub(crate) fn visit_counts(&self) -> [u32; ACTION_SPACE] {
+        let mut counts = [0; ACTION_SPACE];
+        for edge in &self.edges {
+            counts[edge.action.to_index()] = edge.visit_count;
+        }
+        counts
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GumbelNode;
+    use crate::game::{ACTION_SPACE, GameState};
+
+    #[test]
+    fn expanded_internal_node_stores_legal_edges_with_log_priors() {
+        let state = GameState::new();
+        let log_priors = [0.0; ACTION_SPACE];
+
+        let node = GumbelNode::from_log_priors(&state, &log_priors, 0.25);
+
+        assert_eq!(node.node_value, 0.25);
+        assert_eq!(node.edges.len(), state.legal_actions().len());
+        assert!(node.edge_index_for_action(40).is_none());
+        assert!(node.edges.iter().all(|edge| edge.gumbel.is_none()));
+    }
+
+    #[test]
+    fn uniform_internal_node_uses_current_legal_action_set() {
+        let state = GameState::new();
+
+        let node = GumbelNode::from_uniform_log_priors(&state, 0.0);
+
+        assert_eq!(node.edges.len(), state.legal_actions().len());
+        assert!(node.edges.iter().all(|edge| edge.log_prior.is_finite()));
+    }
+}
