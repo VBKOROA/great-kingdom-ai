@@ -766,7 +766,7 @@ debug 출력은 root와 내부 node별로 다음 값을 포함한다.
 2. `ImprovedPolicy(a) - VisitCount(a) / (1 + Sum(TotalVisits))` selection 구현.
 3. 내부 node에서 Gumbel noise와 PUCT selection을 쓰지 않는 구조 테스트 추가.
 
-### Phase 4. Full tree traversal
+### ~~Phase 4. Full tree traversal~~
 
 1. `GumbelNode`/`GumbelEdge` tree storage 구현.
 2. root는 sequential halving, child/internal node는 deterministic selection을 사용한다.
@@ -781,6 +781,7 @@ debug 출력은 root와 내부 node별로 다음 값을 포함한다.
 3. evaluator response logits/value parsing 공용화.
 4. child node expansion.
 5. virtual reservation 또는 equivalent pending guard로 같은 wave 안 중복 leaf 평가를 방지한다.
+6. evaluator logits/value로 child node expand → uniform fallback 제거
 
 ### Phase 6. Improved policy target
 
