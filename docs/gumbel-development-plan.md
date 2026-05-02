@@ -744,7 +744,7 @@ debug 출력은 root와 내부 node별로 다음 값을 포함한다.
 
 ## 9. 구현 순서
 
-### Phase 1. 문서와 skeleton
+### ~~Phase 1. 문서와 skeleton~~
 
 1. 이 문서를 root-only가 아닌 논문급 Gumbel tree search 기준으로 수정한다.
 2. `rust/great_kingdom_core/src/gumbel/` module skeleton을 추가한다.

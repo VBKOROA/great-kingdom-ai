@@ -1,0 +1,1 @@
+//! Root Gumbel sampling utilities.

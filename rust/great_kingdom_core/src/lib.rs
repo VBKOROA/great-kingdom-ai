@@ -2,6 +2,7 @@ use pyo3::prelude::*;
 
 mod features;
 mod game;
+mod gumbel;
 mod mcts;
 mod rules;
 mod territory;
@@ -10,6 +11,7 @@ pub use game::{
     ACTION_SPACE, Action, BOARD_CELLS, BOARD_SIZE, CASTLES_PER_PLAYER, CENTER_INDEX, Cell,
     FEATURE_CHANNELS, GameEndReason, GameOutcome, GameState, InvalidAction, PASS_ACTION, Player,
 };
+pub use gumbel::{GumbelConfig, GumbelResult, GumbelSearch, GumbelSelfPlayBatch};
 pub use mcts::{EvalRequest, MctsConfig, MctsResult, MctsSearch, MctsSelfPlayBatch};
 
 #[pyfunction]
@@ -22,6 +24,10 @@ pub fn action_space() -> usize {
 fn great_kingdom_core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<GameState>()?;
     module.add_class::<EvalRequest>()?;
+    module.add_class::<GumbelConfig>()?;
+    module.add_class::<GumbelResult>()?;
+    module.add_class::<GumbelSearch>()?;
+    module.add_class::<GumbelSelfPlayBatch>()?;
     module.add_class::<MctsResult>()?;
     module.add_class::<MctsSearch>()?;
     module.add_class::<MctsSelfPlayBatch>()?;
