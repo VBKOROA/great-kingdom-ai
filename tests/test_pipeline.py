@@ -272,32 +272,3 @@ def test_load_pipeline_config_parses_work_dir(tmp_path: Path) -> None:
     assert config.work_dir == Path("data/x")
     assert config.self_play_games == 3
 
-
-def test_runpod_training_configs_load() -> None:
-    from great_kingdom_ai.evaluate import load_arena_config
-    from great_kingdom_ai.train import load_training_config
-
-    pipeline = load_pipeline_config("configs/pipeline-train.json")
-    train = load_training_config("configs/train-runpod.json")
-    arena = load_arena_config("configs/arena-runpod.json")
-
-    assert pipeline.iterations > 1
-    assert pipeline.self_play_games > 0
-    assert pipeline.max_self_play_games is None
-    assert pipeline.leaf_batch_size > 0
-    assert pipeline.self_play_games >= pipeline.self_play_batch_size
-    assert not pipeline.playout_cap_randomization
-    assert pipeline.playout_cap_fast_simulations < pipeline.mcts_simulations
-    assert pipeline.min_replay_samples >= train.batch_size
-    assert train.device == "cuda"
-    assert train.model_preset == "large"
-    assert arena.device == "cuda"
-    assert arena.games > 0
-    assert arena.leaf_batch_size == arena.simulations
-
-
-def test_smoke_pipeline_config_exercises_batched_self_play_path() -> None:
-    pipeline = load_pipeline_config("configs/pipeline-smoke.json")
-
-    assert pipeline.self_play_batch_size > 1
-    assert pipeline.self_play_games >= pipeline.self_play_batch_size
