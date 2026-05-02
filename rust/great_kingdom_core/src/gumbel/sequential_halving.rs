@@ -13,15 +13,14 @@ pub(crate) struct RootSequentialHalving {
     active: Vec<RootHalvingCandidate>,
     round_index: usize,
     simulations: u32,
+    completed_total: u32,
     initial_candidate_count: usize,
-    finished: bool,
 }
 
 impl RootSequentialHalving {
     #[must_use]
     pub(crate) fn new(candidates: Vec<(usize, f32)>, simulations: u32) -> Self {
         let initial_candidate_count = candidates.len();
-        let finished = initial_candidate_count <= 1;
         let mut scheduler = Self {
             active: candidates
                 .into_iter()
@@ -34,16 +33,34 @@ impl RootSequentialHalving {
                 .collect(),
             round_index: 0,
             simulations,
+            completed_total: 0,
             initial_candidate_count,
-            finished,
         };
         scheduler.assign_round_targets();
         scheduler
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn is_finished(&self) -> bool {
-        self.finished
+        self.active.len() <= 1
+    }
+
+    #[must_use]
+    pub(crate) fn is_done(&self) -> bool {
+        self.completed_total >= self.simulations || self.active.is_empty()
+    }
+
+    #[must_use]
+    pub(crate) fn selected_action(&self) -> Option<usize> {
+        self.active
+            .iter()
+            .max_by(|left, right| {
+                left.ranking_score
+                    .total_cmp(&right.ranking_score)
+                    .then_with(|| right.action.cmp(&left.action))
+            })
+            .map(|candidate| candidate.action)
     }
 
     #[must_use]
@@ -72,6 +89,10 @@ impl RootSequentialHalving {
 
     #[must_use]
     pub(crate) fn next_action(&self) -> Option<usize> {
+        if self.is_done() {
+            return None;
+        }
+
         self.active
             .iter()
             .filter(|candidate| candidate.completed_visits < candidate.target_visits)
@@ -88,6 +109,7 @@ impl RootSequentialHalving {
             .map(|candidate| candidate.action)
     }
 
+    #[cfg(test)]
     pub(crate) fn record_visit(&mut self, action: usize) {
         self.reserve_visit(action);
         self.advance_if_round_complete();
@@ -100,6 +122,7 @@ impl RootSequentialHalving {
             .find(|candidate| candidate.action == action)
         {
             candidate.completed_visits = candidate.completed_visits.saturating_add(1);
+            self.completed_total = self.completed_total.saturating_add(1);
         }
     }
 
@@ -120,12 +143,12 @@ impl RootSequentialHalving {
     }
 
     fn advance_if_round_complete(&mut self) {
-        if self.finished || self.next_action().is_some() {
+        if self.active.is_empty() || !self.is_round_complete() {
             return;
         }
 
         if self.active.len() <= 1 {
-            self.finished = true;
+            self.assign_round_targets();
             return;
         }
 
@@ -138,40 +161,80 @@ impl RootSequentialHalving {
         let keep_count = self.active.len().div_ceil(2);
         self.active.truncate(keep_count);
         self.round_index += 1;
-        if self.active.len() <= 1 {
-            self.finished = true;
-        }
         self.assign_round_targets();
+    }
+
+    fn is_round_complete(&self) -> bool {
+        self.active
+            .iter()
+            .all(|candidate| candidate.completed_visits >= candidate.target_visits)
     }
 
     fn assign_round_targets(&mut self) {
         if self.active.is_empty() {
             return;
         }
+        let remaining = self.simulations.saturating_sub(self.completed_total);
+        if remaining == 0 {
+            return;
+        }
+
+        if self.active.len() == 1 {
+            let candidate = &mut self.active[0];
+            candidate.target_visits = candidate.completed_visits.saturating_add(remaining);
+            return;
+        }
 
         let quota = self.round_quota();
-        for candidate in &mut self.active {
-            candidate.target_visits = candidate.completed_visits.saturating_add(quota);
-        }
+        let mut increments = vec![quota; self.active.len()];
 
         let round_count = ceil_log2(self.initial_candidate_count).max(1) as u32;
         let base_budget = quota
             .saturating_mul(round_count)
             .saturating_mul(self.active.len() as u32);
         let remainder = self.simulations.saturating_sub(base_budget) as usize;
-        if remainder == 0 {
-            return;
+        if remainder > 0 {
+            let mut order = (0..self.active.len()).collect::<Vec<_>>();
+            order.sort_by(|left, right| {
+                self.active[*right]
+                    .ranking_score
+                    .total_cmp(&self.active[*left].ranking_score)
+                    .then_with(|| self.active[*left].action.cmp(&self.active[*right].action))
+            });
+            for index in order.into_iter().take(remainder.min(self.active.len())) {
+                increments[index] = increments[index].saturating_add(1);
+            }
         }
 
-        let mut order = (0..self.active.len()).collect::<Vec<_>>();
-        order.sort_by(|left, right| {
-            self.active[*right]
-                .ranking_score
-                .total_cmp(&self.active[*left].ranking_score)
-                .then_with(|| self.active[*left].action.cmp(&self.active[*right].action))
-        });
-        for index in order.into_iter().take(remainder.min(self.active.len())) {
-            self.active[index].target_visits = self.active[index].target_visits.saturating_add(1);
+        let mut total_increment = increments.iter().sum::<u32>();
+        if total_increment > remaining {
+            let mut worst_first = (0..self.active.len()).collect::<Vec<_>>();
+            worst_first.sort_by(|left, right| {
+                self.active[*left]
+                    .ranking_score
+                    .total_cmp(&self.active[*right].ranking_score)
+                    .then_with(|| self.active[*right].action.cmp(&self.active[*left].action))
+            });
+            while total_increment > remaining {
+                let mut reduced = false;
+                for index in &worst_first {
+                    if total_increment <= remaining {
+                        break;
+                    }
+                    if increments[*index] > 0 {
+                        increments[*index] -= 1;
+                        total_increment -= 1;
+                        reduced = true;
+                    }
+                }
+                if !reduced {
+                    break;
+                }
+            }
+        }
+
+        for (candidate, increment) in self.active.iter_mut().zip(increments) {
+            candidate.target_visits = candidate.completed_visits.saturating_add(increment);
         }
     }
 
@@ -198,10 +261,18 @@ mod tests {
 
     #[test]
     fn single_candidate_scheduler_is_finished() {
-        let scheduler = RootSequentialHalving::new(vec![(3, 1.0)], 8);
+        let mut scheduler = RootSequentialHalving::new(vec![(3, 1.0)], 8);
 
         assert!(scheduler.is_finished());
         assert_eq!(scheduler.active_actions(), vec![3]);
+        assert_eq!(scheduler.selected_action(), Some(3));
+
+        for _ in 0..8 {
+            assert_eq!(scheduler.next_action(), Some(3));
+            scheduler.record_visit(3);
+        }
+        assert!(scheduler.is_done());
+        assert_eq!(scheduler.next_action(), None);
     }
 
     #[test]
@@ -258,5 +329,35 @@ mod tests {
         assert_eq!(scheduler.active[1].target_visits, 2);
         assert_eq!(scheduler.active[2].target_visits, 1);
         assert_eq!(scheduler.active[0].target_visits, 1);
+    }
+
+    #[test]
+    fn final_partial_round_spends_remaining_budget_on_best_ranked_candidates() {
+        let mut scheduler =
+            RootSequentialHalving::new(vec![(0, 0.0), (1, 1.0), (2, 2.0), (3, 3.0)], 5);
+
+        while !scheduler.is_done() {
+            let action = scheduler.next_action().unwrap();
+            scheduler.record_visit(action);
+        }
+
+        assert_eq!(scheduler.active_actions(), vec![3]);
+        assert_eq!(scheduler.selected_action(), Some(3));
+        assert_eq!(scheduler.active[0].completed_visits, 2);
+    }
+
+    #[test]
+    fn selected_action_comes_from_surviving_active_candidates() {
+        let mut scheduler =
+            RootSequentialHalving::new(vec![(0, 100.0), (1, 2.0), (2, 1.0), (3, 0.0)], 4);
+
+        while scheduler.round_index() == 0 {
+            let action = scheduler.next_action().unwrap();
+            scheduler.reserve_visit(action);
+            scheduler.complete_reserved_visits(&[(0, -100.0), (1, 2.0), (2, 1.0), (3, 0.0)]);
+        }
+
+        assert_eq!(scheduler.active_actions(), vec![1, 2]);
+        assert_eq!(scheduler.selected_action(), Some(1));
     }
 }

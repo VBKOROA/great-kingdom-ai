@@ -393,12 +393,7 @@ impl GumbelSelfPlayBatch {
                             if *comp + local_pending.len() as u32 >= search.config.simulations {
                                 break;
                             }
-                            let Some(root_action) = scheduler.next_action().or_else(|| {
-                                scheduler
-                                    .is_finished()
-                                    .then(|| search.best_available_root_action(root_index))
-                                    .flatten()
-                            }) else {
+                            let Some(root_action) = scheduler.next_action() else {
                                 break;
                             };
                             let mut simulation_state = state.clone();
@@ -554,8 +549,11 @@ impl GumbelSelfPlayBatch {
                 self.searches[game_index].config.c_visit,
                 self.searches[game_index].config.c_scale,
             );
+            let selected_action = schedulers[game_index]
+                .as_ref()
+                .and_then(RootSequentialHalving::selected_action);
             results[game_index] = Some(GumbelResult {
-                selected_action: improved.selected_action,
+                selected_action,
                 policy_target: improved.policy_target,
                 visit_counts: root.visit_counts(),
             });

@@ -361,13 +361,8 @@ impl GumbelSearch {
             self.config.simulations,
         );
 
-        for _ in 0..self.config.simulations {
-            let Some(root_action) = scheduler.next_action().or_else(|| {
-                scheduler
-                    .is_finished()
-                    .then(|| self.best_root_action(root_index))
-                    .flatten()
-            }) else {
+        while !scheduler.is_done() {
+            let Some(root_action) = scheduler.next_action() else {
                 break;
             };
             let mut simulation_state = state.clone();
@@ -399,7 +394,7 @@ impl GumbelSearch {
         );
 
         GumbelResult {
-            selected_action: improved.selected_action,
+            selected_action: scheduler.selected_action(),
             policy_target: improved.policy_target,
             visit_counts: self.nodes[root_index].visit_counts(),
         }
@@ -451,12 +446,7 @@ impl GumbelSearch {
                 if completed + pending.len() as u32 >= self.config.simulations {
                     break;
                 }
-                let Some(root_action) = scheduler.next_action().or_else(|| {
-                    scheduler
-                        .is_finished()
-                        .then(|| self.best_available_root_action(root_index))
-                        .flatten()
-                }) else {
+                let Some(root_action) = scheduler.next_action() else {
                     break;
                 };
                 let mut simulation_state = state.clone();
@@ -529,39 +519,10 @@ impl GumbelSearch {
         );
 
         Ok(GumbelResult {
-            selected_action: improved.selected_action,
+            selected_action: scheduler.selected_action(),
             policy_target: improved.policy_target,
             visit_counts: self.nodes[root_index].visit_counts(),
         })
-    }
-
-    fn best_root_action(&self, root_index: usize) -> Option<usize> {
-        self.best_root_action_matching(root_index, |_| true)
-    }
-
-    pub(crate) fn best_available_root_action(&self, root_index: usize) -> Option<usize> {
-        self.best_root_action_matching(root_index, |edge| {
-            edge.child.is_some() || !edge.pending_evaluation
-        })
-    }
-
-    fn best_root_action_matching(
-        &self,
-        root_index: usize,
-        predicate: impl Fn(&super::node::GumbelEdge) -> bool,
-    ) -> Option<usize> {
-        self.nodes[root_index]
-            .edges
-            .iter()
-            .filter(|edge| predicate(edge))
-            .max_by(|left, right| {
-                let left_score = left.gumbel.unwrap_or(0.0) + left.log_prior;
-                let right_score = right.gumbel.unwrap_or(0.0) + right.log_prior;
-                left_score
-                    .total_cmp(&right_score)
-                    .then_with(|| right.action_index().cmp(&left.action_index()))
-            })
-            .map(|edge| edge.action_index())
     }
 
     pub(crate) fn expand_evaluated_node(
