@@ -1306,7 +1306,21 @@ impl Node {
     fn most_visited_action(&self) -> Option<usize> {
         self.edges
             .iter()
-            .max_by_key(|edge| edge.visit_count)
+            .max_by(|left, right| {
+                left.visit_count
+                    .cmp(&right.visit_count)
+                    .then_with(|| {
+                        left.mean_value()
+                            .partial_cmp(&right.mean_value())
+                            .expect("edge mean value must be finite")
+                    })
+                    .then_with(|| {
+                        left.prior
+                            .partial_cmp(&right.prior)
+                            .expect("edge prior must be finite")
+                    })
+                    .then_with(|| right.action.to_index().cmp(&left.action.to_index()))
+            })
             .map(|edge| edge.action.to_index())
     }
 }
@@ -1736,6 +1750,37 @@ mod tests {
                 .iter()
                 .all(|edge| { (edge.prior - (1.0 / BOARD_CELLS as f32)).abs() < f32::EPSILON })
         );
+    }
+
+    #[test]
+    fn most_visited_action_breaks_ties_without_defaulting_to_pass() {
+        let node = Node {
+            to_play: Player::Blue,
+            visit_count: 2,
+            virtual_visit_count: 0,
+            edges: vec![
+                EdgeStats {
+                    action: Action::from_index(5).unwrap(),
+                    prior: 0.5,
+                    visit_count: 1,
+                    value_sum: 0.0,
+                    virtual_visit_count: 0,
+                    virtual_value_sum: 0.0,
+                    child: None,
+                },
+                EdgeStats {
+                    action: Action::Pass,
+                    prior: 0.5,
+                    visit_count: 1,
+                    value_sum: 0.0,
+                    virtual_visit_count: 0,
+                    virtual_value_sum: 0.0,
+                    child: None,
+                },
+            ],
+        };
+
+        assert_eq!(node.most_visited_action(), Some(5));
     }
 
     #[test]
