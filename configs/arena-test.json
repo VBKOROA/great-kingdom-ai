@@ -1,0 +1,10 @@
+{
+  "c_puct": 1.5,
+  "device": "cuda",
+  "games": 8,
+  "leaf_batch_size": 32,
+  "max_turns": 200,
+  "promotion_threshold": 0.55,
+  "seed_start": 100000,
+  "simulations": 32
+}

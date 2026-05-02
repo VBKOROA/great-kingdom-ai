@@ -34,7 +34,6 @@ impl GameState {
         let opponent = player.other();
         let own_remaining = remaining_castles(player, self);
         let opponent_remaining = remaining_castles(opponent, self);
-        let current_player_is_blue = f32::from(player == Player::Blue);
         let previous_move_was_pass = f32::from(self.previous_pass);
         let legal_mask = self.legal_action_mask();
 
@@ -80,7 +79,7 @@ impl GameState {
                 &mut planes,
                 FeatureChannel::CurrentPlayerIsBlue,
                 index,
-                current_player_is_blue,
+                0.0,
             );
             set_channel(
                 &mut planes,
@@ -136,7 +135,7 @@ mod tests {
     }
 
     #[test]
-    fn feature_planes_have_current_player_perspective_channels() {
+    fn feature_planes_have_current_player_perspective_channels_without_color_shortcut() {
         let mut board = [Cell::Empty; BOARD_CELLS];
         board[CENTER_INDEX] = Cell::Neutral;
         board[0] = Cell::Blue;
