@@ -424,20 +424,46 @@ impl GumbelSelfPlayBatch {
 
             let backup_start = Instant::now();
             let leaves = pending.len();
+            let mut by_game: Vec<Vec<PendingGameEvaluation>> =
+                (0..self.states.len()).map(|_| Vec::new()).collect();
             for (leaf, (policy_row, value)) in pending
                 .into_iter()
                 .zip(eval.policies.into_iter().zip(eval.values.into_iter()))
             {
-                let search = &mut self.searches[leaf.game_index];
-                unreserve_path(&mut search.nodes, &leaf.path);
-                let child_index =
-                    search.expand_evaluated_node(&leaf.state, &policy_row, value, logits)?;
-                if let Some((parent_index, edge_index)) = leaf.path.last().copied() {
-                    search.nodes[parent_index].edges[edge_index].child = Some(child_index);
-                }
-                backup_path(&mut search.nodes, &leaf.path, value, true);
-                completed[leaf.game_index] += 1;
+                by_game[leaf.game_index].push(PendingGameEvaluation {
+                    path: leaf.path,
+                    state: leaf.state,
+                    policy_row,
+                    value,
+                });
             }
+            self.searches
+                .par_iter_mut()
+                .zip(completed.par_iter_mut())
+                .zip(by_game.into_par_iter())
+                .try_for_each(|((search, comp), evaluations)| -> Result<(), String> {
+                    let completed_count = evaluations.len() as u32;
+                    for evaluation in evaluations {
+                        unreserve_path(&mut search.nodes, &evaluation.path);
+                        let child_index = search
+                            .expand_evaluated_node(
+                                &evaluation.state,
+                                &evaluation.policy_row,
+                                evaluation.value,
+                                logits,
+                            )
+                            .map_err(|err| err.to_string())?;
+                        if let Some((parent_index, edge_index)) = evaluation.path.last().copied() {
+                            search.nodes[parent_index].edges[edge_index].child = Some(child_index);
+                        }
+                        backup_path(&mut search.nodes, &evaluation.path, evaluation.value, true);
+                    }
+                    *comp += completed_count;
+                    Ok(())
+                })
+                .map_err(|err| {
+                    PyValueError::new_err(format!("failed to expand Gumbel evaluation: {err}"))
+                })?;
             profile.wave(GumbelBatchWaveProfile {
                 wave,
                 active_games: active_indexes.len(),
@@ -482,6 +508,14 @@ struct PendingBatchLeaf {
     game_index: usize,
     path: Vec<(usize, usize)>,
     state: GameState,
+}
+
+#[derive(Clone, Debug)]
+struct PendingGameEvaluation {
+    path: Vec<(usize, usize)>,
+    state: GameState,
+    policy_row: [f32; ACTION_SPACE],
+    value: f32,
 }
 
 #[derive(Clone, Copy)]
