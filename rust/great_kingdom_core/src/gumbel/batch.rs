@@ -118,17 +118,24 @@ impl GumbelSelfPlayBatch {
         self.search_active(policy_logits, true)
     }
 
-    #[pyo3(signature = (policy_logits, evaluator, leaf_batch_size = 16))]
+    #[pyo3(signature = (policy_logits, evaluator, root_values, leaf_batch_size = 16))]
     pub fn search_active_with_logits_and_evaluator(
         &mut self,
         policy_logits: Vec<Vec<f32>>,
         evaluator: &Bound<'_, PyAny>,
+        root_values: Vec<f32>,
         leaf_batch_size: usize,
     ) -> PyResult<Vec<Option<GumbelResult>>> {
         if leaf_batch_size == 0 {
             return Err(PyValueError::new_err("leaf_batch_size must be positive"));
         }
-        self.search_active_with_evaluator(policy_logits, true, evaluator, leaf_batch_size)
+        self.search_active_with_evaluator(
+            policy_logits,
+            true,
+            evaluator,
+            leaf_batch_size,
+            &root_values,
+        )
     }
 
     pub fn search_active_with_priors(
@@ -138,17 +145,18 @@ impl GumbelSelfPlayBatch {
         self.search_active(priors, false)
     }
 
-    #[pyo3(signature = (priors, evaluator, leaf_batch_size = 16))]
+    #[pyo3(signature = (priors, evaluator, root_values, leaf_batch_size = 16))]
     pub fn search_active_with_priors_and_evaluator(
         &mut self,
         priors: Vec<Vec<f32>>,
         evaluator: &Bound<'_, PyAny>,
+        root_values: Vec<f32>,
         leaf_batch_size: usize,
     ) -> PyResult<Vec<Option<GumbelResult>>> {
         if leaf_batch_size == 0 {
             return Err(PyValueError::new_err("leaf_batch_size must be positive"));
         }
-        self.search_active_with_evaluator(priors, false, evaluator, leaf_batch_size)
+        self.search_active_with_evaluator(priors, false, evaluator, leaf_batch_size, &root_values)
     }
 
     pub fn apply_actions(&mut self, actions: Vec<Option<usize>>) -> PyResult<Vec<Option<u8>>> {
@@ -266,6 +274,7 @@ impl GumbelSelfPlayBatch {
         logits: bool,
         evaluator: &Bound<'_, PyAny>,
         leaf_batch_size: usize,
+        root_values: &[f32],
     ) -> PyResult<Vec<Option<GumbelResult>>> {
         let profile = GumbelBatchProfile::new(if logits {
             "search_active_with_logits_and_evaluator"
@@ -280,6 +289,18 @@ impl GumbelSelfPlayBatch {
                 rows.len()
             )));
         }
+        if root_values.len() != active_indexes.len() {
+            return Err(PyValueError::new_err(format!(
+                "expected {} root values for active games, got {}",
+                active_indexes.len(),
+                root_values.len()
+            )));
+        }
+        if root_values.iter().any(|value| !value.is_finite()) {
+            return Err(PyValueError::new_err(
+                "root values must be finite for active games",
+            ));
+        }
 
         let mut root_indexes = vec![None; self.states.len()];
         let mut root_legal_actions = vec![None; self.states.len()];
@@ -288,7 +309,12 @@ impl GumbelSelfPlayBatch {
         let mut schedulers = vec![None; self.states.len()];
 
         let root_start = Instant::now();
-        for (game_index, row) in active_indexes.iter().copied().zip(rows.into_iter()) {
+        for (active_offset, (game_index, row)) in active_indexes
+            .iter()
+            .copied()
+            .zip(rows.into_iter())
+            .enumerate()
+        {
             if row.len() != ACTION_SPACE {
                 return Err(PyValueError::new_err(format!(
                     "expected {ACTION_SPACE} policy values for game {game_index}, got {}",
@@ -320,6 +346,7 @@ impl GumbelSelfPlayBatch {
             search.nodes.push(GumbelNode::root_from_candidates(
                 &self.states[game_index],
                 &candidates,
+                root_values[active_offset],
             ));
             root_indexes[game_index] = Some(root_index);
             root_legal_actions[game_index] = Some(legal_actions);

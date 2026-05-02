@@ -112,9 +112,10 @@ class LogitSearch:
         state: OneMoveState,
         policy_logits: list[float],
         evaluator: Any,
+        root_value: float,
         leaf_batch_size: int = 8,
     ) -> PriorSearchResult:
-        del leaf_batch_size
+        del leaf_batch_size, root_value
         self.root_logits = policy_logits
         policies, values = evaluator(_ArenaEvalRequest(state))
         assert len(policies) == 1

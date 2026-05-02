@@ -43,6 +43,7 @@ class ArenaSearchLike(Protocol):
         state: SelfPlayState,
         policy_logits: list[float],
         evaluator: Callable[[Any], tuple[list[list[float]], list[float]]],
+        root_value: float,
         leaf_batch_size: int = 8,
     ) -> ArenaSearchResultLike: ...
 
@@ -156,6 +157,7 @@ def play_arena_game(
         priors = [float(value) for value in root_evaluation.policy[0]]
         root_logits = getattr(root_evaluation, "policy_logits", root_evaluation.policy)[0]
         logits = [float(value) for value in root_logits]
+        root_value = float(root_evaluation.value[0])
 
         def evaluator(request: Any, m: Any = model) -> tuple[list[list[float]], list[float]]:
             feature_rows = request.feature_planes()
@@ -178,6 +180,7 @@ def play_arena_game(
                 game_state,
                 logits,
                 evaluator,
+                root_value,
                 config.leaf_batch_size,
             )
         else:

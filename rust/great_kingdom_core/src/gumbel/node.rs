@@ -66,7 +66,11 @@ pub(crate) struct GumbelNode {
 
 impl GumbelNode {
     #[must_use]
-    pub(crate) fn root_from_candidates(state: &GameState, candidates: &[RootCandidate]) -> Self {
+    pub(crate) fn root_from_candidates(
+        state: &GameState,
+        candidates: &[RootCandidate],
+        node_value: f32,
+    ) -> Self {
         let edges = candidates
             .iter()
             .filter_map(|candidate| {
@@ -79,7 +83,7 @@ impl GumbelNode {
         Self {
             to_play: state.current_player_value(),
             visit_count: 0,
-            node_value: 0.0,
+            node_value,
             edges,
         }
     }

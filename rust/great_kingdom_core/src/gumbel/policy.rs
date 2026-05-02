@@ -290,7 +290,7 @@ mod tests {
                 score: 0.5_f32.ln(),
             },
         ];
-        let mut root = GumbelNode::root_from_candidates(&GameState::new(), &candidates);
+        let mut root = GumbelNode::root_from_candidates(&GameState::new(), &candidates, 0.0);
         root.edges[0].visit_count = 10;
         root.edges[0].value_sum = -10.0;
         root.edges[1].visit_count = 1;
@@ -326,7 +326,7 @@ mod tests {
                 score: -100.0 + 0.5_f32.ln(),
             },
         ];
-        let root = GumbelNode::root_from_candidates(&GameState::new(), &candidates);
+        let root = GumbelNode::root_from_candidates(&GameState::new(), &candidates, 0.0);
         let legal = [0, 1];
         let mut log_priors = [f32::NEG_INFINITY; ACTION_SPACE];
         log_priors[0] = 0.5_f32.ln();
@@ -347,7 +347,7 @@ mod tests {
             gumbel: 0.0,
             score: 0.5_f32.ln(),
         }];
-        let root = GumbelNode::root_from_candidates(&GameState::new(), &candidates);
+        let root = GumbelNode::root_from_candidates(&GameState::new(), &candidates, 0.0);
         let legal = [0, 1];
         let mut log_priors = [f32::NEG_INFINITY; ACTION_SPACE];
         log_priors[0] = 0.5_f32.ln();
@@ -357,5 +357,30 @@ mod tests {
 
         assert!(improved.policy_target[1] > 0.0);
         assert_close(improved.policy_target.iter().sum::<f32>(), 1.0);
+    }
+
+    #[test]
+    fn root_policy_target_uses_root_value_for_unconsidered_actions() {
+        let candidates = [RootCandidate {
+            action: 0,
+            log_prior: 0.5_f32.ln(),
+            gumbel: 0.0,
+            score: 0.5_f32.ln(),
+        }];
+        let legal = [0, 1];
+        let mut log_priors = [f32::NEG_INFINITY; ACTION_SPACE];
+        log_priors[0] = 0.5_f32.ln();
+        log_priors[1] = 0.5_f32.ln();
+        let mut low_root = GumbelNode::root_from_candidates(&GameState::new(), &candidates, -1.0);
+        let mut high_root = GumbelNode::root_from_candidates(&GameState::new(), &candidates, 1.0);
+        low_root.edges[0].visit_count = 1;
+        low_root.edges[0].value_sum = 0.0;
+        high_root.edges[0].visit_count = 1;
+        high_root.edges[0].value_sum = 0.0;
+
+        let low_improved = root_improved_policy_target(&low_root, &legal, &log_priors, 1.0, 1.0);
+        let high_improved = root_improved_policy_target(&high_root, &legal, &log_priors, 1.0, 1.0);
+
+        assert!(high_improved.policy_target[1] > low_improved.policy_target[1]);
     }
 }

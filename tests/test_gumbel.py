@@ -114,6 +114,7 @@ def test_gumbel_search_with_evaluator_batches_leaf_logits() -> None:
         state,
         root_logits,
         evaluator,
+        root_value=0.0,
         leaf_batch_size=4,
     )
 
@@ -151,6 +152,7 @@ def test_gumbel_self_play_batch_batches_active_game_leaf_eval() -> None:
     results = batch.search_active_with_logits_and_evaluator(
         root_logits,
         evaluator,
+        root_values=[0.0, 0.0],
         leaf_batch_size=4,
     )
 

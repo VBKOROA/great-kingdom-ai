@@ -77,6 +77,7 @@ class MctsSearchLike(Protocol):
         state: SelfPlayState,
         policy_logits: list[float],
         evaluator: Callable[[Any], tuple[list[list[float]], list[float]]],
+        root_value: float,
         leaf_batch_size: int = 8,
     ) -> MctsResultLike: ...
 
@@ -123,6 +124,7 @@ class MctsSelfPlayBatchLike(Protocol):
         self,
         policy_logits: list[list[float]],
         evaluator: Callable[[Any], tuple[list[list[float]], list[float]]],
+        root_values: list[float],
         leaf_batch_size: int = 8,
     ) -> list[MctsResultLike | None]: ...
 
@@ -577,15 +579,24 @@ def _run_self_play_search(
 ) -> MctsResultLike:
     if config.search_backend == "gumbel":
         root_logits = list(root_priors) if root_priors is not None else [0.0] * (PASS_ACTION + 1)
-        if root_priors is None and evaluator_provider is not None:
-            root_policies, _root_values = evaluator_provider([state])
+        root_value: float | None = None
+        if evaluator_provider is not None:
+            root_policies, root_values = evaluator_provider([state])
             if len(root_policies) != 1:
                 raise ValueError(
                     f"expected 1 root policy row from evaluator, got {len(root_policies)}"
                 )
-            root_logits = [float(value) for value in root_policies[0]]
+            if len(root_values) != 1:
+                raise ValueError(
+                    f"expected 1 root value from evaluator, got {len(root_values)}"
+                )
+            if root_priors is None:
+                root_logits = [float(value) for value in root_policies[0]]
+            root_value = float(root_values[0])
         if evaluator_provider is None:
             return search.search_with_logits(state, root_logits)
+        if root_value is None:
+            raise ValueError("Gumbel evaluator search requires an explicit root value")
 
         def gumbel_leaf_evaluator(request: Any) -> tuple[list[list[float]], list[float]]:
             return _evaluate_core_batch_policy_values(evaluator_provider, request)
@@ -594,6 +605,7 @@ def _run_self_play_search(
             state,
             root_logits,
             gumbel_leaf_evaluator,
+            root_value,
             config.leaf_batch_size,
         )
 
@@ -719,7 +731,12 @@ def _play_mcts_games_core_batched(
                 strict=True,
             )
         }
-        if feature_batch_prior_provider is None:
+        root_values: list[float] | None = None
+        if config.search_backend == "gumbel" and request_evaluator_provider is not None:
+            root_policies, root_value_rows = request_evaluator_provider(request)
+            priors = [[float(value) for value in row] for row in root_policies]
+            root_values = [float(value) for value in root_value_rows]
+        elif feature_batch_prior_provider is None:
             if prior_provider is None:
                 raise ValueError("prior_provider is required for core batched self-play")
             priors = _evaluate_core_batch_priors(prior_provider, request)
@@ -731,6 +748,20 @@ def _play_mcts_games_core_batched(
         if len(priors) != len(active_indexes):
             raise ValueError(
                 f"expected {len(active_indexes)} prior rows from batch provider, got {len(priors)}"
+            )
+        if (
+            root_values is None
+            and config.search_backend == "gumbel"
+            and evaluator_provider is not None
+        ):
+            _root_policies, root_values = _evaluate_core_batch_policy_values(
+                evaluator_provider,
+                request,
+            )
+        if root_values is not None and len(root_values) != len(active_indexes):
+            raise ValueError(
+                f"expected {len(active_indexes)} root values from batch provider, "
+                f"got {len(root_values)}"
             )
 
         noisy_priors = []
@@ -773,9 +804,12 @@ def _play_mcts_games_core_batched(
                 return _evaluate_core_batch_policy_values(evaluator_provider, request)
 
             if config.search_backend == "gumbel":
+                if root_values is None:
+                    raise ValueError("Gumbel batched evaluator search requires root values")
                 results = batch.search_active_with_logits_and_evaluator(
                     noisy_priors,
                     evaluator,
+                    root_values=root_values,
                     leaf_batch_size=config.leaf_batch_size,
                 )
             else:

@@ -218,9 +218,10 @@ class FakeGumbelSearch(FakeMctsSearch):
         state: ScriptedMctsState,
         policy_logits: list[float],
         evaluator,
+        root_value: float,
         leaf_batch_size: int = 8,
     ) -> FakeGumbelResult:
-        del leaf_batch_size
+        del leaf_batch_size, root_value
         self.root_logits = policy_logits
         policies, values = evaluator(_SingleStateEvalRequest(state))
         assert len(policies) == 1
@@ -321,8 +322,10 @@ class FakeCoreBatch:
         self,
         policy_logits: list[list[float]],
         evaluator,
+        root_values: list[float],
         leaf_batch_size: int = 8,
     ):
+        del root_values
         self.leaf_batch_sizes.append(leaf_batch_size)
         policies, values = evaluator(self.active_eval_request())
         assert len(policies) == self.active_count()

@@ -93,21 +93,28 @@ impl GumbelSearch {
         self.result_from_logits(state, &policy_logits)
     }
 
-    #[pyo3(signature = (state, policy_logits, evaluator, leaf_batch_size = 16))]
+    #[pyo3(signature = (state, policy_logits, evaluator, root_value, leaf_batch_size = 16))]
     pub fn search_with_logits_and_evaluator(
         &mut self,
         state: &GameState,
         policy_logits: Vec<f32>,
         evaluator: &Bound<'_, PyAny>,
+        root_value: f32,
         leaf_batch_size: usize,
     ) -> PyResult<GumbelResult> {
         if leaf_batch_size == 0 {
             return Err(PyValueError::new_err("leaf_batch_size must be positive"));
         }
-        self.result_from_logits_with_evaluator(state, &policy_logits, leaf_batch_size, |request| {
-            let response = evaluator.call1((request,))?;
-            parse_gumbel_eval_response(&response)
-        })
+        self.result_from_logits_with_evaluator(
+            state,
+            &policy_logits,
+            leaf_batch_size,
+            root_value,
+            |request| {
+                let response = evaluator.call1((request,))?;
+                parse_gumbel_eval_response(&response)
+            },
+        )
     }
 
     pub fn search_with_priors(
@@ -118,21 +125,28 @@ impl GumbelSearch {
         self.result_from_priors(state, &priors)
     }
 
-    #[pyo3(signature = (state, priors, evaluator, leaf_batch_size = 16))]
+    #[pyo3(signature = (state, priors, evaluator, root_value, leaf_batch_size = 16))]
     pub fn search_with_priors_and_evaluator(
         &mut self,
         state: &GameState,
         priors: Vec<f32>,
         evaluator: &Bound<'_, PyAny>,
+        root_value: f32,
         leaf_batch_size: usize,
     ) -> PyResult<GumbelResult> {
         if leaf_batch_size == 0 {
             return Err(PyValueError::new_err("leaf_batch_size must be positive"));
         }
-        self.result_from_priors_with_evaluator(state, &priors, leaf_batch_size, |request| {
-            let response = evaluator.call1((request,))?;
-            parse_gumbel_eval_response(&response)
-        })
+        self.result_from_priors_with_evaluator(
+            state,
+            &priors,
+            leaf_batch_size,
+            root_value,
+            |request| {
+                let response = evaluator.call1((request,))?;
+                parse_gumbel_eval_response(&response)
+            },
+        )
     }
 }
 
@@ -178,6 +192,7 @@ impl GumbelSearch {
         state: &GameState,
         logits: &[f32],
         leaf_batch_size: usize,
+        root_value: f32,
         evaluator: F,
     ) -> PyResult<GumbelResult>
     where
@@ -190,6 +205,7 @@ impl GumbelSearch {
             &legal_actions,
             &log_priors,
             leaf_batch_size,
+            root_value,
             evaluator,
             true,
         )
@@ -200,6 +216,7 @@ impl GumbelSearch {
         state: &GameState,
         priors: &[f32],
         leaf_batch_size: usize,
+        root_value: f32,
         evaluator: F,
     ) -> PyResult<GumbelResult>
     where
@@ -212,6 +229,7 @@ impl GumbelSearch {
             &legal_actions,
             &log_priors,
             leaf_batch_size,
+            root_value,
             evaluator,
             false,
         )
@@ -248,6 +266,7 @@ impl GumbelSearch {
         legal_actions: &[usize],
         log_priors: &[f32; ACTION_SPACE],
         leaf_batch_size: usize,
+        root_value: f32,
         evaluator: F,
         evaluator_returns_logits: bool,
     ) -> PyResult<GumbelResult>
@@ -273,6 +292,7 @@ impl GumbelSearch {
             state,
             legal_actions,
             log_priors,
+            root_value,
             &candidates,
             leaf_batch_size,
             evaluator,
@@ -331,7 +351,7 @@ impl GumbelSearch {
         self.nodes.clear();
         let root_index = self.nodes.len();
         self.nodes
-            .push(GumbelNode::root_from_candidates(state, candidates));
+            .push(GumbelNode::root_from_candidates(state, candidates, 0.0));
 
         let mut scheduler = RootSequentialHalving::new(
             candidates
@@ -390,6 +410,7 @@ impl GumbelSearch {
         state: &GameState,
         legal_actions: &[usize],
         log_priors: &[f32; ACTION_SPACE],
+        root_value: f32,
         candidates: &[RootCandidate],
         leaf_batch_size: usize,
         mut evaluator: F,
@@ -408,8 +429,9 @@ impl GumbelSearch {
 
         self.nodes.clear();
         let root_index = self.nodes.len();
-        self.nodes
-            .push(GumbelNode::root_from_candidates(state, candidates));
+        self.nodes.push(GumbelNode::root_from_candidates(
+            state, candidates, root_value,
+        ));
 
         let mut scheduler = RootSequentialHalving::new(
             candidates
@@ -919,7 +941,7 @@ mod tests {
         let mut max_request_len = 0;
 
         let result = search
-            .result_from_logits_with_evaluator(&GameState::new(), &root_logits, 4, |request| {
+            .result_from_logits_with_evaluator(&GameState::new(), &root_logits, 4, 0.0, |request| {
                 max_request_len = max_request_len.max(request.len());
                 let mut rows = Vec::with_capacity(request.len());
                 let mut values = Vec::with_capacity(request.len());
@@ -955,7 +977,7 @@ mod tests {
         let mut request_lengths = Vec::new();
 
         search
-            .result_from_logits_with_evaluator(&GameState::new(), &root_logits, 4, |request| {
+            .result_from_logits_with_evaluator(&GameState::new(), &root_logits, 4, 0.0, |request| {
                 request_lengths.push(request.len());
                 Ok(GumbelEvalBatch::new(
                     vec![[0.0; ACTION_SPACE]; request.len()],
