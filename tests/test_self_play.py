@@ -475,7 +475,7 @@ def test_play_self_play_game_uses_gumbel_policy_target_and_selected_action() -> 
         search=search,
         config=SelfPlayConfig(
             max_turns=5,
-            temperature_turns=10,
+            temperature_turns=0,
             sampling_temperature=1.0,
         ),
         prior_provider=lambda current_state: logits,
@@ -487,6 +487,34 @@ def test_play_self_play_game_uses_gumbel_policy_target_and_selected_action() -> 
     assert len(samples) == 1
     assert samples[0].policy[1] == pytest.approx(0.1)
     assert samples[0].policy[2] == pytest.approx(0.9)
+
+
+def test_play_self_play_game_samples_gumbel_policy_target_during_opening() -> None:
+    policy = [0.0] * 82
+    policy[1] = 0.0
+    policy[2] = 1.0
+    logits = [-10.0] * 82
+    logits[1] = 4.0
+    logits[2] = 9.0
+    state = ScriptedSearchState()
+    search = FakeGumbelSearch(selected=1, policy=policy)
+
+    log, samples = play_self_play_game(
+        seed=41,
+        state=state,
+        search=search,
+        config=SelfPlayConfig(
+            max_turns=5,
+            temperature_turns=10,
+            sampling_temperature=1.0,
+        ),
+        prior_provider=lambda current_state: logits,
+    )
+
+    assert state.applied_actions == [2]
+    assert log.moves[0].action == 2
+    assert len(samples) == 1
+    assert samples[0].policy[2] == pytest.approx(1.0)
 
 
 def test_search_self_play_config_samples_only_opening_turns_by_default() -> None:

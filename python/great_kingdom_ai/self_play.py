@@ -920,12 +920,34 @@ def _select_self_play_action(
     turn: int,
     legal_actions: Sequence[int],
 ) -> int:
-    del rng, config, turn
+    if turn < config.temperature_turns and config.sampling_temperature > 0.0:
+        weights = _self_play_action_weights(result, legal_actions, config.sampling_temperature)
+        if any(weight > 0.0 for weight in weights):
+            return int(rng.choices(list(legal_actions), weights=weights, k=1)[0])
+
     selected = result.selected_action()
     if selected in set(legal_actions):
         return int(selected)
     visits = result.visit_counts()
     return max(legal_actions, key=lambda action: (visits[action], -action))
+
+
+def _self_play_action_weights(
+    result: SearchResultLike,
+    legal_actions: Sequence[int],
+    temperature: float,
+) -> list[float]:
+    if hasattr(result, "policy_target"):
+        policy = cast(Any, result).policy_target()
+        weights = [max(0.0, float(policy[action])) for action in legal_actions]
+    else:
+        visits = result.visit_counts()
+        weights = [max(0.0, float(visits[action])) for action in legal_actions]
+
+    if temperature != 1.0:
+        exponent = 1.0 / temperature
+        weights = [weight**exponent for weight in weights]
+    return weights
 
 
 def _set_search_simulations(search: SearchLike, simulations: int) -> None:
