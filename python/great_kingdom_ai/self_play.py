@@ -66,6 +66,20 @@ class MctsSearchLike(Protocol):
         leaf_batch_size: int = 8,
     ) -> MctsResultLike: ...
 
+    def search_with_logits(
+        self,
+        state: SelfPlayState,
+        policy_logits: list[float],
+    ) -> MctsResultLike: ...
+
+    def search_with_logits_and_evaluator(
+        self,
+        state: SelfPlayState,
+        policy_logits: list[float],
+        evaluator: Callable[[Any], tuple[list[list[float]], list[float]]],
+        leaf_batch_size: int = 8,
+    ) -> MctsResultLike: ...
+
     def set_simulations(self, simulations: int) -> None: ...
 
 
@@ -96,6 +110,18 @@ class MctsSelfPlayBatchLike(Protocol):
     def search_active_with_priors_and_evaluator(
         self,
         priors: list[list[float]],
+        evaluator: Callable[[Any], tuple[list[list[float]], list[float]]],
+        leaf_batch_size: int = 8,
+    ) -> list[MctsResultLike | None]: ...
+
+    def search_active_with_logits(
+        self,
+        policy_logits: list[list[float]],
+    ) -> list[MctsResultLike | None]: ...
+
+    def search_active_with_logits_and_evaluator(
+        self,
+        policy_logits: list[list[float]],
         evaluator: Callable[[Any], tuple[list[list[float]], list[float]]],
         leaf_batch_size: int = 8,
     ) -> list[MctsResultLike | None]: ...
@@ -138,8 +164,14 @@ class SmokeSummary:
 
 @dataclass(frozen=True)
 class MctsSelfPlayConfig:
+    search_backend: str = "mcts"
     max_turns: int = 200
     c_puct: float = 1.5
+    gumbel_simulations: int = 128
+    gumbel_max_considered_actions: int = 16
+    gumbel_c_visit: float = 50.0
+    gumbel_c_scale: float = 1.0
+    gumbel_seed: int = 0
     temperature_turns: int = 10
     sampling_temperature: float = 1.0
     root_noise: bool = True
@@ -152,6 +184,8 @@ class MctsSelfPlayConfig:
     leaf_batch_size: int = 8
 
     def __post_init__(self) -> None:
+        if self.search_backend not in {"mcts", "gumbel"}:
+            raise ValueError("search_backend must be 'mcts' or 'gumbel'")
         if self.max_turns <= 0:
             raise ValueError("max_turns must be positive")
         if not np.isfinite(self.c_puct) or self.c_puct < 0.0:
@@ -257,7 +291,7 @@ def play_mcts_game(
     """Run one MCTS self-play game and return replay samples with final value targets."""
     config = config if config is not None else MctsSelfPlayConfig()
     game_state = state if state is not None else create_core_game_state()
-    mcts = search if search is not None else create_core_mcts_search()
+    mcts = search if search is not None else create_core_search_backend(config, seed_offset=seed)
     rng = random.Random(seed)
     moves: list[MoveLog] = []
     pending_samples: list[tuple[int, np.ndarray, np.ndarray]] = []
@@ -285,15 +319,13 @@ def play_mcts_game(
             root_priors=root_priors,
             evaluator_provider=evaluator_provider,
         )
-        visit_counts = result.visit_counts()
-        policy = policy_target_from_visit_counts(visit_counts)
-        temperature = (
-            config.sampling_temperature if turn < config.temperature_turns else 0.0
-        )
-        action = select_action_from_visit_counts(
-            visit_counts,
+        policy = _policy_target_from_result(result)
+        action = _select_self_play_action(
+            result,
             rng,
-            temperature=temperature,
+            config,
+            turn=turn,
+            legal_actions=game_state.legal_actions(),
         )
 
         if use_full_search:
@@ -461,6 +493,75 @@ def create_core_mcts_self_play_batch(
     )
 
 
+def create_core_search_backend(
+    config: MctsSelfPlayConfig,
+    *,
+    seed_offset: int = 0,
+) -> MctsSearchLike:
+    try:
+        import great_kingdom_core as core
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "great_kingdom_core is not installed. Build it with maturin before self-play."
+        ) from exc
+    if config.search_backend == "mcts":
+        return cast(
+            MctsSearchLike,
+            core.MctsSearch(
+                simulations=config.playout_cap_full_simulations,
+                c_puct=config.c_puct,
+            ),
+        )
+    if config.search_backend == "gumbel":
+        return cast(
+            MctsSearchLike,
+            core.GumbelSearch(
+                simulations=config.gumbel_simulations,
+                max_considered_actions=config.gumbel_max_considered_actions,
+                c_visit=config.gumbel_c_visit,
+                c_scale=config.gumbel_c_scale,
+                seed=config.gumbel_seed + seed_offset,
+            ),
+        )
+    raise ValueError("search_backend must be 'mcts' or 'gumbel'")
+
+
+def create_core_self_play_batch_backend(
+    config: MctsSelfPlayConfig,
+    *,
+    game_count: int,
+    seed_offset: int = 0,
+) -> MctsSelfPlayBatchLike:
+    try:
+        import great_kingdom_core as core
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "great_kingdom_core is not installed. Build it with maturin before self-play."
+        ) from exc
+    if config.search_backend == "mcts":
+        return cast(
+            MctsSelfPlayBatchLike,
+            core.MctsSelfPlayBatch(
+                game_count=game_count,
+                simulations=config.playout_cap_full_simulations,
+                c_puct=config.c_puct,
+            ),
+        )
+    if config.search_backend == "gumbel":
+        return cast(
+            MctsSelfPlayBatchLike,
+            core.GumbelSelfPlayBatch(
+                game_count=game_count,
+                simulations=config.gumbel_simulations,
+                max_considered_actions=config.gumbel_max_considered_actions,
+                c_visit=config.gumbel_c_visit,
+                c_scale=config.gumbel_c_scale,
+                seed=config.gumbel_seed + seed_offset,
+            ),
+        )
+    raise ValueError("search_backend must be 'mcts' or 'gumbel'")
+
+
 def _run_self_play_search(
     state: SelfPlayState,
     search: MctsSearchLike,
@@ -474,6 +575,28 @@ def _run_self_play_search(
     ]
     | None = None,
 ) -> MctsResultLike:
+    if config.search_backend == "gumbel":
+        root_logits = list(root_priors) if root_priors is not None else [0.0] * (PASS_ACTION + 1)
+        if root_priors is None and evaluator_provider is not None:
+            root_policies, _root_values = evaluator_provider([state])
+            if len(root_policies) != 1:
+                raise ValueError(
+                    f"expected 1 root policy row from evaluator, got {len(root_policies)}"
+                )
+            root_logits = [float(value) for value in root_policies[0]]
+        if evaluator_provider is None:
+            return search.search_with_logits(state, root_logits)
+
+        def gumbel_leaf_evaluator(request: Any) -> tuple[list[list[float]], list[float]]:
+            return _evaluate_core_batch_policy_values(evaluator_provider, request)
+
+        return search.search_with_logits_and_evaluator(
+            state,
+            root_logits,
+            gumbel_leaf_evaluator,
+            config.leaf_batch_size,
+        )
+
     if root_priors is None and evaluator_provider is not None:
         root_policies, _root_values = evaluator_provider([state])
         if len(root_policies) != 1:
@@ -482,7 +605,7 @@ def _run_self_play_search(
             )
         root_priors = root_policies[0]
 
-    if root_priors is None and not config.root_noise:
+    if root_priors is None and not _effective_root_noise(config):
         return search.search(state)
 
     priors = list(root_priors) if root_priors is not None else [0.0] * PASS_ACTION + [0.0]
@@ -493,17 +616,17 @@ def _run_self_play_search(
         alpha=config.root_dirichlet_alpha,
         epsilon=config.root_exploration_fraction,
     )
-    search_priors = noisy_priors.tolist() if config.root_noise else priors
+    search_priors = noisy_priors.tolist() if _effective_root_noise(config) else priors
     if evaluator_provider is None:
         return search.search_with_priors(state, search_priors)
 
-    def evaluator(request: Any) -> tuple[list[list[float]], list[float]]:
+    def prior_leaf_evaluator(request: Any) -> tuple[list[list[float]], list[float]]:
         return _evaluate_core_batch_policy_values(evaluator_provider, request)
 
     return search.search_with_priors_and_evaluator(
         state,
         search_priors,
-        evaluator,
+        prior_leaf_evaluator,
         config.leaf_batch_size,
     )
 
@@ -563,10 +686,14 @@ def _play_mcts_games_core_batched(
     if not seeds:
         return []
 
-    batch = create_core_mcts_self_play_batch(
-        game_count=len(seeds),
-        simulations=config.playout_cap_full_simulations,
-        c_puct=config.c_puct,
+    batch = (
+        create_core_mcts_self_play_batch(
+            game_count=len(seeds),
+            simulations=config.playout_cap_full_simulations,
+            c_puct=config.c_puct,
+        )
+        if config.search_backend == "mcts"
+        else create_core_self_play_batch_backend(config, game_count=len(seeds))
     )
     rngs = [random.Random(seed) for seed in seeds]
     moves: list[list[MoveLog]] = [[] for _ in seeds]
@@ -620,7 +747,7 @@ def _play_mcts_games_core_batched(
                     else config.playout_cap_fast_simulations
                 )
             prior_values = [float(value) for value in prior]
-            if config.root_noise:
+            if _effective_root_noise(config):
                 prior_values = apply_root_dirichlet_noise(
                     prior_values,
                     mask,
@@ -633,32 +760,48 @@ def _play_mcts_games_core_batched(
         if config.playout_cap_randomization:
             batch.set_simulations(simulation_budgets)
         if evaluator_provider is None and request_evaluator_provider is None:
-            results = batch.search_active_with_priors(noisy_priors)
+            if config.search_backend == "gumbel":
+                results = batch.search_active_with_logits(noisy_priors)
+            else:
+                results = batch.search_active_with_priors(noisy_priors)
         else:
             def evaluator(request: Any) -> tuple[Any, Any]:
                 if request_evaluator_provider is not None:
                     return request_evaluator_provider(request)
+                if evaluator_provider is None:
+                    raise RuntimeError("evaluator_provider is required")
                 return _evaluate_core_batch_policy_values(evaluator_provider, request)
 
-            results = batch.search_active_with_priors_and_evaluator(
-                noisy_priors,
-                evaluator,
-                leaf_batch_size=config.leaf_batch_size,
-            )
+            if config.search_backend == "gumbel":
+                results = batch.search_active_with_logits_and_evaluator(
+                    noisy_priors,
+                    evaluator,
+                    leaf_batch_size=config.leaf_batch_size,
+                )
+            else:
+                results = batch.search_active_with_priors_and_evaluator(
+                    noisy_priors,
+                    evaluator,
+                    leaf_batch_size=config.leaf_batch_size,
+                )
         actions: list[int | None] = [None] * batch.len()
         for game_index in active_indexes:
             result = results[game_index]
             if result is None:
                 continue
-            visit_counts = result.visit_counts()
-            policy = policy_target_from_visit_counts(visit_counts)
-            temperature = (
-                config.sampling_temperature if turn < config.temperature_turns else 0.0
-            )
-            action = select_action_from_visit_counts(
-                visit_counts,
+            policy = _policy_target_from_result(result)
+            action = _select_self_play_action(
+                result,
                 rngs[game_index],
-                temperature=temperature,
+                config,
+                turn=turn,
+                legal_actions=[
+                    action
+                    for action, is_legal in enumerate(
+                        masks[active_indexes.index(game_index)]
+                    )
+                    if is_legal
+                ],
             )
             if use_full_by_game[game_index]:
                 pending_samples[game_index].append(
@@ -786,11 +929,13 @@ def _as_int_list(values: Sequence[int] | bytes) -> list[int]:
     return [int(value) for value in values]
 
 
-def _can_create_core_self_play_batch() -> bool:
+def _can_create_core_self_play_batch(search_backend: str = "mcts") -> bool:
     try:
         import great_kingdom_core as core
     except ModuleNotFoundError:
         return False
+    if search_backend == "gumbel":
+        return hasattr(core, "GumbelSelfPlayBatch")
     return hasattr(core, "MctsSelfPlayBatch")
 
 
@@ -825,13 +970,13 @@ def _play_batched_mcts_turn(
         root_priors=root_priors,
         evaluator_provider=evaluator_provider,
     )
-    visit_counts = result.visit_counts()
-    policy = policy_target_from_visit_counts(visit_counts)
-    temperature = config.sampling_temperature if turn < config.temperature_turns else 0.0
-    action = select_action_from_visit_counts(
-        visit_counts,
+    policy = _policy_target_from_result(result)
+    action = _select_self_play_action(
+        result,
         game.rng,
-        temperature=temperature,
+        config,
+        turn=turn,
+        legal_actions=game.state.legal_actions(),
     )
 
     if use_full_search:
@@ -873,6 +1018,45 @@ def _use_full_search_turn(rng: random.Random, config: MctsSelfPlayConfig) -> boo
     if not config.playout_cap_randomization:
         return True
     return rng.random() < config.playout_cap_full_search_fraction
+
+
+def _policy_target_from_result(result: MctsResultLike) -> np.ndarray:
+    if hasattr(result, "policy_target"):
+        policy = np.asarray(cast(Any, result).policy_target(), dtype=np.float32)
+        if policy.shape != (PASS_ACTION + 1,):
+            raise ValueError(
+                f"expected policy target shape {(PASS_ACTION + 1,)}, got {policy.shape}"
+            )
+        return policy
+    return policy_target_from_visit_counts(result.visit_counts())
+
+
+def _select_self_play_action(
+    result: MctsResultLike,
+    rng: random.Random,
+    config: MctsSelfPlayConfig,
+    *,
+    turn: int,
+    legal_actions: Sequence[int],
+) -> int:
+    if config.search_backend == "gumbel":
+        selected = result.selected_action()
+        if selected in set(legal_actions):
+            return int(selected)
+        visits = result.visit_counts()
+        return max(legal_actions, key=lambda action: (visits[action], -action))
+
+    visit_counts = result.visit_counts()
+    temperature = config.sampling_temperature if turn < config.temperature_turns else 0.0
+    return select_action_from_visit_counts(
+        visit_counts,
+        rng,
+        temperature=temperature,
+    )
+
+
+def _effective_root_noise(config: MctsSelfPlayConfig) -> bool:
+    return config.root_noise and config.search_backend == "mcts"
 
 
 def _set_search_simulations(search: MctsSearchLike, simulations: int) -> None:

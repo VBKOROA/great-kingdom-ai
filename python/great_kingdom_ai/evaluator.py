@@ -34,6 +34,7 @@ class ByteEvalRequestLike(Protocol):
 @dataclass(frozen=True)
 class NetworkEvaluation:
     policy: np.ndarray
+    policy_logits: np.ndarray
     value: np.ndarray
 
 
@@ -89,7 +90,6 @@ def evaluate_feature_batch(
     *,
     device: torch.device | str | None = None,
 ) -> NetworkEvaluation:
-    torch = _import_torch()
     if len(feature_planes) != len(legal_masks):
         raise ValueError("feature batch and legal mask batch must have the same length")
 
@@ -169,6 +169,7 @@ def _evaluate_arrays_with_profile(
         policy = torch.softmax(masked_logits, dim=1)
 
     policy_array = np.ascontiguousarray(policy.cpu().numpy(), dtype=np.float32)
+    policy_logits_array = np.ascontiguousarray(policy_logits.cpu().numpy(), dtype=np.float32)
     value_array = np.ascontiguousarray(value.cpu().numpy(), dtype=np.float32)
     output_done = time.perf_counter() if profile else 0.0
     if profile:
@@ -180,7 +181,11 @@ def _evaluate_arrays_with_profile(
             output_seconds=output_done - model_done,
         )
 
-    return NetworkEvaluation(policy=policy_array, value=value_array)
+    return NetworkEvaluation(
+        policy=policy_array,
+        policy_logits=policy_logits_array,
+        value=value_array,
+    )
 
 
 def _profile_enabled() -> bool:

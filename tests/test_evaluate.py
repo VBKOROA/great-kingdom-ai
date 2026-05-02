@@ -30,6 +30,7 @@ class FakeNetwork:
 @dataclass(frozen=True)
 class FakeEvaluation:
     policy: np.ndarray
+    policy_logits: np.ndarray
     value: np.ndarray
 
 
@@ -102,6 +103,39 @@ class PriorSearch:
         return self.search_with_priors(state, priors)
 
 
+class LogitSearch:
+    def __init__(self) -> None:
+        self.root_logits: list[float] | None = None
+
+    def search_with_logits_and_evaluator(
+        self,
+        state: OneMoveState,
+        policy_logits: list[float],
+        evaluator: Any,
+        leaf_batch_size: int = 8,
+    ) -> PriorSearchResult:
+        del leaf_batch_size
+        self.root_logits = policy_logits
+        policies, values = evaluator(_ArenaEvalRequest(state))
+        assert len(policies) == 1
+        assert len(values) == 1
+        action = max(state.legal_actions(), key=lambda legal_action: policy_logits[legal_action])
+        visits = [0] * ACTION_SPACE
+        visits[action] = 1
+        return PriorSearchResult(visits)
+
+
+class _ArenaEvalRequest:
+    def __init__(self, state: OneMoveState) -> None:
+        self._state = state
+
+    def feature_planes(self) -> list[list[float]]:
+        return [self._state.feature_planes()]
+
+    def legal_masks(self) -> list[list[bool]]:
+        return [self._state.legal_mask()]
+
+
 def fake_evaluate_feature_batch(
     model: FakeNetwork,
     feature_planes: list[list[float]],
@@ -119,6 +153,7 @@ def fake_evaluate_feature_batch(
         policy[row] /= policy[row].sum()
     return FakeEvaluation(
         policy=policy,
+        policy_logits=np.log(np.maximum(policy, 1.0e-6)).astype(np.float32),
         value=np.zeros((len(legal_masks),), dtype=np.float32),
     )
 
@@ -158,6 +193,31 @@ def test_play_arena_game_uses_candidate_when_candidate_has_current_turn() -> Non
     assert result.candidate_player == 1
     assert result.best_player == 2
     assert result.winner == 1
+    assert result.moves == [MoveLog(turn=0, player=1, action=2)]
+
+
+def test_play_arena_game_uses_gumbel_logits_backend() -> None:
+    state = OneMoveState()
+    search = LogitSearch()
+    config = ArenaConfig(
+        search_backend="gumbel",
+        games=1,
+        max_turns=4,
+        simulations=1,
+    )
+
+    result = play_arena_game(
+        seed=7,
+        candidate_model=FakeNetwork(2),
+        best_model=FakeNetwork(3),
+        candidate_player=1,
+        config=config,
+        state=state,
+        search_factory=lambda: search,
+    )
+
+    assert search.root_logits is not None
+    assert state.applied_actions == [2]
     assert result.moves == [MoveLog(turn=0, player=1, action=2)]
 
 

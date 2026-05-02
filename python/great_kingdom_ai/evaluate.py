@@ -38,14 +38,28 @@ class ArenaSearchLike(Protocol):
         leaf_batch_size: int = 8,
     ) -> ArenaSearchResultLike: ...
 
+    def search_with_logits_and_evaluator(
+        self,
+        state: SelfPlayState,
+        policy_logits: list[float],
+        evaluator: Callable[[Any], tuple[list[list[float]], list[float]]],
+        leaf_batch_size: int = 8,
+    ) -> ArenaSearchResultLike: ...
+
 
 @dataclass(frozen=True)
 class ArenaConfig:
+    search_backend: str = "mcts"
     games: int = 20
     seed_start: int = 0
     max_turns: int = 200
     simulations: int = 100
     c_puct: float = 1.5
+    gumbel_simulations: int = 128
+    gumbel_max_considered_actions: int = 16
+    gumbel_c_visit: float = 50.0
+    gumbel_c_scale: float = 1.0
+    gumbel_seed: int = 0
     leaf_batch_size: int = 8
     device: str = "cpu"
     promotion_threshold: float = 0.55
@@ -120,10 +134,7 @@ def play_arena_game(
     make_search = (
         search_factory
         if search_factory is not None
-        else lambda: create_core_mcts_search(
-            simulations=config.simulations,
-            c_puct=config.c_puct,
-        )
+        else lambda: create_core_search_backend(config)
     )
     searches = {BLUE: make_search(), ORANGE: make_search()}
     best_player = _other_player(candidate_player)
@@ -135,25 +146,46 @@ def play_arena_game(
 
         player = game_state.current_player()
         model = candidate_model if player == candidate_player else best_model
-        priors = evaluate_state_policy(model, game_state, device=config.device)
-        
-        def evaluator(request: Any, m=model) -> tuple[list[list[float]], list[float]]:
+        root_evaluation = evaluate_feature_batch(
+            model,
+            [game_state.feature_planes()],
+            [game_state.legal_mask()],
+            device=config.device,
+        )
+        priors = [float(value) for value in root_evaluation.policy[0]]
+        root_logits = getattr(root_evaluation, "policy_logits", root_evaluation.policy)[0]
+        logits = [float(value) for value in root_logits]
+
+        def evaluator(request: Any, m: Any = model) -> tuple[list[list[float]], list[float]]:
             feature_rows = request.feature_planes()
             mask_rows = request.legal_masks()
             evaluation = evaluate_feature_batch(
                 m, feature_rows, mask_rows, device=config.device
             )
+            policy_rows = (
+                getattr(evaluation, "policy_logits", evaluation.policy)
+                if config.search_backend == "gumbel"
+                else evaluation.policy
+            )
             return (
-                [[float(value) for value in policy] for policy in evaluation.policy],
+                [[float(value) for value in policy] for policy in policy_rows],
                 [float(value) for value in evaluation.value],
             )
 
-        result = searches[player].search_with_priors_and_evaluator(
-            game_state,
-            priors,
-            evaluator,
-            config.leaf_batch_size,
-        )
+        if config.search_backend == "gumbel":
+            result = searches[player].search_with_logits_and_evaluator(
+                game_state,
+                logits,
+                evaluator,
+                config.leaf_batch_size,
+            )
+        else:
+            result = searches[player].search_with_priors_and_evaluator(
+                game_state,
+                priors,
+                evaluator,
+                config.leaf_batch_size,
+            )
         action = _deterministic_action(result, priors, game_state.legal_actions())
 
         moves.append(MoveLog(turn=turn, player=player, action=action))
@@ -193,6 +225,8 @@ def run_arena(
         raise ValueError("max_turns must be positive")
     if not 0.0 <= config.promotion_threshold <= 1.0:
         raise ValueError("promotion_threshold must be between 0 and 1")
+    if config.search_backend not in {"mcts", "gumbel"}:
+        raise ValueError("search_backend must be 'mcts' or 'gumbel'")
 
     make_state = state_factory if state_factory is not None else create_core_game_state
     games = []
@@ -265,6 +299,15 @@ def evaluate_state_policy(
     return evaluate_state_policies(model, [state], device=device)[0]
 
 
+def evaluate_state_policy_logits(
+    model: Any,
+    state: SelfPlayState,
+    *,
+    device: Any | str | None = None,
+) -> list[float]:
+    return evaluate_state_policy_logits_batch(model, [state], device=device)[0]
+
+
 def evaluate_state_policies(
     model: Any,
     states: Sequence[SelfPlayState],
@@ -278,6 +321,22 @@ def evaluate_state_policies(
         device=device,
     )
     return [[float(value) for value in policy] for policy in evaluation.policy]
+
+
+def evaluate_state_policy_logits_batch(
+    model: Any,
+    states: Sequence[SelfPlayState],
+    *,
+    device: Any | str | None = None,
+) -> list[list[float]]:
+    evaluation = evaluate_feature_batch(
+        model,
+        [state.feature_planes() for state in states],
+        [state.legal_mask() for state in states],
+        device=device,
+    )
+    rows = getattr(evaluation, "policy_logits", evaluation.policy)
+    return [[float(value) for value in row] for row in rows]
 
 
 def save_arena_report(report: ArenaReport, path: str | Path) -> Path:
@@ -313,13 +372,44 @@ def load_model_from_checkpoint(path: str | Path, *, device: str = "cpu") -> Any:
 
 def create_core_mcts_search(*, simulations: int, c_puct: float) -> ArenaSearchLike:
     try:
-        import great_kingdom_core as core  # type: ignore[import-untyped]
+        import great_kingdom_core as core
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             "great_kingdom_core is not installed. Build it with maturin before arena evaluation."
         ) from exc
 
     return cast(ArenaSearchLike, core.MctsSearch(simulations=simulations, c_puct=c_puct))
+
+
+def create_core_search_backend(
+    config: ArenaConfig,
+    *,
+    seed_offset: int = 0,
+) -> ArenaSearchLike:
+    try:
+        import great_kingdom_core as core
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "great_kingdom_core is not installed. Build it with maturin before arena evaluation."
+        ) from exc
+
+    if config.search_backend == "mcts":
+        return cast(
+            ArenaSearchLike,
+            core.MctsSearch(simulations=config.simulations, c_puct=config.c_puct),
+        )
+    if config.search_backend == "gumbel":
+        return cast(
+            ArenaSearchLike,
+            core.GumbelSearch(
+                simulations=config.gumbel_simulations,
+                max_considered_actions=config.gumbel_max_considered_actions,
+                c_visit=config.gumbel_c_visit,
+                c_scale=config.gumbel_c_scale,
+                seed=config.gumbel_seed + seed_offset,
+            ),
+        )
+    raise ValueError("search_backend must be 'mcts' or 'gumbel'")
 
 
 def load_arena_config(path: str | Path) -> ArenaConfig:
@@ -425,7 +515,10 @@ __all__ = [
     "ArenaGameResult",
     "ArenaReport",
     "ArenaSummary",
+    "create_core_search_backend",
     "evaluate_state_policy",
+    "evaluate_state_policy_logits",
+    "evaluate_state_policy_logits_batch",
     "load_arena_config",
     "load_model_from_checkpoint",
     "play_arena_game",

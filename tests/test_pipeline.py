@@ -113,6 +113,35 @@ def test_generate_self_play_samples_passes_playout_cap_config() -> None:
     assert seen_configs[0].playout_cap_fast_simulations == 16
 
 
+def test_generate_self_play_samples_passes_gumbel_backend_config() -> None:
+    seen_configs: list[MctsSelfPlayConfig] = []
+
+    def recording_runner(
+        seed: int,
+        config: MctsSelfPlayConfig,
+    ) -> tuple[GameLog, list[ReplaySample]]:
+        seen_configs.append(config)
+        return fake_self_play_runner(seed, config)
+
+    generate_self_play_samples(
+        pipeline_config=PipelineConfig(
+            search_backend="gumbel",
+            self_play_games=1,
+            min_replay_samples=1,
+            gumbel_simulations=32,
+            gumbel_max_considered_actions=8,
+            gumbel_seed=7,
+        ),
+        runner=recording_runner,
+        printer=PipelinePrinter(enabled=False),
+    )
+
+    assert seen_configs[0].search_backend == "gumbel"
+    assert seen_configs[0].gumbel_simulations == 32
+    assert seen_configs[0].gumbel_max_considered_actions == 8
+    assert seen_configs[0].gumbel_seed == 7
+
+
 def test_generate_self_play_samples_prints_progress(capsys) -> None:
     generate_self_play_samples(
         pipeline_config=PipelineConfig(
@@ -271,4 +300,3 @@ def test_load_pipeline_config_parses_work_dir(tmp_path: Path) -> None:
 
     assert config.work_dir == Path("data/x")
     assert config.self_play_games == 3
-

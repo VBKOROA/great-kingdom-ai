@@ -146,6 +146,21 @@ class FakeMctsResult:
         return self._visits
 
 
+class FakeGumbelResult(FakeMctsResult):
+    def __init__(self, selected: int, policy: list[float]) -> None:
+        visits = [0] * 82
+        visits[selected] = 1
+        super().__init__(visits)
+        self._selected = selected
+        self._policy = policy
+
+    def selected_action(self) -> int | None:
+        return self._selected
+
+    def policy_target(self) -> list[float]:
+        return self._policy
+
+
 class FakeMctsSearch:
     def __init__(self, visits: list[int]) -> None:
         self.visits = visits
@@ -180,6 +195,37 @@ class FakeMctsSearch:
 
     def set_simulations(self, simulations: int) -> None:
         del simulations
+
+
+class FakeGumbelSearch(FakeMctsSearch):
+    def __init__(self, selected: int, policy: list[float]) -> None:
+        super().__init__([0] * 82)
+        self._selected = selected
+        self._policy = policy
+        self.root_logits: list[float] | None = None
+
+    def search_with_logits(
+        self,
+        state: ScriptedMctsState,
+        policy_logits: list[float],
+    ) -> FakeGumbelResult:
+        del state
+        self.root_logits = policy_logits
+        return FakeGumbelResult(self._selected, self._policy)
+
+    def search_with_logits_and_evaluator(
+        self,
+        state: ScriptedMctsState,
+        policy_logits: list[float],
+        evaluator,
+        leaf_batch_size: int = 8,
+    ) -> FakeGumbelResult:
+        del leaf_batch_size
+        self.root_logits = policy_logits
+        policies, values = evaluator(_SingleStateEvalRequest(state))
+        assert len(policies) == 1
+        assert len(values) == 1
+        return FakeGumbelResult(self._selected, self._policy)
 
 
 class BudgetRecordingMctsSearch(FakeMctsSearch):
@@ -363,6 +409,38 @@ def test_play_mcts_game_records_policy_and_final_value_targets() -> None:
     assert samples[0].policy[1] == pytest.approx(0.2)
     assert samples[0].policy[2] == pytest.approx(0.8)
     assert samples[0].value == 1.0
+
+
+def test_play_mcts_game_uses_gumbel_policy_target_and_selected_action() -> None:
+    policy = [0.0] * 82
+    policy[1] = 0.1
+    policy[2] = 0.9
+    logits = [-10.0] * 82
+    logits[1] = 4.0
+    logits[2] = 9.0
+    state = ScriptedMctsState()
+    search = FakeGumbelSearch(selected=1, policy=policy)
+
+    log, samples = play_mcts_game(
+        seed=41,
+        state=state,
+        search=search,
+        config=MctsSelfPlayConfig(
+            search_backend="gumbel",
+            max_turns=5,
+            temperature_turns=10,
+            sampling_temperature=1.0,
+            root_noise=True,
+        ),
+        prior_provider=lambda current_state: logits,
+    )
+
+    assert search.root_logits == logits
+    assert state.applied_actions == [1]
+    assert log.moves[0].action == 1
+    assert len(samples) == 1
+    assert samples[0].policy[1] == pytest.approx(0.1)
+    assert samples[0].policy[2] == pytest.approx(0.9)
 
 
 def test_mcts_self_play_config_samples_only_opening_turns_by_default() -> None:

@@ -791,7 +791,7 @@ debug 출력은 root와 내부 node별로 다음 값을 포함한다.
 4. `selected_action()` 결정.
 5. finite/sum/legal mask 검증.
 
-### Phase 7. Python integration
+### ~~Phase 7. Python integration~~
 
 1. result target extraction helper 추가.
 2. Gumbel self-play single-game path는 raw policy logits provider로 연결.
