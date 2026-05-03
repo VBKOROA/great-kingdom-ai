@@ -15,7 +15,7 @@
 
 ## 설계 요약
 
-`ArenaConfig`에 `batch_size`를 추가하고, `batch_size > 1`이면 batched arena 경로를 사용한다. Python은 active game들의 root evaluation을 candidate 모델용 batch와 best 모델용 batch로 나눠 실행하고, Rust는 active game들의 Gumbel leaf search를 한 번에 진행한다.
+`ArenaConfig`에 `batch_size`를 추가하고, `batch_size > 1`이면 batched arena 경로를 사용한다. `batch_size`는 동시에 진행할 arena game 수이며, `config.games`가 더 크면 Python이 여러 chunk/window로 나눠 실행한다. Python은 active game들의 root evaluation을 candidate 모델용 batch와 best 모델용 batch로 나눠 실행하고, Rust는 active game들의 Gumbel leaf search를 한 번에 진행한다.
 
 기본값은 호환성을 위해 `batch_size=1`이다. batch backend가 없는데 `batch_size > 1`이면 조용히 느린 경로로 돌아가지 않고 `RuntimeError`를 발생시킨다. 성능 기능이 켜졌는데 실제로 켜지지 않는 상황을 빨리 드러내기 위해서다.
 
@@ -60,12 +60,20 @@ def run_arena_batched(
 ) -> ArenaReport
 ```
 
+`run_arena_batched()`는 전체 arena를 `batch_size` 단위로 chunk 처리한다.
+
+- `chunk_start`는 global game index다.
+- `chunk_size = min(config.batch_size, config.games - chunk_start)`
+- `create_core_arena_batch(..., game_count=chunk_size, seed_start=config.seed_start + chunk_start, game_index_start=chunk_start)`를 호출한다.
+- candidate side split은 chunk-local index가 아니라 global game index 기준으로 유지한다.
+
 ```python
 def create_core_arena_batch(
     config: ArenaConfig,
     *,
     game_count: int,
     seed_start: int,
+    game_index_start: int,
 ) -> ArenaBatchLike
 ```
 
@@ -81,6 +89,7 @@ def create_core_arena_batch(
 GumbelArenaBatch(
     game_count,
     seed_start = 0,
+    game_index_start = 0,
     simulations = 128,
     max_considered_actions = 16,
     c_visit = 50.0,
@@ -120,10 +129,11 @@ candidate player 규칙:
 - game index가 짝수면 candidate는 BLUE
 - game index가 홀수면 candidate는 ORANGE
 - 기존 `run_arena()`와 같은 side split을 유지한다.
+- chunk 실행 시에는 `game_index_start + chunk_local_index`를 game index로 사용한다.
 
 seed 규칙:
 
-- game seed = `seed_start + game_index`
+- game seed = `seed_start + chunk_local_index`
 - BLUE search seed offset = `game_seed * 2`
 - ORANGE search seed offset = `game_seed * 2 + 1`
 - 최종 search seed = `gumbel_seed + offset`
@@ -180,13 +190,16 @@ class ArenaBatchLike(Protocol):
 
 1. `active_indexes = batch.active_game_indexes()`
 2. `request = batch.active_eval_request()`
-3. `feature_rows = request.feature_planes()`
-4. `mask_rows = request.legal_masks()`
+3. 가능하면 `request.feature_plane_bytes()`와 `request.legal_mask_bytes()`를 사용한다.
+4. fake backend나 tests에서는 `request.feature_planes()`와 `request.legal_masks()` fallback을 허용한다.
 5. `players = batch.current_players()`
 6. `candidate_players = batch.candidate_players()`
 
 각 active row에 대해:
 
+- `game_index = active_indexes[active_offset]`
+- `player = players[game_index]`
+- `candidate_player = candidate_players[game_index]`
 - `player == candidate_player`이면 candidate model batch로 보낸다.
 - 아니면 best model batch로 보낸다.
 
@@ -196,6 +209,12 @@ candidate/best 평가 결과를 active order로 재조립한다.
 root_logits_by_active: list[list[float]]
 root_values_by_active: list[float]
 ```
+
+성능 경로:
+
+- Rust `EvalRequest`는 이미 precomputed byte buffers를 제공한다.
+- arena batched evaluator는 candidate/best로 row를 나눌 때 가능한 한 numpy array slicing 기반 helper를 사용한다.
+- 단순한 `feature_planes()`/`legal_masks()` 리스트 변환은 테스트 fallback이나 작은 fake backend용으로만 둔다.
 
 ### Leaf evaluator callback
 
@@ -208,7 +227,7 @@ v1 결정:
 - `EvalRequest`에 optional `game_indexes()` metadata를 추가한다.
 - `GumbelArenaBatch`가 leaf request를 만들 때 pending leaf의 `game_index`를 함께 넣는다.
 - Python evaluator는 `request.game_indexes()`와 batch의 `candidate_players`/현재 leaf player를 함께 사용한다.
-- leaf state의 current player도 필요하므로 `EvalRequest.current_players()` metadata를 포함한다.
+- leaf state의 current player는 기존 `EvalRequest.current_players()`를 사용한다.
 
 모델 선택:
 
@@ -222,6 +241,7 @@ v1 결정:
 각 turn에서 `results`를 받은 뒤:
 
 - active game마다 `_deterministic_action(result, logits, legal_actions)`로 action 결정
+- `legal_actions`는 `active_eval_request().legal_masks()`의 active offset row에서 복원한다.
 - `moves[game_index].append(MoveLog(turn=turn, player=player, action=action))`
 - `actions[game_index] = action`
 - `batch.apply_actions(actions)`
@@ -239,11 +259,10 @@ v1 결정:
 
 ## EvalRequest metadata 변경
 
-현재 self-play batch에서 `_request_states()`는 `current_players()`가 있으면 읽고, 없으면 `None`으로 처리한다. arena leaf evaluator에는 game index가 필요하므로 Rust `EvalRequest`에 optional metadata를 추가한다.
+현재 self-play batch에서 `_request_states()`는 `current_players()`가 있으면 읽고, 없으면 `None`으로 처리한다. Rust `EvalRequest.current_players()`는 이미 존재한다. arena leaf evaluator에는 어떤 arena game에서 온 leaf인지가 추가로 필요하므로 Rust `EvalRequest`에 optional game index metadata만 추가한다.
 
 추가 메서드:
 
-- `current_players() -> Vec<u8>`
 - `game_indexes() -> Vec<usize>`
 
 적용 범위:
@@ -255,8 +274,10 @@ v1 결정:
 예:
 
 ```rust
-EvalRequest::new_with_metadata(states, current_players, game_indexes)
+EvalRequest::new_with_game_indexes(states, game_indexes)
 ```
+
+실제 구현에서는 `current_players`를 별도로 저장할 필요가 없으면 기존처럼 `states.iter().map(GameState::current_player)`로 계산하고, `game_indexes`만 `Option<Vec<usize>>`로 저장한다.
 
 호환성:
 
