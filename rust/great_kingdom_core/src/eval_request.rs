@@ -87,7 +87,6 @@ impl EvalRequest {
     }
 
     #[must_use]
-    #[allow(dead_code)]
     pub(crate) fn new_with_game_indexes(states: Vec<GameState>, game_indexes: Vec<usize>) -> Self {
         assert_eq!(
             states.len(),

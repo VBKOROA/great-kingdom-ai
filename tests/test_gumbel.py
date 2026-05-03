@@ -92,6 +92,38 @@ def test_gumbel_self_play_batch_constructor_and_active_request() -> None:
     importlib.util.find_spec("great_kingdom_core") is None,
     reason="great_kingdom_core extension is not installed",
 )
+def test_gumbel_arena_batch_constructor_and_basic_state_methods() -> None:
+    import great_kingdom_core as core  # type: ignore[import-untyped]
+
+    batch = core.GumbelArenaBatch(
+        game_count=3,
+        seed_start=10,
+        game_index_start=1,
+        simulations=4,
+        max_considered_actions=2,
+        seed=7,
+    )
+
+    request = batch.active_eval_request()
+    assert batch.len() == 3
+    assert batch.active_count() == 3
+    assert list(batch.active_game_indexes()) == [0, 1, 2]
+    assert list(request.game_indexes()) == [0, 1, 2]
+    assert list(batch.current_players()) == [1, 1, 1]
+    assert list(batch.candidate_players()) == [2, 1, 2]
+    assert list(batch.seeds()) == [10, 11, 12]
+    assert list(batch.winners()) == [None, None, None]
+    assert list(batch.end_reasons()) == [None, None, None]
+    assert list(batch.territory_scores()) == [(0, 0), (0, 0), (0, 0)]
+
+    assert list(batch.apply_actions([0, None, None])) == [None, None, None]
+    assert list(batch.current_players()) == [2, 1, 1]
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("great_kingdom_core") is None,
+    reason="great_kingdom_core extension is not installed",
+)
 def test_gumbel_search_with_evaluator_batches_leaf_logits() -> None:
     import great_kingdom_core as core  # type: ignore[import-untyped]
 
