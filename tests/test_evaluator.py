@@ -13,7 +13,12 @@ pytestmark = pytest.mark.skipif(
 )
 torch = importlib.import_module("torch") if _torch_spec is not None else None
 
-from great_kingdom_ai.evaluator import evaluate_request, evaluate_request_bytes  # noqa: E402
+from great_kingdom_ai.evaluator import (  # noqa: E402
+    evaluate_feature_batch_logits_values,
+    evaluate_request,
+    evaluate_request_bytes,
+    evaluate_request_bytes_logits_values,
+)
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS  # noqa: E402
 
 
@@ -97,6 +102,43 @@ def test_evaluate_request_bytes_returns_masked_policy_and_value_batch() -> None:
     assert result.policy[0, 81] > result.policy[0, 0]
     assert result.policy[0].sum() == pytest.approx(1.0)
     assert result.value[0] == pytest.approx(-0.5)
+
+
+def test_evaluate_feature_batch_logits_values_skips_policy_output() -> None:
+    mask = [False] * ACTION_SPACE
+    mask[0] = True
+    mask[81] = True
+
+    result = evaluate_feature_batch_logits_values(
+        FixedNetwork(),
+        [[0.0] * (FEATURE_CHANNELS * BOARD_SIZE * BOARD_SIZE)],
+        [mask],
+    )
+
+    assert result.policy_logits.shape == (1, ACTION_SPACE)
+    assert result.value.shape == (1,)
+    assert not hasattr(result, "policy")
+
+
+def test_evaluate_request_bytes_logits_values_returns_logits_and_value() -> None:
+    mask = [False] * ACTION_SPACE
+    mask[0] = True
+    mask[81] = True
+    features = torch.zeros(
+        (1, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE),
+        dtype=torch.float32,
+    ).numpy()
+    masks = torch.tensor([mask], dtype=torch.bool).numpy()
+    request = FakeByteEvalRequest(
+        features=features.tobytes(),
+        masks=masks.tobytes(),
+        batch_size=1,
+    )
+
+    result = evaluate_request_bytes_logits_values(FixedNetwork(), request)
+
+    assert result.policy_logits.shape == (1, ACTION_SPACE)
+    assert result.value.shape == (1,)
 
 
 def test_evaluate_request_rejects_mismatched_batch_sizes() -> None:

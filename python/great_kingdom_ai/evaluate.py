@@ -12,7 +12,11 @@ from typing import Any, NoReturn, Protocol, cast
 
 import numpy as np
 
-from great_kingdom_ai.evaluator import evaluate_feature_arrays, evaluate_feature_batch
+from great_kingdom_ai.evaluator import (
+    evaluate_feature_arrays_logits_values,
+    evaluate_feature_batch,
+    evaluate_feature_batch_logits_values,
+)
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.self_play import MoveLog, SelfPlayState, create_core_game_state
 
@@ -169,25 +173,24 @@ def play_arena_game(
 
         player = game_state.current_player()
         model = candidate_model if player == candidate_player else best_model
-        root_evaluation = evaluate_feature_batch(
+        root_evaluation = evaluate_feature_batch_logits_values(
             model,
             [game_state.feature_planes()],
             [game_state.legal_mask()],
             device=config.device,
         )
-        root_logits = getattr(root_evaluation, "policy_logits", root_evaluation.policy)[0]
+        root_logits = root_evaluation.policy_logits[0]
         logits = [float(value) for value in root_logits]
         root_value = float(root_evaluation.value[0])
 
         def evaluator(request: Any, m: Any = model) -> tuple[list[list[float]], list[float]]:
             feature_rows = request.feature_planes()
             mask_rows = request.legal_masks()
-            evaluation = evaluate_feature_batch(
+            evaluation = evaluate_feature_batch_logits_values(
                 m, feature_rows, mask_rows, device=config.device
             )
-            policy_rows = getattr(evaluation, "policy_logits", evaluation.policy)
             return (
-                [[float(value) for value in policy] for policy in policy_rows],
+                [[float(value) for value in policy] for policy in evaluation.policy_logits],
                 [float(value) for value in evaluation.value],
             )
 
@@ -488,14 +491,13 @@ def evaluate_state_policy_logits_batch(
     *,
     device: Any | str | None = None,
 ) -> list[list[float]]:
-    evaluation = evaluate_feature_batch(
+    evaluation = evaluate_feature_batch_logits_values(
         model,
         [state.feature_planes() for state in states],
         [state.legal_mask() for state in states],
         device=device,
     )
-    rows = getattr(evaluation, "policy_logits", evaluation.policy)
-    return [[float(value) for value in row] for row in rows]
+    return [[float(value) for value in row] for row in evaluation.policy_logits]
 
 
 def save_arena_report(report: ArenaReport, path: str | Path) -> Path:
@@ -671,20 +673,20 @@ def _evaluate_arena_rows_by_model(
         if not offsets:
             return
         if isinstance(feature_rows, np.ndarray) and isinstance(legal_masks, np.ndarray):
-            evaluation = evaluate_feature_arrays(
+            evaluation = evaluate_feature_arrays_logits_values(
                 model,
                 feature_rows[list(offsets)],
                 legal_masks[list(offsets)],
                 device=device,
             )
         else:
-            evaluation = evaluate_feature_batch(
+            evaluation = evaluate_feature_batch_logits_values(
                 model,
                 [[float(value) for value in feature_rows[offset]] for offset in offsets],
                 [[bool(value) for value in legal_masks[offset]] for offset in offsets],
                 device=device,
             )
-        policy_rows = getattr(evaluation, "policy_logits", evaluation.policy)
+        policy_rows = evaluation.policy_logits
         if len(policy_rows) != len(offsets) or len(evaluation.value) != len(offsets):
             raise ValueError("model evaluation returned a mismatched batch size")
         for offset, policy, value in zip(

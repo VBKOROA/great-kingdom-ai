@@ -22,7 +22,10 @@ from great_kingdom_ai.evaluate import (
     run_arena,
     save_arena_report,
 )
-from great_kingdom_ai.evaluator import evaluate_feature_batch, evaluate_request_bytes
+from great_kingdom_ai.evaluator import (
+    evaluate_feature_batch_logits_values,
+    evaluate_request_bytes_logits_values,
+)
 from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
 from great_kingdom_ai.self_play import (
     GameLog,
@@ -256,7 +259,7 @@ def run_pipeline(
                 mask_rows: Sequence[Sequence[bool]],
                 model: Any = self_play_model,
             ) -> list[list[float]]:
-                evaluation = evaluate_feature_batch(
+                evaluation = evaluate_feature_batch_logits_values(
                     model,
                     [list(row) for row in feature_rows],
                     [list(row) for row in mask_rows],
@@ -271,7 +274,7 @@ def run_pipeline(
                 states: Sequence[Any],
                 model: Any = self_play_model,
             ) -> tuple[list[list[float]], list[float]]:
-                evaluation = evaluate_feature_batch(
+                evaluation = evaluate_feature_batch_logits_values(
                     model,
                     [state.feature_planes() for state in states],
                     [state.legal_mask() for state in states],
@@ -289,7 +292,7 @@ def run_pipeline(
                 request: Any,
                 model: Any = self_play_model,
             ) -> tuple[Any, Any]:
-                evaluation = evaluate_request_bytes(
+                evaluation = evaluate_request_bytes_logits_values(
                     model,
                     request,
                     device=train_config.device,
@@ -722,7 +725,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run Great Kingdom self-play, training, arena evaluation, and promotion.",
         epilog=(
             "Example:\n"
-            "  great-kingdom-pipeline --allow-cpu --pipeline-config configs/test/pipeline-smoke.json"
+            "  great-kingdom-pipeline --allow-cpu "
+            "--pipeline-config configs/test/pipeline-smoke.json"
         ),
     )
     config_group = parser.add_argument_group("config files")
@@ -895,7 +899,7 @@ def _cpu_if_cuda_unavailable(device: str) -> str:
     if device != "cuda":
         return device
     try:
-        import torch  # type: ignore[import-not-found]
+        import torch
     except ModuleNotFoundError:
         return "cpu"
     return "cuda" if torch.cuda.is_available() else "cpu"

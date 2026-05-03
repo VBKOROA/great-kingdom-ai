@@ -6,7 +6,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import numpy as np
 
@@ -34,6 +34,12 @@ class ByteEvalRequestLike(Protocol):
 @dataclass(frozen=True)
 class NetworkEvaluation:
     policy: np.ndarray
+    policy_logits: np.ndarray
+    value: np.ndarray
+
+
+@dataclass(frozen=True)
+class NetworkLogitsValueEvaluation:
     policy_logits: np.ndarray
     value: np.ndarray
 
@@ -83,6 +89,26 @@ def evaluate_request_bytes(
     return evaluate_feature_arrays(model, features, masks, device=device)
 
 
+def evaluate_request_bytes_logits_values(
+    model: nn.Module,
+    request: ByteEvalRequestLike,
+    *,
+    device: torch.device | str | None = None,
+) -> NetworkLogitsValueEvaluation:
+    batch_size = request.len()
+    features = np.frombuffer(request.feature_plane_bytes(), dtype=np.float32).reshape(
+        batch_size,
+        FEATURE_CHANNELS,
+        BOARD_SIZE,
+        BOARD_SIZE,
+    ).copy()
+    masks = np.frombuffer(request.legal_mask_bytes(), dtype=np.bool_).reshape(
+        batch_size,
+        ACTION_SPACE,
+    ).copy()
+    return evaluate_feature_arrays_logits_values(model, features, masks, device=device)
+
+
 def evaluate_feature_batch(
     model: nn.Module,
     feature_planes: list[list[float]],
@@ -98,13 +124,46 @@ def evaluate_feature_batch(
     start = time.perf_counter() if profile else 0.0
     features = _feature_array(feature_planes, batch_size)
     masks = _legal_mask_array(legal_masks, batch_size)
-    return _evaluate_arrays_with_profile(
-        model,
-        features,
-        masks,
-        device=device,
-        profile=profile,
-        start=start,
+    return cast(
+        NetworkEvaluation,
+        _evaluate_arrays_with_profile(
+            model,
+            features,
+            masks,
+            device=device,
+            include_policy=True,
+            profile=profile,
+            start=start,
+        ),
+    )
+
+
+def evaluate_feature_batch_logits_values(
+    model: nn.Module,
+    feature_planes: list[list[float]],
+    legal_masks: list[list[bool]],
+    *,
+    device: torch.device | str | None = None,
+) -> NetworkLogitsValueEvaluation:
+    if len(feature_planes) != len(legal_masks):
+        raise ValueError("feature batch and legal mask batch must have the same length")
+
+    batch_size = len(feature_planes)
+    profile = _profile_enabled()
+    start = time.perf_counter() if profile else 0.0
+    features = _feature_array(feature_planes, batch_size)
+    masks = _legal_mask_array(legal_masks, batch_size)
+    return cast(
+        NetworkLogitsValueEvaluation,
+        _evaluate_arrays_with_profile(
+            model,
+            features,
+            masks,
+            device=device,
+            include_policy=False,
+            profile=profile,
+            start=start,
+        ),
     )
 
 
@@ -119,13 +178,42 @@ def evaluate_feature_arrays(
     start = time.perf_counter() if profile else 0.0
     features = _feature_array_from_array(features)
     masks = _legal_mask_array_from_array(masks, len(features))
-    return _evaluate_arrays_with_profile(
-        model,
-        features,
-        masks,
-        device=device,
-        profile=profile,
-        start=start,
+    return cast(
+        NetworkEvaluation,
+        _evaluate_arrays_with_profile(
+            model,
+            features,
+            masks,
+            device=device,
+            include_policy=True,
+            profile=profile,
+            start=start,
+        ),
+    )
+
+
+def evaluate_feature_arrays_logits_values(
+    model: nn.Module,
+    features: np.ndarray,
+    masks: np.ndarray,
+    *,
+    device: torch.device | str | None = None,
+) -> NetworkLogitsValueEvaluation:
+    profile = _profile_enabled()
+    start = time.perf_counter() if profile else 0.0
+    features = _feature_array_from_array(features)
+    masks = _legal_mask_array_from_array(masks, len(features))
+    return cast(
+        NetworkLogitsValueEvaluation,
+        _evaluate_arrays_with_profile(
+            model,
+            features,
+            masks,
+            device=device,
+            include_policy=False,
+            profile=profile,
+            start=start,
+        ),
     )
 
 
@@ -135,9 +223,10 @@ def _evaluate_arrays_with_profile(
     masks: np.ndarray,
     *,
     device: torch.device | str | None,
+    include_policy: bool,
     profile: bool,
     start: float,
-) -> NetworkEvaluation:
+) -> NetworkEvaluation | NetworkLogitsValueEvaluation:
     torch = _import_torch()
     batch_size = len(features)
     feature_done = time.perf_counter() if profile else 0.0
@@ -145,9 +234,11 @@ def _evaluate_arrays_with_profile(
     model_device = _model_device(model)
     target_device = torch.device(device) if device is not None else model_device
     inputs = torch.from_numpy(features).to(device=target_device)
-    mask_tensor = torch.from_numpy(masks).to(device=target_device)
-    model.to(target_device)
-    model.eval()
+    mask_tensor = torch.from_numpy(masks).to(device=target_device) if include_policy else None
+    if model_device != target_device:
+        model.to(target_device)
+    if model.training:
+        model.eval()
     transfer_done = time.perf_counter() if profile else 0.0
 
     with torch.no_grad():
@@ -162,15 +253,21 @@ def _evaluate_arrays_with_profile(
             )
         if value.shape != (batch_size,):
             raise ValueError(f"expected value shape {(batch_size,)}, got {tuple(value.shape)}")
-        masked_logits = policy_logits.masked_fill(
-            ~mask_tensor,
-            torch.finfo(policy_logits.dtype).min,
-        )
-        policy = torch.softmax(masked_logits, dim=1)
+        if include_policy:
+            assert mask_tensor is not None
+            masked_logits = policy_logits.masked_fill(
+                ~mask_tensor,
+                torch.finfo(policy_logits.dtype).min,
+            )
+            policy = torch.softmax(masked_logits, dim=1)
 
-    policy_array = np.ascontiguousarray(policy.cpu().numpy(), dtype=np.float32)
     policy_logits_array = np.ascontiguousarray(policy_logits.cpu().numpy(), dtype=np.float32)
     value_array = np.ascontiguousarray(value.cpu().numpy(), dtype=np.float32)
+    policy_array = (
+        np.ascontiguousarray(policy.cpu().numpy(), dtype=np.float32)
+        if include_policy
+        else None
+    )
     output_done = time.perf_counter() if profile else 0.0
     if profile:
         _record_profile(
@@ -181,6 +278,12 @@ def _evaluate_arrays_with_profile(
             output_seconds=output_done - model_done,
         )
 
+    if not include_policy:
+        return NetworkLogitsValueEvaluation(
+            policy_logits=policy_logits_array,
+            value=value_array,
+        )
+    assert policy_array is not None
     return NetworkEvaluation(
         policy=policy_array,
         policy_logits=policy_logits_array,
@@ -274,7 +377,7 @@ def _model_device(model: nn.Module) -> torch.device:
     try:
         return next(model.parameters()).device
     except StopIteration:
-        return torch.device("cpu")
+        return torch.device("cpu")  # type: ignore[no-any-return]
 
 
 def _import_torch() -> Any:

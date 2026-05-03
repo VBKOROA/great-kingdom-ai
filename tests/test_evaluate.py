@@ -319,6 +319,16 @@ def fake_evaluate_feature_batch(
 @pytest.fixture(autouse=True)
 def patch_evaluator(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(evaluate_module, "evaluate_feature_batch", fake_evaluate_feature_batch)
+    monkeypatch.setattr(
+        evaluate_module,
+        "evaluate_feature_batch_logits_values",
+        fake_evaluate_feature_batch,
+    )
+    monkeypatch.setattr(
+        evaluate_module,
+        "evaluate_feature_arrays_logits_values",
+        fake_evaluate_feature_batch,
+    )
 
 
 def test_evaluate_state_policy_masks_and_normalizes_legal_actions() -> None:
