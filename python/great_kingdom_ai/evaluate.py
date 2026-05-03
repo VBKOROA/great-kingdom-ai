@@ -10,7 +10,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, NoReturn, Protocol, cast
 
-from great_kingdom_ai.evaluator import evaluate_feature_batch
+import numpy as np
+
+from great_kingdom_ai.evaluator import evaluate_feature_arrays, evaluate_feature_batch
+from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.self_play import MoveLog, SelfPlayState, create_core_game_state
 
 BLUE = 1
@@ -292,8 +295,7 @@ def run_arena_batched(
                 break
 
             request = batch.active_eval_request()
-            feature_rows = request.feature_planes()
-            masks = request.legal_masks()
+            feature_rows, masks, row_count = _request_feature_rows_and_masks(request)
             current_players = _as_int_list(batch.current_players())
             candidate_players = _as_int_list(batch.candidate_players())
             root_logits, root_values = _evaluate_arena_rows_by_model(
@@ -311,15 +313,16 @@ def run_arena_batched(
                 leaf_request: Any,
                 candidate_players: list[int] = candidate_players,
             ) -> tuple[list[list[float]], list[float]]:
-                leaf_features = leaf_request.feature_planes()
-                leaf_masks = leaf_request.legal_masks()
+                leaf_features, leaf_masks, leaf_row_count = _request_feature_rows_and_masks(
+                    leaf_request
+                )
                 leaf_game_indexes = _request_game_indexes(
                     leaf_request,
-                    expected_len=len(leaf_features),
+                    expected_len=leaf_row_count,
                 )
                 leaf_players = _request_current_players(
                     leaf_request,
-                    expected_len=len(leaf_features),
+                    expected_len=leaf_row_count,
                 )
                 return _evaluate_arena_rows_by_model(
                     candidate_model=candidate_model,
@@ -340,14 +343,14 @@ def run_arena_batched(
             )
             actions: list[int | None] = [None] * batch.len()
             for active_offset, game_index in enumerate(active_indexes):
-                result = results[game_index]
-                if result is None:
+                search_result = results[game_index]
+                if search_result is None:
                     continue
                 legal_actions = [
                     action for action, is_legal in enumerate(masks[active_offset]) if is_legal
                 ]
                 action = _deterministic_action(
-                    result,
+                    search_result,
                     root_logits[active_offset],
                     legal_actions,
                 )
@@ -368,15 +371,15 @@ def run_arena_batched(
                 moves=moves,
             )
             while emitted_in_chunk < chunk_size:
-                result = chunk_results[emitted_in_chunk]
-                if result is None:
+                game_result = chunk_results[emitted_in_chunk]
+                if game_result is None:
                     break
                 global_index = chunk_start + emitted_in_chunk
                 if games[global_index] is None:
-                    games[global_index] = result
+                    games[global_index] = game_result
                     emitted_games += 1
                     if progress_callback is not None:
-                        progress_callback(emitted_games, config.games, result)
+                        progress_callback(emitted_games, config.games, game_result)
                 emitted_in_chunk += 1
 
             if not batch.active_game_indexes():
@@ -532,7 +535,7 @@ def create_core_search_engine(
     seed_offset: int = 0,
 ) -> ArenaSearchLike:
     try:
-        import great_kingdom_core as core
+        import great_kingdom_core as core  # type: ignore[import-untyped]
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             "great_kingdom_core is not installed. Build it with maturin before arena evaluation."
@@ -639,8 +642,8 @@ def _evaluate_arena_rows_by_model(
     *,
     candidate_model: Any,
     best_model: Any,
-    feature_rows: Sequence[Sequence[float]],
-    legal_masks: Sequence[Sequence[bool]],
+    feature_rows: Any,
+    legal_masks: Any,
     game_indexes: Sequence[int],
     current_players: Sequence[int],
     candidate_players: Sequence[int],
@@ -667,12 +670,20 @@ def _evaluate_arena_rows_by_model(
     def evaluate_offsets(model: Any, offsets: Sequence[int]) -> None:
         if not offsets:
             return
-        evaluation = evaluate_feature_batch(
-            model,
-            [[float(value) for value in feature_rows[offset]] for offset in offsets],
-            [[bool(value) for value in legal_masks[offset]] for offset in offsets],
-            device=device,
-        )
+        if isinstance(feature_rows, np.ndarray) and isinstance(legal_masks, np.ndarray):
+            evaluation = evaluate_feature_arrays(
+                model,
+                feature_rows[list(offsets)],
+                legal_masks[list(offsets)],
+                device=device,
+            )
+        else:
+            evaluation = evaluate_feature_batch(
+                model,
+                [[float(value) for value in feature_rows[offset]] for offset in offsets],
+                [[bool(value) for value in legal_masks[offset]] for offset in offsets],
+                device=device,
+            )
         policy_rows = getattr(evaluation, "policy_logits", evaluation.policy)
         if len(policy_rows) != len(offsets) or len(evaluation.value) != len(offsets):
             raise ValueError("model evaluation returned a mismatched batch size")
@@ -691,6 +702,30 @@ def _evaluate_arena_rows_by_model(
         [cast(list[float], row) for row in logits_by_row],
         [cast(float, value) for value in values_by_row],
     )
+
+
+def _request_feature_rows_and_masks(request: Any) -> tuple[Any, Any, int]:
+    if (
+        hasattr(request, "len")
+        and hasattr(request, "feature_plane_bytes")
+        and hasattr(request, "legal_mask_bytes")
+    ):
+        row_count = int(request.len())
+        feature_rows = np.frombuffer(request.feature_plane_bytes(), dtype=np.float32).reshape(
+            row_count,
+            FEATURE_CHANNELS,
+            BOARD_SIZE,
+            BOARD_SIZE,
+        )
+        legal_masks = np.frombuffer(request.legal_mask_bytes(), dtype=np.bool_).reshape(
+            row_count,
+            ACTION_SPACE,
+        )
+        return feature_rows, legal_masks, row_count
+
+    feature_rows = request.feature_planes()
+    legal_masks = request.legal_masks()
+    return feature_rows, legal_masks, len(feature_rows)
 
 
 def _request_game_indexes(request: Any, *, expected_len: int) -> list[int]:

@@ -118,6 +118,10 @@ great-kingdom-evaluate \
 
 후보 모델이 기준 승률을 넘으면 best 모델로 승격시키고 싶을 때는 `--promote`를 추가합니다.
 
+Arena의 `batch_size`는 동시에 진행할 평가 게임 수입니다. `batch_size=1`은 기존 순차 실행이고,
+Runpod RTX 3090에서는 우선 `20`을 권장합니다. CUDA OOM이 나면 `8` 또는 `4`로 낮춰서 다시
+실행합니다.
+
 ## Runpod 학습 환경
 
 본격적인 CUDA 학습은 다음 환경을 기준으로 합니다.

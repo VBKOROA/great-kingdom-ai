@@ -378,7 +378,7 @@ great-kingdom-pipeline --device cuda ...
 5. [x] Python `ArenaBatchLike`, `create_core_arena_batch`, `run_arena_batched`를 추가한다.
 6. [x] `run_arena()` dispatch를 연결한다.
 7. [x] Python/Rust tests를 추가한다.
-8. Runpod config와 README를 갱신한다.
+8. [x] Runpod config와 README를 갱신한다.
 9. CPU smoke와 CUDA smoke로 성능/정확성을 확인한다.
 
 ## 명시적 제외 범위
