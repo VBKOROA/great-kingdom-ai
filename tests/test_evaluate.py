@@ -399,6 +399,62 @@ def test_run_arena_reports_progress_after_each_game() -> None:
     assert progress == [(1, 2, 0), (2, 2, 1)]
 
 
+def test_run_arena_dispatches_to_batched_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[FakeNetwork, FakeNetwork, ArenaConfig]] = []
+    game = ArenaGameResult(
+        seed=0,
+        candidate_player=1,
+        best_player=2,
+        winner=1,
+        end_reason=1,
+        moves=[],
+        territory_scores=(0, 0),
+    )
+    report = ArenaReport(
+        config=ArenaConfig(games=1, batch_size=2),
+        games=[game],
+        summary=summarize_arena([game], promotion_threshold=0.55),
+    )
+
+    def fake_run_arena_batched(
+        *,
+        candidate_model: FakeNetwork,
+        best_model: FakeNetwork,
+        config: ArenaConfig | None = None,
+        progress_callback: Any = None,
+    ) -> ArenaReport:
+        del progress_callback
+        assert config is not None
+        calls.append((candidate_model, best_model, config))
+        return report
+
+    monkeypatch.setattr(evaluate_module, "run_arena_batched", fake_run_arena_batched)
+    config = ArenaConfig(games=1, batch_size=2)
+    candidate = FakeNetwork(2)
+    best = FakeNetwork(3)
+
+    result = run_arena(
+        candidate_model=candidate,
+        best_model=best,
+        config=config,
+    )
+
+    assert result is report
+    assert calls == [(candidate, best, config)]
+
+
+def test_run_arena_rejects_sequential_hooks_for_batched_dispatch() -> None:
+    with pytest.raises(ValueError, match="only supported for batch_size=1"):
+        run_arena(
+            candidate_model=FakeNetwork(2),
+            best_model=FakeNetwork(3),
+            config=ArenaConfig(games=2, batch_size=2),
+            state_factory=OneMoveState,
+        )
+
+
 def test_create_core_arena_batch_requires_rust_batch_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

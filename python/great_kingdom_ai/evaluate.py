@@ -228,24 +228,18 @@ def run_arena(
     progress_callback: Callable[[int, int, ArenaGameResult], None] | None = None,
 ) -> ArenaReport:
     config = config if config is not None else ArenaConfig()
-    if config.games < 0:
-        raise ValueError("games must be non-negative")
-    if config.batch_size <= 0:
-        raise ValueError("batch_size must be positive")
-    if config.max_turns <= 0:
-        raise ValueError("max_turns must be positive")
-    if not 0.0 <= config.promotion_threshold <= 1.0:
-        raise ValueError("promotion_threshold must be between 0 and 1")
-    if config.gumbel_simulations <= 0:
-        raise ValueError("gumbel_simulations must be positive")
-    if config.gumbel_max_considered_actions <= 0:
-        raise ValueError("gumbel_max_considered_actions must be positive")
-    if config.gumbel_c_visit <= 0.0:
-        raise ValueError("gumbel_c_visit must be positive")
-    if config.gumbel_c_scale <= 0.0:
-        raise ValueError("gumbel_c_scale must be positive")
-    if config.leaf_batch_size <= 0:
-        raise ValueError("leaf_batch_size must be positive")
+    _validate_arena_config(config)
+    if config.batch_size > 1:
+        if state_factory is not None or search_factory is not None:
+            raise ValueError(
+                "state_factory and search_factory are only supported for batch_size=1"
+            )
+        return run_arena_batched(
+            candidate_model=candidate_model,
+            best_model=best_model,
+            config=config,
+            progress_callback=progress_callback,
+        )
 
     make_state = state_factory if state_factory is not None else create_core_game_state
     games = []
