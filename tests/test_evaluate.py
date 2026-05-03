@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+import types
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -11,10 +13,12 @@ from great_kingdom_ai.evaluate import (
     ArenaConfig,
     ArenaGameResult,
     ArenaReport,
+    create_core_arena_batch,
     evaluate_state_policy,
     play_arena_game,
     promote_candidate_if_needed,
     run_arena,
+    run_arena_batched,
     save_arena_report,
     summarize_arena,
 )
@@ -153,6 +157,114 @@ class _ArenaEvalRequest:
         return [self._state.legal_mask()]
 
 
+class _ArenaBatchEvalRequest:
+    def __init__(
+        self,
+        states: list[OneMoveState],
+        game_indexes: list[int],
+        *,
+        include_game_indexes: bool = True,
+    ) -> None:
+        self._states = states
+        self._game_indexes = game_indexes
+        self._include_game_indexes = include_game_indexes
+
+    def feature_planes(self) -> list[list[float]]:
+        return [state.feature_planes() for state in self._states]
+
+    def legal_masks(self) -> list[list[bool]]:
+        return [state.legal_mask() for state in self._states]
+
+    def current_players(self) -> list[int]:
+        return [state.current_player() for state in self._states]
+
+    def game_indexes(self) -> list[int]:
+        return self._game_indexes if self._include_game_indexes else []
+
+
+class FakeArenaBatch:
+    missing_leaf_metadata = False
+
+    def __init__(
+        self,
+        *,
+        game_count: int,
+        seed_start: int,
+        game_index_start: int,
+    ) -> None:
+        del seed_start
+        self.states = [OneMoveState() for _ in range(game_count)]
+        self._candidate_players = [
+            1 if (game_index_start + index) % 2 == 0 else 2
+            for index in range(game_count)
+        ]
+
+    def len(self) -> int:
+        return len(self.states)
+
+    def active_game_indexes(self) -> list[int]:
+        return [
+            index for index, state in enumerate(self.states) if not state.is_terminal()
+        ]
+
+    def active_eval_request(self) -> _ArenaBatchEvalRequest:
+        active = self.active_game_indexes()
+        return _ArenaBatchEvalRequest([self.states[index] for index in active], active)
+
+    def current_players(self) -> list[int]:
+        return [state.current_player() for state in self.states]
+
+    def candidate_players(self) -> list[int]:
+        return self._candidate_players
+
+    def search_active_with_logits_and_evaluator(
+        self,
+        policy_logits: list[list[float]],
+        evaluator: Any,
+        root_values: list[float],
+        leaf_batch_size: int = 8,
+    ) -> list[PriorSearchResult | None]:
+        del leaf_batch_size
+        active = self.active_game_indexes()
+        assert len(policy_logits) == len(active)
+        assert len(root_values) == len(active)
+        evaluator(
+            _ArenaBatchEvalRequest(
+                [self.states[index] for index in active],
+                active,
+                include_game_indexes=not self.missing_leaf_metadata,
+            )
+        )
+        results: list[PriorSearchResult | None] = [None] * self.len()
+        for offset, game_index in enumerate(active):
+            action = max(
+                self.states[game_index].legal_actions(),
+                key=lambda legal_action: policy_logits[offset][legal_action],
+            )
+            visits = [0] * ACTION_SPACE
+            visits[action] = 1
+            results[game_index] = PriorSearchResult(visits)
+        return results
+
+    def apply_actions(self, actions: list[int | None]) -> list[int | None]:
+        for index, action in enumerate(actions):
+            if action is not None:
+                self.states[index].apply_action(action)
+        return actions
+
+    def is_terminal(self) -> list[bool]:
+        return [state.is_terminal() for state in self.states]
+
+    def winners(self) -> list[int | None]:
+        return [state.winner() for state in self.states]
+
+    def end_reasons(self) -> list[int | None]:
+        return [state.end_reason() for state in self.states]
+
+    def territory_scores(self) -> list[tuple[int, int]]:
+        return [state.territory_scores() for state in self.states]
+
+
 def fake_evaluate_feature_batch(
     model: FakeNetwork,
     feature_planes: list[list[float]],
@@ -285,6 +397,95 @@ def test_run_arena_reports_progress_after_each_game() -> None:
 
     assert report.summary.games == 2
     assert progress == [(1, 2, 0), (2, 2, 1)]
+
+
+def test_create_core_arena_batch_requires_rust_batch_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(sys.modules, "great_kingdom_core", types.SimpleNamespace())
+
+    with pytest.raises(RuntimeError, match="GumbelArenaBatch is not available"):
+        create_core_arena_batch(
+            ArenaConfig(games=1),
+            game_count=1,
+            seed_start=0,
+        )
+
+
+def test_run_arena_batched_splits_root_rows_by_candidate_player(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    progress: list[tuple[int, int, int]] = []
+
+    def fake_create_core_arena_batch(
+        config: ArenaConfig,
+        *,
+        game_count: int,
+        seed_start: int,
+        game_index_start: int = 0,
+    ) -> FakeArenaBatch:
+        del config
+        return FakeArenaBatch(
+            game_count=game_count,
+            seed_start=seed_start,
+            game_index_start=game_index_start,
+        )
+
+    monkeypatch.setattr(
+        evaluate_module,
+        "create_core_arena_batch",
+        fake_create_core_arena_batch,
+    )
+
+    report = run_arena_batched(
+        candidate_model=FakeNetwork(2),
+        best_model=FakeNetwork(3),
+        config=ArenaConfig(games=2, batch_size=2, max_turns=4, gumbel_simulations=1),
+        progress_callback=lambda current, total, game: progress.append(
+            (current, total, game.seed)
+        ),
+    )
+
+    assert [game.seed for game in report.games] == [0, 1]
+    assert [game.candidate_player for game in report.games] == [1, 2]
+    assert [game.best_player for game in report.games] == [2, 1]
+    assert [[move.action for move in game.moves] for game in report.games] == [[2], [3]]
+    assert report.summary.candidate_wins == 2
+    assert progress == [(1, 2, 0), (2, 2, 1)]
+
+
+def test_run_arena_batched_requires_leaf_game_index_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class MissingMetadataArenaBatch(FakeArenaBatch):
+        missing_leaf_metadata = True
+
+    def fake_create_core_arena_batch(
+        config: ArenaConfig,
+        *,
+        game_count: int,
+        seed_start: int,
+        game_index_start: int = 0,
+    ) -> MissingMetadataArenaBatch:
+        del config
+        return MissingMetadataArenaBatch(
+            game_count=game_count,
+            seed_start=seed_start,
+            game_index_start=game_index_start,
+        )
+
+    monkeypatch.setattr(
+        evaluate_module,
+        "create_core_arena_batch",
+        fake_create_core_arena_batch,
+    )
+
+    with pytest.raises(RuntimeError, match="game index metadata"):
+        run_arena_batched(
+            candidate_model=FakeNetwork(2),
+            best_model=FakeNetwork(3),
+            config=ArenaConfig(games=1, batch_size=1, max_turns=4, gumbel_simulations=1),
+        )
 
 
 def test_summarize_arena_reports_side_split_and_promotion() -> None:

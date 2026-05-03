@@ -375,7 +375,7 @@ great-kingdom-pipeline --device cuda ...
 2. [x] Rust `EvalRequest`에 optional metadata를 추가하고 기존 tests를 통과시킨다.
 3. [x] Rust `GumbelArenaBatch` skeleton과 basic state/apply/query 메서드를 구현한다.
 4. [x] Rust batched search evaluator 메서드를 구현한다.
-5. Python `ArenaBatchLike`, `create_core_arena_batch`, `run_arena_batched`를 추가한다.
+5. [x] Python `ArenaBatchLike`, `create_core_arena_batch`, `run_arena_batched`를 추가한다.
 6. `run_arena()` dispatch를 연결한다.
 7. Python/Rust tests를 추가한다.
 8. Runpod config와 README를 갱신한다.
