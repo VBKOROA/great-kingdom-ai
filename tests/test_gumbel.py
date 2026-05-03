@@ -124,6 +124,86 @@ def test_gumbel_arena_batch_constructor_and_basic_state_methods() -> None:
     importlib.util.find_spec("great_kingdom_core") is None,
     reason="great_kingdom_core extension is not installed",
 )
+def test_gumbel_arena_batch_active_request_excludes_terminal_games() -> None:
+    import great_kingdom_core as core  # type: ignore[import-untyped]
+
+    batch = core.GumbelArenaBatch(game_count=2, simulations=4, max_considered_actions=2)
+
+    assert list(batch.apply_actions([81, None])) == [None, None]
+    assert list(batch.apply_actions([81, None])) == [2, None]
+
+    request = batch.active_eval_request()
+    assert list(batch.is_terminal()) == [True, False]
+    assert list(batch.active_game_indexes()) == [1]
+    assert request.len() == 1
+    assert list(request.game_indexes()) == [1]
+    assert list(request.current_players()) == [1]
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("great_kingdom_core") is None,
+    reason="great_kingdom_core extension is not installed",
+)
+def test_gumbel_arena_batch_search_rejects_mismatched_batches() -> None:
+    import great_kingdom_core as core  # type: ignore[import-untyped]
+
+    def evaluator(request: object) -> tuple[list[list[float]], list[float]]:
+        request_len = request.len()  # type: ignore[attr-defined]
+        return [[0.0] * core.action_space() for _ in range(request_len)], [0.0] * request_len
+
+    batch = core.GumbelArenaBatch(game_count=2, simulations=4, max_considered_actions=2)
+
+    with pytest.raises(ValueError, match="expected 2 policy rows"):
+        batch.search_active_with_logits_and_evaluator(
+            [[0.0] * core.action_space()],
+            evaluator,
+            root_values=[0.0, 0.0],
+        )
+
+    with pytest.raises(ValueError, match="expected 2 root values"):
+        batch.search_active_with_logits_and_evaluator(
+            [[0.0] * core.action_space(), [0.0] * core.action_space()],
+            evaluator,
+            root_values=[0.0],
+        )
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("great_kingdom_core") is None,
+    reason="great_kingdom_core extension is not installed",
+)
+def test_gumbel_arena_batch_search_returns_none_for_terminal_slots() -> None:
+    import great_kingdom_core as core  # type: ignore[import-untyped]
+
+    def evaluator(request: object) -> tuple[list[list[float]], list[float]]:
+        request_len = request.len()  # type: ignore[attr-defined]
+        rows = []
+        for _ in range(request_len):
+            logits = [-3.0] * core.action_space()
+            logits[0] = 4.0
+            rows.append(logits)
+        return rows, [0.0] * request_len
+
+    batch = core.GumbelArenaBatch(game_count=2, simulations=4, max_considered_actions=2)
+    batch.apply_actions([81, None])
+    batch.apply_actions([81, None])
+
+    results = batch.search_active_with_logits_and_evaluator(
+        [[0.0] * core.action_space()],
+        evaluator,
+        root_values=[0.0],
+        leaf_batch_size=4,
+    )
+
+    assert len(results) == 2
+    assert results[0] is None
+    assert results[1] is not None
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("great_kingdom_core") is None,
+    reason="great_kingdom_core extension is not installed",
+)
 def test_gumbel_arena_batch_batches_leaf_eval_with_game_metadata() -> None:
     import great_kingdom_core as core  # type: ignore[import-untyped]
 

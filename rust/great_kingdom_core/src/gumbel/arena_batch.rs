@@ -581,4 +581,38 @@ mod tests {
         assert_eq!(batch.searches[1][0].seed(), 29);
         assert_eq!(batch.searches[1][1].seed(), 30);
     }
+
+    #[test]
+    fn active_eval_request_filters_terminal_games() {
+        let mut batch = GumbelArenaBatch::new(2, 0, 0, GumbelConfig::new(4, 2, 50.0, 1.0, 7));
+
+        assert_eq!(
+            batch.apply_actions(vec![Some(81), None]).unwrap(),
+            vec![None, None]
+        );
+        assert_eq!(
+            batch.apply_actions(vec![Some(81), None]).unwrap(),
+            vec![Some(2), None]
+        );
+
+        let request = batch.active_eval_request();
+        assert_eq!(batch.active_game_indexes(), vec![1]);
+        assert_eq!(request.len(), 1);
+        assert_eq!(request.game_indexes(), vec![1]);
+        assert_eq!(request.current_players(), vec![1]);
+    }
+
+    #[test]
+    fn apply_actions_updates_terminal_state_and_score_accessors() {
+        let mut batch = GumbelArenaBatch::new(1, 0, 0, GumbelConfig::new(4, 2, 50.0, 1.0, 7));
+
+        assert_eq!(batch.apply_actions(vec![Some(81)]).unwrap(), vec![None]);
+        assert_eq!(batch.is_terminal(), vec![false]);
+        assert_eq!(batch.apply_actions(vec![Some(81)]).unwrap(), vec![Some(2)]);
+
+        assert_eq!(batch.is_terminal(), vec![true]);
+        assert_eq!(batch.winners(), vec![Some(2)]);
+        assert_eq!(batch.end_reasons(), vec![Some(3)]);
+        assert_eq!(batch.territory_scores(), vec![(0, 0)]);
+    }
 }

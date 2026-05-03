@@ -83,6 +83,18 @@ class OneMoveState:
         return mask
 
 
+class TwoMoveState(OneMoveState):
+    def current_player(self) -> int:
+        return 1 if len(self.applied_actions) % 2 == 0 else 2
+
+    def apply_action(self, action_index: int) -> int | None:
+        self.applied_actions.append(action_index)
+        if len(self.applied_actions) >= 2:
+            self._terminal = True
+            self._winner = 2 if action_index == 3 else 1
+        return self._winner
+
+
 class PriorSearchResult:
     def __init__(self, visits: list[int]) -> None:
         self._visits = visits
@@ -263,6 +275,23 @@ class FakeArenaBatch:
 
     def territory_scores(self) -> list[tuple[int, int]]:
         return [state.territory_scores() for state in self.states]
+
+
+class UnevenFakeArenaBatch(FakeArenaBatch):
+    def __init__(
+        self,
+        *,
+        game_count: int,
+        seed_start: int,
+        game_index_start: int,
+    ) -> None:
+        super().__init__(
+            game_count=game_count,
+            seed_start=seed_start,
+            game_index_start=game_index_start,
+        )
+        if game_count >= 2:
+            self.states[1] = TwoMoveState()
 
 
 def fake_evaluate_feature_batch(
@@ -507,6 +536,45 @@ def test_run_arena_batched_splits_root_rows_by_candidate_player(
     assert [game.best_player for game in report.games] == [2, 1]
     assert [[move.action for move in game.moves] for game in report.games] == [[2], [3]]
     assert report.summary.candidate_wins == 2
+    assert progress == [(1, 2, 0), (2, 2, 1)]
+
+
+def test_run_arena_batched_reports_finished_games_in_seed_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    progress: list[tuple[int, int, int]] = []
+
+    def fake_create_core_arena_batch(
+        config: ArenaConfig,
+        *,
+        game_count: int,
+        seed_start: int,
+        game_index_start: int = 0,
+    ) -> UnevenFakeArenaBatch:
+        del config
+        return UnevenFakeArenaBatch(
+            game_count=game_count,
+            seed_start=seed_start,
+            game_index_start=game_index_start,
+        )
+
+    monkeypatch.setattr(
+        evaluate_module,
+        "create_core_arena_batch",
+        fake_create_core_arena_batch,
+    )
+
+    report = run_arena_batched(
+        candidate_model=FakeNetwork(2),
+        best_model=FakeNetwork(3),
+        config=ArenaConfig(games=2, batch_size=2, max_turns=4, gumbel_simulations=1),
+        progress_callback=lambda current, total, game: progress.append(
+            (current, total, game.seed)
+        ),
+    )
+
+    assert [game.seed for game in report.games] == [0, 1]
+    assert [len(game.moves) for game in report.games] == [1, 2]
     assert progress == [(1, 2, 0), (2, 2, 1)]
 
 
