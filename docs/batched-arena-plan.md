@@ -371,7 +371,7 @@ great-kingdom-pipeline --device cuda ...
 
 ## 구현 순서
 
-1. `ArenaConfig.batch_size`와 validation을 추가한다.
+1. [x] `ArenaConfig.batch_size`와 validation을 추가한다.
 2. Rust `EvalRequest`에 optional metadata를 추가하고 기존 tests를 통과시킨다.
 3. Rust `GumbelArenaBatch` skeleton과 basic state/apply/query 메서드를 구현한다.
 4. Rust batched search evaluator 메서드를 구현한다.

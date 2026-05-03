@@ -34,6 +34,11 @@ class FakeEvaluation:
     value: np.ndarray
 
 
+def test_arena_config_rejects_non_positive_batch_size() -> None:
+    with pytest.raises(ValueError, match="batch_size must be positive"):
+        ArenaConfig(batch_size=0)
+
+
 class OneMoveState:
     def __init__(self) -> None:
         self.applied_actions: list[int] = []

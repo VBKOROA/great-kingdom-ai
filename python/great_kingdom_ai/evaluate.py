@@ -37,6 +37,7 @@ class ArenaSearchLike(Protocol):
 @dataclass(frozen=True)
 class ArenaConfig:
     games: int = 20
+    batch_size: int = 1
     seed_start: int = 0
     max_turns: int = 200
     gumbel_simulations: int = 128
@@ -47,6 +48,10 @@ class ArenaConfig:
     leaf_batch_size: int = 8
     device: str = "cpu"
     promotion_threshold: float = 0.55
+
+    def __post_init__(self) -> None:
+        if self.batch_size <= 0:
+            raise ValueError("batch_size must be positive")
 
 
 @dataclass(frozen=True)
@@ -195,6 +200,8 @@ def run_arena(
     config = config if config is not None else ArenaConfig()
     if config.games < 0:
         raise ValueError("games must be non-negative")
+    if config.batch_size <= 0:
+        raise ValueError("batch_size must be positive")
     if config.max_turns <= 0:
         raise ValueError("max_turns must be positive")
     if not 0.0 <= config.promotion_threshold <= 1.0:
