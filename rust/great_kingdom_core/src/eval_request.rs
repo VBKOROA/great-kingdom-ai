@@ -9,6 +9,7 @@ pub struct EvalRequest {
     states: Vec<GameState>,
     feature_bytes: Option<Vec<u8>>,
     legal_mask_bytes: Option<Vec<u8>>,
+    game_indexes: Option<Vec<usize>>,
 }
 
 #[pymethods]
@@ -72,11 +73,35 @@ impl EvalRequest {
     pub fn current_players(&self) -> Vec<u8> {
         self.states.iter().map(GameState::current_player).collect()
     }
+
+    #[must_use]
+    pub fn game_indexes(&self) -> Vec<usize> {
+        self.game_indexes.clone().unwrap_or_default()
+    }
 }
 
 impl EvalRequest {
     #[must_use]
     pub(crate) fn new_with_precomputed_bytes(states: Vec<GameState>) -> Self {
+        Self::new_with_optional_game_indexes(states, None)
+    }
+
+    #[must_use]
+    #[allow(dead_code)]
+    pub(crate) fn new_with_game_indexes(states: Vec<GameState>, game_indexes: Vec<usize>) -> Self {
+        assert_eq!(
+            states.len(),
+            game_indexes.len(),
+            "EvalRequest game_indexes length must match states length",
+        );
+        Self::new_with_optional_game_indexes(states, Some(game_indexes))
+    }
+
+    #[must_use]
+    fn new_with_optional_game_indexes(
+        states: Vec<GameState>,
+        game_indexes: Option<Vec<usize>>,
+    ) -> Self {
         let mut features = Vec::with_capacity(states.len() * FEATURE_CHANNELS * BOARD_CELLS);
         features.resize(states.len() * FEATURE_CHANNELS * BOARD_CELLS, 0.0);
         features
@@ -102,6 +127,7 @@ impl EvalRequest {
             states,
             feature_bytes: Some(f32_slice_as_bytes(&features).to_vec()),
             legal_mask_bytes: Some(masks),
+            game_indexes,
         }
     }
 }
@@ -110,4 +136,27 @@ fn f32_slice_as_bytes(values: &[f32]) -> &[u8] {
     let byte_len = core::mem::size_of_val(values);
     let pointer = values.as_ptr().cast::<u8>();
     unsafe { core::slice::from_raw_parts(pointer, byte_len) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn requests_without_metadata_return_empty_game_indexes() {
+        let request = EvalRequest::new_with_precomputed_bytes(vec![GameState::new()]);
+
+        assert_eq!(request.game_indexes(), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn requests_can_carry_game_index_metadata() {
+        let request = EvalRequest::new_with_game_indexes(
+            vec![GameState::new(), GameState::new()],
+            vec![3, 8],
+        );
+
+        assert_eq!(request.game_indexes(), vec![3, 8]);
+    }
 }

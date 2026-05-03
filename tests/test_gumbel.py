@@ -82,7 +82,9 @@ def test_gumbel_self_play_batch_constructor_and_active_request() -> None:
 
     assert batch.len() == 2
     assert batch.active_count() == 2
-    assert batch.active_eval_request().len() == 2
+    request = batch.active_eval_request()
+    assert request.len() == 2
+    assert list(request.game_indexes()) == []
     assert list(batch.current_players()) == [1, 1]
 
 
