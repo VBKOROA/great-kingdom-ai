@@ -18,6 +18,7 @@ from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample  # noqa: E402
 from great_kingdom_ai.train import (  # noqa: E402
     TrainingConfig,
+    build_parser,
     compute_losses,
     create_train_state,
     load_checkpoint,
@@ -126,6 +127,21 @@ def test_train_from_replay_saves_checkpoint_and_resume_advances_step(tmp_path) -
     assert second_checkpoint.is_file()
     assert resumed.losses[-1]["total"] > 0.0
     assert "policy_kl" in resumed.losses[-1]
+
+
+def test_train_parser_accepts_log_every_override() -> None:
+    args = build_parser().parse_args(
+        [
+            "--replay",
+            "replay.npz",
+            "--checkpoint",
+            "checkpoint.pt",
+            "--log-every",
+            "100",
+        ]
+    )
+
+    assert args.log_every == 100
 
 
 def test_masked_policy_loss_rejects_illegal_target_mass() -> None:

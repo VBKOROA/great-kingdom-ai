@@ -362,6 +362,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--model-preset", choices=["small", "medium", "large"], default=None)
     parser.add_argument(
+        "--log-every",
+        type=int,
+        default=None,
+        help="record loss every N training steps instead of only the final step",
+    )
+    parser.add_argument(
         "--no-symmetry-augmentation",
         action="store_true",
         help="disable random board symmetry augmentation during batch sampling",
@@ -381,6 +387,13 @@ def _config_from_args(args: argparse.Namespace) -> TrainingConfig:
     data = asdict(config)
     data.update({key: value for key, value in overrides.items() if value is not None})
     return TrainingConfig(**data)
+
+
+def _log_every_from_args(args: argparse.Namespace, config: TrainingConfig) -> int:
+    log_every = args.log_every if args.log_every is not None else config.steps
+    if log_every <= 0:
+        raise ValueError("log_every must be positive")
+    return max(1, log_every)
 
 
 def print_training_startup_config(
@@ -425,7 +438,7 @@ def main() -> NoReturn:
         config,
         checkpoint_path=args.checkpoint,
         resume_path=args.resume,
-        log_every=max(1, config.steps),
+        log_every=_log_every_from_args(args, config),
     )
     print(
         json.dumps(
