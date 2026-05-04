@@ -195,6 +195,9 @@ def run_pipeline(
 
     replay = _load_or_create_replay(paths.replay_path, pipeline_config)
     saved_log_dicts = _load_saved_log_dicts(paths.self_play_log_path, pipeline_config)
+    completed_iterations = _load_completed_iteration_count(paths.metrics_path, pipeline_config)
+    first_iteration = completed_iterations + 1
+    last_iteration = completed_iterations + pipeline_config.iterations
     seed_cursor = pipeline_config.seed_start + len(saved_log_dicts)
     iteration_summaries: list[PipelineIterationSummary] = []
 
@@ -205,11 +208,12 @@ def run_pipeline(
     printer.metric("model", train_config.model_preset)
     printer.metric("replay samples", len(replay))
     printer.metric("saved games", len(saved_log_dicts))
+    printer.metric("completed iterations", completed_iterations)
     printer.metric("self-play", _self_play_config_summary(pipeline_config))
     printer.metric("training", f"steps={train_config.steps}, batch={train_config.batch_size}")
 
-    for iteration in range(1, pipeline_config.iterations + 1):
-        printer.title(f"Iteration {iteration}/{pipeline_config.iterations}")
+    for iteration in range(first_iteration, last_iteration + 1):
+        printer.title(f"Iteration {iteration}/{last_iteration}")
 
         printer.step("loading best model for self-play")
         self_play_model = (
@@ -357,6 +361,7 @@ def run_pipeline(
             arena_search_config = _arena_config_for_pipeline(
                 arena_config,
                 pipeline_config,
+                iteration=iteration,
             )
             report = run_arena(
                 candidate_model=candidate_model,
@@ -581,10 +586,15 @@ def _self_play_config_summary(config: PipelineConfig) -> str:
 def _arena_config_for_pipeline(
     arena_config: ArenaConfig,
     pipeline_config: PipelineConfig,
+    *,
+    iteration: int,
 ) -> ArenaConfig:
+    if iteration <= 0:
+        raise ValueError("iteration must be positive")
     data = asdict(arena_config)
     data.update(
         {
+            "seed_start": arena_config.seed_start + (iteration - 1) * arena_config.games,
             "gumbel_simulations": pipeline_config.gumbel_simulations,
             "gumbel_max_considered_actions": pipeline_config.gumbel_max_considered_actions,
             "gumbel_c_visit": pipeline_config.gumbel_c_visit,
@@ -695,6 +705,24 @@ def _load_saved_log_dicts(path: Path, config: PipelineConfig) -> list[dict[str, 
     if not isinstance(data, list):
         raise ValueError("self-play log file must contain a list")
     return [dict(item) for item in data if isinstance(item, dict)]
+
+
+def _load_completed_iteration_count(path: Path, config: PipelineConfig) -> int:
+    if not config.resume or not path.exists():
+        return 0
+    completed = 0
+    with path.open("r", encoding="utf-8") as file:
+        for line_number, line in enumerate(file, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            data = json.loads(stripped)
+            if not isinstance(data, dict) or not isinstance(data.get("iteration"), int):
+                raise ValueError(
+                    f"metrics line {line_number} must contain an integer iteration"
+                )
+            completed = max(completed, data["iteration"])
+    return completed
 
 
 def _iteration_candidate_checkpoint(paths: PipelineArtifacts, iteration: int) -> Path:

@@ -182,11 +182,32 @@ def test_generate_self_play_samples_uses_batched_model_priors(monkeypatch) -> No
     assert seen_batches == [[0, 1]]
 
 
+def test_arena_config_for_pipeline_offsets_seed_start_by_iteration() -> None:
+    config = pipeline_module._arena_config_for_pipeline(
+        ArenaConfig(games=20, seed_start=100000),
+        PipelineConfig(gumbel_seed=2026),
+        iteration=3,
+    )
+
+    assert config.seed_start == 100040
+    assert config.gumbel_seed == 2026
+
+
+def test_arena_config_for_pipeline_rejects_non_positive_iteration() -> None:
+    with pytest.raises(ValueError, match="iteration must be positive"):
+        pipeline_module._arena_config_for_pipeline(
+            ArenaConfig(games=20, seed_start=100000),
+            PipelineConfig(),
+            iteration=0,
+        )
+
+
 def test_run_pipeline_saves_artifacts_and_promotes_candidate(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     resume_paths: list[Path | None] = []
+    arena_seed_starts: list[int] = []
 
     def fake_create_train_state(config: TrainingConfig) -> object:
         return object()
@@ -230,6 +251,7 @@ def test_run_pipeline_saves_artifacts_and_promotes_candidate(
         del candidate_model, best_model
         from great_kingdom_ai.evaluate import ArenaGameResult
 
+        arena_seed_starts.append(config.seed_start)
         game = ArenaGameResult(
             seed=1,
             candidate_player=1,
@@ -288,6 +310,112 @@ def test_run_pipeline_saves_artifacts_and_promotes_candidate(
         tmp_path / "checkpoints" / "best.pt",
         tmp_path / "checkpoints" / "best.pt",
     ]
+    assert arena_seed_starts == [0, 1]
+
+
+def test_run_pipeline_resume_continues_iteration_and_arena_seed_windows(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    arena_seed_starts: list[int] = []
+
+    (tmp_path / "reports").mkdir(parents=True)
+    (tmp_path / "reports" / "metrics.jsonl").write_text(
+        '{"iteration": 2}\n',
+        encoding="utf-8",
+    )
+
+    def fake_create_train_state(config: TrainingConfig) -> object:
+        return object()
+
+    def fake_save_checkpoint(state: object, path: str | Path) -> None:
+        del state
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_text("checkpoint", encoding="utf-8")
+
+    def fake_train_from_replay(
+        replay: Any,
+        config: TrainingConfig,
+        *,
+        checkpoint_path: str | Path,
+        resume_path: str | Path | None,
+        log_every: int,
+        progress_callback: Any = None,
+    ) -> FakeTrainSummary:
+        del replay, config, resume_path, log_every, progress_callback
+        destination = Path(checkpoint_path)
+        destination.write_text("candidate", encoding="utf-8")
+        return FakeTrainSummary(
+            start_step=0,
+            end_step=1,
+            checkpoint_path=destination,
+            losses=[],
+        )
+
+    def fake_load_model_from_checkpoint(path: str | Path, *, device: str) -> str:
+        return f"{device}:{Path(path).name}"
+
+    def fake_run_arena(
+        candidate_model: str,
+        best_model: str,
+        config: ArenaConfig,
+        progress_callback=None,
+    ) -> ArenaReport:
+        del candidate_model, best_model, progress_callback
+        from great_kingdom_ai.evaluate import ArenaGameResult
+
+        arena_seed_starts.append(config.seed_start)
+        game = ArenaGameResult(
+            seed=config.seed_start,
+            candidate_player=1,
+            best_player=2,
+            winner=1,
+            end_reason=1,
+            moves=[MoveLog(turn=0, player=1, action=1)],
+            territory_scores=(0, 0),
+        )
+        return ArenaReport(
+            config=config,
+            games=[game],
+            summary=summarize_arena([game], promotion_threshold=config.promotion_threshold),
+        )
+
+    monkeypatch.setattr(pipeline_module, "create_train_state", fake_create_train_state)
+    monkeypatch.setattr(pipeline_module, "save_checkpoint", fake_save_checkpoint)
+    monkeypatch.setattr(pipeline_module, "train_from_replay", fake_train_from_replay)
+    monkeypatch.setattr(
+        pipeline_module,
+        "load_model_from_checkpoint",
+        fake_load_model_from_checkpoint,
+    )
+    monkeypatch.setattr(pipeline_module, "run_arena", fake_run_arena)
+
+    summary = run_pipeline(
+        pipeline_config=PipelineConfig(
+            work_dir=tmp_path,
+            iterations=2,
+            self_play_games=1,
+            min_replay_samples=1,
+            replay_capacity=8,
+            resume=True,
+        ),
+        train_config=TrainingConfig(batch_size=1, steps=1, device="cpu"),
+        arena_config=ArenaConfig(
+            games=20,
+            seed_start=100000,
+            device="cpu",
+            promotion_threshold=1.0,
+        ),
+        printer=PipelinePrinter(enabled=False),
+        self_play_runner=fake_self_play_runner,
+    )
+
+    assert [iteration.iteration for iteration in summary.iterations] == [3, 4]
+    assert arena_seed_starts == [100040, 100060]
+    assert (tmp_path / "checkpoints" / "candidates" / "candidate-000003.pt").is_file()
+    assert (tmp_path / "checkpoints" / "candidates" / "candidate-000004.pt").is_file()
+    assert (tmp_path / "reports" / "arena" / "arena-000003.json").is_file()
+    assert (tmp_path / "reports" / "arena" / "arena-000004.json").is_file()
 
 
 def test_load_pipeline_config_parses_work_dir(tmp_path: Path) -> None:
