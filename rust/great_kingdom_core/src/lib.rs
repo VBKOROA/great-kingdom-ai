@@ -37,6 +37,7 @@ fn great_kingdom_core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<GumbelSearch>()?;
     module.add_class::<GumbelSelfPlayBatch>()?;
     module.add_class::<GumbelArenaBatch>()?;
+    module.add_class::<OnnxEvaluator>()?;
     module.add_function(wrap_pyfunction!(action_space, module)?)?;
     module.add_function(wrap_pyfunction!(rayon_thread_count, module)?)?;
     module.add("BOARD_SIZE", BOARD_SIZE)?;

@@ -1,6 +1,7 @@
 mod arena_batch;
 mod batch;
 mod config;
+mod evaluator;
 mod result;
 mod search;
 

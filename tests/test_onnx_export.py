@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 
+import numpy as np
 import pytest
 
 _torch_spec = importlib.util.find_spec("torch")
@@ -61,3 +62,43 @@ def test_onnx_runtime_outputs_match_pytorch_checkpoint(tmp_path) -> None:
     assert summary.max_policy_abs_diff <= 1e-5
     assert summary.max_value_abs_diff <= 1e-5
     assert summary.passed
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("great_kingdom_core") is None,
+    reason="great_kingdom_core extension is not installed",
+)
+def test_core_onnx_self_play_smoke_reaches_terminal_game(tmp_path) -> None:
+    core = importlib.import_module("great_kingdom_core")
+    checkpoint_path = _save_test_checkpoint(tmp_path)
+    onnx_path = tmp_path / "model.onnx"
+    export_checkpoint_to_onnx(checkpoint_path, onnx_path)
+
+    evaluator = core.OnnxEvaluator(str(onnx_path), max_batch_size=2)
+    batch = core.GumbelSelfPlayBatch(
+        game_count=1,
+        simulations=2,
+        max_considered_actions=2,
+        seed=11,
+    )
+    samples: list[tuple[np.ndarray, np.ndarray]] = []
+
+    for _ in range(200):
+        request = batch.active_eval_request()
+        features = np.frombuffer(request.feature_plane_bytes(), dtype=np.float32).copy()
+        results = batch.search_active_with_onnx_evaluator(evaluator, leaf_batch_size=2)
+        result = results[0]
+        assert result is not None
+        policy = np.asarray(result.policy_target(), dtype=np.float32)
+        samples.append((features, policy))
+        batch.apply_actions([result.selected_action()])
+        if batch.is_terminal()[0]:
+            break
+
+    assert batch.is_terminal()[0]
+    assert samples
+    feature_row, policy_row = samples[0]
+    assert feature_row.shape == (core.FEATURE_CHANNELS * core.BOARD_CELLS,)
+    assert policy_row.shape == (ACTION_SPACE,)
+    assert np.isfinite(feature_row).all()
+    assert np.isfinite(policy_row).all()

@@ -5,6 +5,10 @@ use ort::{
     session::{Session, builder::GraphOptimizationLevel},
     value::Tensor,
 };
+use pyo3::{
+    exceptions::{PyRuntimeError, PyValueError},
+    prelude::*,
+};
 
 use crate::{
     eval_request::EvalRequest,
@@ -43,6 +47,7 @@ pub struct NetworkOutput {
     pub values: Vec<f32>,
 }
 
+#[pyclass(unsendable)]
 pub struct OnnxEvaluator {
     session: Session,
     config: OnnxEvaluatorConfig,
@@ -72,6 +77,45 @@ impl std::error::Error for OnnxError {}
 impl From<ort::Error> for OnnxError {
     fn from(error: ort::Error) -> Self {
         Self::Ort(error)
+    }
+}
+
+#[pymethods]
+impl OnnxEvaluator {
+    #[new]
+    #[pyo3(signature = (path, device = "cpu", max_batch_size = 256))]
+    fn py_new(path: &str, device: &str, max_batch_size: usize) -> PyResult<Self> {
+        Self::load(
+            path,
+            OnnxEvaluatorConfig {
+                device: parse_device(device)?,
+                max_batch_size,
+            },
+        )
+        .map_err(|err| PyRuntimeError::new_err(err.to_string()))
+    }
+
+    #[must_use]
+    fn device(&self) -> &'static str {
+        match self.config.device {
+            OnnxDevice::Cpu => "cpu",
+            OnnxDevice::Cuda => "cuda",
+        }
+    }
+
+    #[must_use]
+    fn max_batch_size(&self) -> usize {
+        self.config.max_batch_size
+    }
+
+    fn evaluate(&mut self, request: &EvalRequest) -> PyResult<(Vec<Vec<f32>>, Vec<f32>)> {
+        let output = self
+            .evaluate_request(request)
+            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+        Ok((
+            output.policy_logits.into_iter().map(Vec::from).collect(),
+            output.values,
+        ))
     }
 }
 
@@ -143,6 +187,16 @@ impl OnnxEvaluator {
         let (_, value_values) = outputs[VALUE_OUTPUT].try_extract_tensor::<f32>()?;
 
         parse_network_output(policy_values, value_values, batch_size)
+    }
+}
+
+fn parse_device(device: &str) -> PyResult<OnnxDevice> {
+    match device {
+        "cpu" => Ok(OnnxDevice::Cpu),
+        "cuda" => Ok(OnnxDevice::Cuda),
+        other => Err(PyValueError::new_err(format!(
+            "unsupported ONNX device {other:?}; expected 'cpu' or 'cuda'"
+        ))),
     }
 }
 

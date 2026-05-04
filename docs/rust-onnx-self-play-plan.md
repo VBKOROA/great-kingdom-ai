@@ -379,7 +379,7 @@ great-kingdom-import-legacy-pipeline \
 - 로컬에서 ONNX Runtime CPU provider 기반 `cargo test`가 통과한다.
 - Runpod에서는 같은 evaluator를 CUDA provider로 실행해 별도 smoke test를 통과시킨다.
 
-### 3단계: Python 콜백 없는 Batched Self-Play
+### ~~3단계: Python 콜백 없는 Batched Self-Play~~
 
 작업:
 

@@ -4,19 +4,21 @@ use std::{env, time::Instant};
 
 use super::{
     config::GumbelConfig,
+    evaluator::{GumbelEvaluator, OnnxGumbelEvaluator, PythonGumbelEvaluator},
     node::GumbelNode,
     policy::{log_priors_from_logits, log_priors_from_priors, root_improved_policy_target},
     result::GumbelResult,
     sampling::sample_root_candidates,
     search::{
-        GumbelSearch, PendingGumbelSimulation, backup_path, parse_gumbel_eval_response,
-        reserve_path, root_ranking_scores, unreserve_path,
+        GumbelSearch, PendingGumbelSimulation, backup_path, reserve_path, root_ranking_scores,
+        unreserve_path,
     },
     sequential_halving::RootSequentialHalving,
 };
 use crate::{
     eval_request::EvalRequest,
     game::{ACTION_SPACE, Action, GameState},
+    onnx::OnnxEvaluator,
 };
 
 #[pyclass]
@@ -129,10 +131,40 @@ impl GumbelSelfPlayBatch {
         if leaf_batch_size == 0 {
             return Err(PyValueError::new_err("leaf_batch_size must be positive"));
         }
+        let mut evaluator = PythonGumbelEvaluator::new(evaluator);
         self.search_active_with_evaluator(
             policy_logits,
             true,
-            evaluator,
+            &mut evaluator,
+            leaf_batch_size,
+            &root_values,
+        )
+    }
+
+    #[pyo3(signature = (evaluator, leaf_batch_size = 16))]
+    pub fn search_active_with_onnx_evaluator(
+        &mut self,
+        mut evaluator: PyRefMut<'_, OnnxEvaluator>,
+        leaf_batch_size: usize,
+    ) -> PyResult<Vec<Option<GumbelResult>>> {
+        if leaf_batch_size == 0 {
+            return Err(PyValueError::new_err("leaf_batch_size must be positive"));
+        }
+        let active_request = self.active_eval_request();
+        let root_output = evaluator
+            .evaluate_request(&active_request)
+            .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let root_values = root_output.values;
+        let policy_logits = root_output
+            .policy_logits
+            .into_iter()
+            .map(Vec::from)
+            .collect();
+        let mut adapter = OnnxGumbelEvaluator::new(&mut evaluator);
+        self.search_active_with_evaluator(
+            policy_logits,
+            true,
+            &mut adapter,
             leaf_batch_size,
             &root_values,
         )
@@ -156,7 +188,14 @@ impl GumbelSelfPlayBatch {
         if leaf_batch_size == 0 {
             return Err(PyValueError::new_err("leaf_batch_size must be positive"));
         }
-        self.search_active_with_evaluator(priors, false, evaluator, leaf_batch_size, &root_values)
+        let mut evaluator = PythonGumbelEvaluator::new(evaluator);
+        self.search_active_with_evaluator(
+            priors,
+            false,
+            &mut evaluator,
+            leaf_batch_size,
+            &root_values,
+        )
     }
 
     pub fn apply_actions(&mut self, actions: Vec<Option<usize>>) -> PyResult<Vec<Option<u8>>> {
@@ -280,7 +319,7 @@ impl GumbelSelfPlayBatch {
         &mut self,
         rows: Vec<Vec<f32>>,
         logits: bool,
-        evaluator: &Bound<'_, PyAny>,
+        evaluator: &mut impl GumbelEvaluator,
         leaf_batch_size: usize,
         root_values: &[f32],
     ) -> PyResult<Vec<Option<GumbelResult>>> {
@@ -374,7 +413,7 @@ impl GumbelSelfPlayBatch {
             .iter()
             .any(|index| completed[*index] < self.searches[*index].config.simulations)
         {
-            evaluator.py().check_signals()?;
+            evaluator.check_signals()?;
             wave += 1;
             let select_start = Instant::now();
             let pending_by_game: Vec<Vec<_>> = self
@@ -456,10 +495,9 @@ impl GumbelSelfPlayBatch {
             let request = EvalRequest::new_with_precomputed_bytes(request_states);
             let request_elapsed = request_start.elapsed();
             let eval_start = Instant::now();
-            let response = evaluator.call1((request,))?;
+            let eval = evaluator.evaluate(request)?;
             let eval_elapsed = eval_start.elapsed();
             let parse_start = Instant::now();
-            let eval = parse_gumbel_eval_response(&response)?;
             eval.validate_len(pending.len())?;
             let parse_elapsed = parse_start.elapsed();
 
@@ -686,8 +724,14 @@ fn env_flag(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use pyo3::PyResult;
+
     use super::GumbelSelfPlayBatch;
-    use crate::gumbel::config::GumbelConfig;
+    use crate::{
+        eval_request::EvalRequest,
+        game::ACTION_SPACE,
+        gumbel::{config::GumbelConfig, evaluator::GumbelEvaluator, search::GumbelEvalBatch},
+    };
 
     #[test]
     fn new_offsets_search_seed_per_game() {
@@ -699,5 +743,43 @@ mod tests {
         assert_eq!(batch.searches[0].next_root_seed(), 7);
         assert_eq!(batch.searches[1].next_root_seed(), 8);
         assert_eq!(batch.searches[2].next_root_seed(), 9);
+    }
+
+    #[test]
+    fn active_search_accepts_callback_free_rust_evaluator() {
+        let mut batch = GumbelSelfPlayBatch::new(2, GumbelConfig::new(4, 2, 50.0, 1.0, 7));
+        let root_logits = vec![vec![0.0; ACTION_SPACE]; 2];
+        let mut evaluator = FakeEvaluator { max_request_len: 0 };
+
+        let results = batch
+            .search_active_with_evaluator(root_logits, true, &mut evaluator, 4, &[0.0, 0.0])
+            .expect("Rust evaluator should drive batched search");
+
+        assert!(evaluator.max_request_len >= 2);
+        assert_eq!(
+            results
+                .into_iter()
+                .flatten()
+                .map(|result| result.visit_counts.iter().sum::<u32>())
+                .collect::<Vec<_>>(),
+            vec![4, 4],
+        );
+    }
+
+    struct FakeEvaluator {
+        max_request_len: usize,
+    }
+
+    impl GumbelEvaluator for FakeEvaluator {
+        fn evaluate(&mut self, request: EvalRequest) -> PyResult<GumbelEvalBatch> {
+            self.max_request_len = self.max_request_len.max(request.len());
+            let mut rows = Vec::with_capacity(request.len());
+            for _ in 0..request.len() {
+                let mut logits = [-3.0; ACTION_SPACE];
+                logits[0] = 4.0;
+                rows.push(logits);
+            }
+            Ok(GumbelEvalBatch::new(rows, vec![0.0; request.len()]))
+        }
     }
 }
