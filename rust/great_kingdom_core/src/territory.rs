@@ -220,6 +220,32 @@ mod tests {
     }
 
     #[test]
+    fn territory_owners_match_single_cell_territory_checks() {
+        let mut board = [Cell::Empty; BOARD_CELLS];
+        for index in 0..BOARD_CELLS {
+            if index % 7 == 0 {
+                board[index] = Cell::Blue;
+            } else if index % 11 == 0 {
+                board[index] = Cell::Orange;
+            }
+        }
+        board[CENTER_INDEX] = Cell::Neutral;
+        let state = state_with_board(board, Player::Blue);
+        let owners = state.territory_owners();
+
+        for (index, owner) in owners.iter().enumerate() {
+            assert_eq!(
+                *owner == Some(Player::Blue),
+                state.is_territory_of(index, Player::Blue)
+            );
+            assert_eq!(
+                *owner == Some(Player::Orange),
+                state.is_territory_of(index, Player::Orange)
+            );
+        }
+    }
+
+    #[test]
     fn blue_wins_score_if_ahead_by_at_least_three() {
         let mut board = [Cell::Orange; BOARD_CELLS];
         board[CENTER_INDEX] = Cell::Neutral;
