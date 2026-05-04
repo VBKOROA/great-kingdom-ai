@@ -89,14 +89,26 @@ impl GumbelNode {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn from_log_priors(
         state: &GameState,
         log_priors: &[f32; ACTION_SPACE],
         node_value: f32,
     ) -> Self {
-        let edges = state
-            .legal_action_indexes()
-            .into_iter()
+        let legal_actions = state.legal_action_indexes();
+        Self::from_log_priors_for_actions(state, &legal_actions, log_priors, node_value)
+    }
+
+    #[must_use]
+    pub(crate) fn from_log_priors_for_actions(
+        state: &GameState,
+        legal_actions: &[usize],
+        log_priors: &[f32; ACTION_SPACE],
+        node_value: f32,
+    ) -> Self {
+        let edges = legal_actions
+            .iter()
+            .copied()
             .filter_map(Action::from_index)
             .map(|action| {
                 let action_index = action.to_index();

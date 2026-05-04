@@ -539,8 +539,12 @@ impl GumbelSearch {
             log_priors_from_priors(&legal_actions, policy_row)?
         };
         let child_index = self.nodes.len();
-        self.nodes
-            .push(GumbelNode::from_log_priors(state, &log_priors, value));
+        self.nodes.push(GumbelNode::from_log_priors_for_actions(
+            state,
+            &legal_actions,
+            &log_priors,
+            value,
+        ));
         Ok(child_index)
     }
 
