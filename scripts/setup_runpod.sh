@@ -71,6 +71,104 @@ install_rust_native_deps() {
   fi
 }
 
+discover_python_cuda_library_path() {
+  python - <<'PY'
+import sys
+from pathlib import Path
+
+relative_dirs = [
+    "torch/lib",
+    "nvidia/cublas/lib",
+    "nvidia/cuda_runtime/lib",
+    "nvidia/cudnn/lib",
+    "nvidia/cufft/lib",
+    "nvidia/curand/lib",
+    "nvidia/cusolver/lib",
+    "nvidia/cusparse/lib",
+    "nvidia/nccl/lib",
+    "nvidia/nvjitlink/lib",
+]
+absolute_dirs = [
+    Path("/usr/local/cuda/lib64"),
+    Path("/usr/local/cuda-12/lib64"),
+]
+
+paths = []
+for root_text in sys.path:
+    if not root_text:
+        continue
+    root = Path(root_text)
+    for relative_dir in relative_dirs:
+        candidate = root / relative_dir
+        if candidate.is_dir():
+            paths.append(candidate)
+paths.extend(path for path in absolute_dirs if path.is_dir())
+
+seen = set()
+unique_paths = []
+for path in paths:
+    resolved = str(path.resolve())
+    if resolved not in seen:
+        seen.add(resolved)
+        unique_paths.append(resolved)
+
+print(":".join(unique_paths))
+PY
+}
+
+configure_cuda_library_path() {
+  local cuda_library_path
+  cuda_library_path="$(discover_python_cuda_library_path)"
+  if [[ -z "$cuda_library_path" ]]; then
+    echo "No Python CUDA library paths found; Rust ORT CUDA may fail to load cuDNN." >&2
+    return
+  fi
+
+  export RUNPOD_CUDA_LIBRARY_PATH="$cuda_library_path"
+  export LD_LIBRARY_PATH="$RUNPOD_CUDA_LIBRARY_PATH:${LD_LIBRARY_PATH:-}"
+
+  python - <<'PY'
+import os
+from pathlib import Path
+
+paths = [Path(path) for path in os.environ["RUNPOD_CUDA_LIBRARY_PATH"].split(":") if path]
+cudnn = [path for path in paths if any(path.glob("libcudnn.so*"))]
+print(f"RUNPOD_CUDA_LIBRARY_PATH={os.environ['RUNPOD_CUDA_LIBRARY_PATH']}")
+if cudnn:
+    print("Found cuDNN libraries in: " + ":".join(str(path) for path in cudnn))
+else:
+    print("Warning: libcudnn.so was not found in discovered CUDA library paths.")
+PY
+
+  python - "$VENV_DIR/bin/activate" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+activate_path = Path(sys.argv[1])
+cuda_library_path = os.environ["RUNPOD_CUDA_LIBRARY_PATH"]
+start = "# >>> great-kingdom-ai RunPod CUDA library path >>>"
+end = "# <<< great-kingdom-ai RunPod CUDA library path <<<"
+block = "\n".join(
+    [
+        start,
+        f'export RUNPOD_CUDA_LIBRARY_PATH="{cuda_library_path}"',
+        'export LD_LIBRARY_PATH="$RUNPOD_CUDA_LIBRARY_PATH:${LD_LIBRARY_PATH:-}"',
+        end,
+        "",
+    ]
+)
+text = activate_path.read_text(encoding="utf-8")
+if start in text and end in text:
+    prefix = text.split(start, 1)[0].rstrip()
+    suffix = text.split(end, 1)[1].lstrip()
+    text = f"{prefix}\n{block}{suffix}"
+else:
+    text = text.rstrip() + "\n\n" + block
+activate_path.write_text(text, encoding="utf-8")
+PY
+}
+
 # Python 확인 및 설치
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
   echo "Python 명령을 찾을 수 없습니다: $PYTHON_BIN"
@@ -103,6 +201,9 @@ if torch.cuda.is_available():
     print(f"cuda_device={torch.cuda.get_device_name(0)}")
 PY
 
+echo "Configuring CUDA library path for Rust ONNX Runtime"
+configure_cuda_library_path
+
 echo "Building Python extension with maturin features: $RUNPOD_RUST_FEATURES"
 cd "$RUST_CRATE_DIR"
 python -m maturin develop --features "$RUNPOD_RUST_FEATURES"
@@ -121,7 +222,7 @@ PY
 )"
 
 export PYO3_PYTHON="$VENV_DIR/bin/python"
-export LD_LIBRARY_PATH="$PY_LIBDIR:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="$PY_LIBDIR:${RUNPOD_CUDA_LIBRARY_PATH:-}:${LD_LIBRARY_PATH:-}"
 export RUSTFLAGS="-L native=$PY_LIBDIR -l python$PY_VERSION ${RUSTFLAGS:-}"
 
 echo "Running Rust tests with explicit libpython link flags and features: $CARGO_TEST_FEATURES"
