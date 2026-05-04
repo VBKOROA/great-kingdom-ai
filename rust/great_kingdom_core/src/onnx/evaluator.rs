@@ -283,8 +283,9 @@ fn parse_network_output(
 #[cfg(feature = "onnx-cuda")]
 fn cuda_execution_providers() -> Vec<execution_providers::ExecutionProviderDispatch> {
     vec![
-        execution_providers::CUDAExecutionProvider::default().build(),
-        execution_providers::CPUExecutionProvider::default().build(),
+        execution_providers::CUDAExecutionProvider::default()
+            .build()
+            .error_on_failure(),
     ]
 }
 
