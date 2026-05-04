@@ -282,6 +282,8 @@ def main() -> NoReturn:
     }.items():
         if value is not None:
             data[key] = value
+    if isinstance(data.get("self_play"), dict):
+        data["self_play"] = SelfPlayConfig(**data["self_play"])
     config = RustOnnxPipelineConfig(**data)
     train = load_training_config(args.train_config)
     arena = load_arena_config(args.arena_config)
