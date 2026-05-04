@@ -32,6 +32,7 @@ from great_kingdom_ai.train import (  # noqa: E402
 def make_sample(index: int, value: float = 1.0) -> ReplaySample:
     features = np.zeros((FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
     features[index % FEATURE_CHANNELS, index % BOARD_SIZE, (index * 3) % BOARD_SIZE] = 1.0
+    features[4, :, :] = 1.0
     policy = np.zeros(ACTION_SPACE, dtype=np.float32)
     policy[index % ACTION_SPACE] = 1.0
     return ReplaySample(features=features, policy=policy, value=value)
@@ -53,6 +54,8 @@ def test_compute_losses_returns_policy_value_and_regularization_terms() -> None:
     losses = compute_losses(state.model, batch, l2_loss_weight=config.l2_loss_weight)
 
     assert losses.policy.item() > 0.0
+    assert losses.policy_entropy.item() >= 0.0
+    assert losses.policy_kl.item() >= 0.0
     assert losses.value.item() >= 0.0
     assert losses.regularization.item() > 0.0
     assert losses.total.item() >= losses.policy.item()
@@ -122,6 +125,19 @@ def test_train_from_replay_saves_checkpoint_and_resume_advances_step(tmp_path) -
     assert resumed.end_step == 3
     assert second_checkpoint.is_file()
     assert resumed.losses[-1]["total"] > 0.0
+    assert "policy_kl" in resumed.losses[-1]
+
+
+def test_masked_policy_loss_rejects_illegal_target_mass() -> None:
+    config = TrainingConfig(batch_size=1)
+    state = create_train_state(config)
+    features = np.zeros((FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
+    policy = np.zeros(ACTION_SPACE, dtype=np.float32)
+    policy[0] = 1.0
+    batch = samples_to_batch([ReplaySample(features=features, policy=policy, value=0.0)])
+
+    with pytest.raises(ValueError, match="illegal actions"):
+        compute_losses(state.model, batch, mask_policy_loss=True)
 
 
 def test_print_training_startup_config_outputs_effective_settings(tmp_path, capsys) -> None:

@@ -213,7 +213,7 @@ def run_rust_onnx_pipeline(
                 "train",
                 current,
                 target,
-                detail=f"loss={loss['total']:.4f}",
+                detail=_format_train_loss_detail(loss),
             ),
         )
         shutil.copy2(candidate_checkpoint, paths["candidate_checkpoint"])
@@ -445,6 +445,17 @@ def _append_metrics(path: Path, summary: RustOnnxPipelineIterationSummary) -> No
     with path.open("a", encoding="utf-8") as file:
         file.write(json.dumps(summary.to_dict(), sort_keys=True))
         file.write("\n")
+
+
+def _format_train_loss_detail(loss: dict[str, float]) -> str:
+    detail = f"loss={loss['total']:.4f}"
+    if {"policy", "value", "policy_kl"}.issubset(loss):
+        detail += (
+            f" policy={loss['policy']:.4f}"
+            f" value={loss['value']:.4f}"
+            f" kl={loss['policy_kl']:.4f}"
+        )
+    return detail
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, NoReturn
 import numpy as np
 
 from great_kingdom_ai.augmentation import augment_samples_randomly
+from great_kingdom_ai.features import BOARD_CELLS, LEGAL_PLACE_FEATURE_CHANNEL, PASS_ACTION
 from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
 
 if TYPE_CHECKING:
@@ -39,6 +40,7 @@ class TrainingConfig:
     device: str = "cpu"
     model_preset: str = "small"
     symmetry_augmentation: bool = True
+    mask_policy_loss: bool = True
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,7 @@ class TrainingBatch:
     features: torch.Tensor
     policy: torch.Tensor
     value: torch.Tensor
+    legal_mask: torch.Tensor
 
 
 @dataclass(frozen=True)
@@ -53,6 +56,8 @@ class LossBreakdown:
     policy: torch.Tensor
     value: torch.Tensor
     regularization: torch.Tensor
+    policy_entropy: torch.Tensor
+    policy_kl: torch.Tensor
     total: torch.Tensor
 
     def to_float_dict(self) -> dict[str, float]:
@@ -60,6 +65,8 @@ class LossBreakdown:
             "policy": float(self.policy.detach().cpu()),
             "value": float(self.value.detach().cpu()),
             "regularization": float(self.regularization.detach().cpu()),
+            "policy_entropy": float(self.policy_entropy.detach().cpu()),
+            "policy_kl": float(self.policy_kl.detach().cpu()),
             "total": float(self.total.detach().cpu()),
         }
 
@@ -94,11 +101,13 @@ def samples_to_batch(
     features = np.stack([sample.features for sample in samples], axis=0).astype(np.float32)
     policies = np.stack([sample.policy for sample in samples], axis=0).astype(np.float32)
     values = np.asarray([sample.value for sample in samples], dtype=np.float32)
+    legal_masks = _legal_masks_from_features(features)
 
     return TrainingBatch(
         features=torch.from_numpy(features).to(device=device),
         policy=torch.from_numpy(policies).to(device=device),
         value=torch.from_numpy(values).to(device=device),
+        legal_mask=torch.from_numpy(legal_masks).to(device=device),
     )
 
 
@@ -109,6 +118,7 @@ def compute_losses(
     policy_loss_weight: float = 1.0,
     value_loss_weight: float = 1.0,
     l2_loss_weight: float = 0.0,
+    mask_policy_loss: bool = True,
 ) -> LossBreakdown:
     """Compute AlphaZero policy cross-entropy, value MSE, and optional L2 loss."""
     torch = _import_torch()
@@ -116,8 +126,16 @@ def compute_losses(
         raise ValueError("loss weights must be non-negative")
 
     policy_logits, value = model(batch.features)
+    if mask_policy_loss:
+        policy_logits = policy_logits.masked_fill(
+            ~batch.legal_mask,
+            torch.finfo(policy_logits.dtype).min,
+        )
+        _validate_policy_targets_match_legal_mask(batch)
     log_policy = torch.log_softmax(policy_logits, dim=1)
     policy_loss = -(batch.policy * log_policy).sum(dim=1).mean()
+    policy_entropy = _policy_target_entropy(batch.policy)
+    policy_kl = policy_loss - policy_entropy
     value_loss = torch.nn.functional.mse_loss(value, batch.value)
     regularization = _l2_regularization(model) * l2_loss_weight
     total = policy_loss_weight * policy_loss + value_loss_weight * value_loss + regularization
@@ -125,6 +143,8 @@ def compute_losses(
         policy=policy_loss,
         value=value_loss,
         regularization=regularization,
+        policy_entropy=policy_entropy,
+        policy_kl=policy_kl,
         total=total,
     )
 
@@ -162,6 +182,7 @@ def train_step(state: TrainState, batch: TrainingBatch, config: TrainingConfig) 
         policy_loss_weight=config.policy_loss_weight,
         value_loss_weight=config.value_loss_weight,
         l2_loss_weight=config.l2_loss_weight,
+        mask_policy_loss=config.mask_policy_loss,
     )
     losses.total.backward()
     state.optimizer.step()
@@ -300,6 +321,26 @@ def _l2_regularization(model: nn.Module) -> torch.Tensor:
     if not parameters:
         return torch.tensor(0.0)
     return torch.stack(parameters).sum()
+
+
+def _legal_masks_from_features(features: np.ndarray) -> np.ndarray:
+    legal_place = features[:, LEGAL_PLACE_FEATURE_CHANNEL].reshape(-1, BOARD_CELLS) > 0.5
+    legal_mask = np.zeros((features.shape[0], BOARD_CELLS + 1), dtype=np.bool_)
+    legal_mask[:, :BOARD_CELLS] = legal_place
+    legal_mask[:, PASS_ACTION] = True
+    return legal_mask
+
+
+def _validate_policy_targets_match_legal_mask(batch: TrainingBatch) -> None:
+    illegal_target_mass = batch.policy.masked_select(~batch.legal_mask).sum()
+    if float(illegal_target_mass.detach().cpu()) > 1e-5:
+        raise ValueError("policy target assigns probability to illegal actions")
+
+
+def _policy_target_entropy(policy: torch.Tensor) -> torch.Tensor:
+    torch = _import_torch()
+    positive = policy > 0.0
+    return -(policy[positive] * torch.log(policy[positive])).sum() / policy.shape[0]
 
 
 def _import_torch() -> Any:
