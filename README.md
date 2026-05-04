@@ -175,12 +175,16 @@ python scripts/run_m8_train_smoke.py --device cuda
 Runpod용 설정 파일은 `configs/runpod/` 아래에 있습니다.
 
 ```bash
-great-kingdom-pipeline \
+great-kingdom-rust-onnx-pipeline \
   --device cuda \
   --pipeline-config configs/runpod/pipeline-runpod.json \
   --train-config configs/runpod/train-runpod.json \
   --arena-config configs/runpod/arena-runpod.json
 ```
+
+`configs/runpod/pipeline-runpod.json`은 Rust ONNX self-play 경로용 설정입니다. 첫 실행 때
+`data/runpod/pipeline`의 기존 replay/checkpoint/log가 있으면
+`data/runpod/onnx-pipeline`으로 한 번 import한 뒤 이어서 학습합니다.
 
 ## 테스트와 품질 확인
 

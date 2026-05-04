@@ -5,6 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${VENV_DIR:-$ROOT_DIR/.venv}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 RUST_CRATE_DIR="$ROOT_DIR/rust/great_kingdom_core"
+RUNPOD_RUST_FEATURES="${RUNPOD_RUST_FEATURES:-extension-module,onnx-cuda}"
+CARGO_TEST_FEATURES="${CARGO_TEST_FEATURES:-onnx-cuda}"
 
 cd "$ROOT_DIR"
 
@@ -34,6 +36,36 @@ install_rust() {
   echo "Rust 설치 완료"
 }
 
+install_rust_native_deps() {
+  local missing=()
+  local packages=(libssl-dev openssl pkg-config)
+
+  if ! command -v dpkg-query >/dev/null 2>&1; then
+    echo "dpkg-query를 찾을 수 없어 native dependency 확인을 건너뜁니다."
+    return
+  fi
+
+  for package in "${packages[@]}"; do
+    if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q "install ok installed"; then
+      missing+=("$package")
+    fi
+  done
+
+  if ((${#missing[@]} == 0)); then
+    echo "Rust native dependencies already installed: ${packages[*]}"
+    return
+  fi
+
+  if ! command -v apt-get >/dev/null 2>&1; then
+    echo "필요한 패키지를 찾지 못했지만 apt-get이 없습니다: ${missing[*]}" >&2
+    exit 1
+  fi
+
+  echo "Installing Rust native dependencies: ${missing[*]}"
+  sudo apt-get update
+  sudo apt-get install -y "${missing[@]}"
+}
+
 # Python 확인 및 설치
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
   echo "Python 명령을 찾을 수 없습니다: $PYTHON_BIN"
@@ -44,6 +76,8 @@ fi
 if ! command -v cargo >/dev/null 2>&1; then
   install_rust
 fi
+
+install_rust_native_deps
 
 echo "Creating venv with system site packages: $VENV_DIR"
 "$PYTHON_BIN" -m venv "$VENV_DIR" --system-site-packages
@@ -64,9 +98,9 @@ if torch.cuda.is_available():
     print(f"cuda_device={torch.cuda.get_device_name(0)}")
 PY
 
-echo "Building Python extension with maturin"
+echo "Building Python extension with maturin features: $RUNPOD_RUST_FEATURES"
 cd "$RUST_CRATE_DIR"
-python -m maturin develop
+python -m maturin develop --features "$RUNPOD_RUST_FEATURES"
 
 PY_LIBDIR="$(python - <<'PY'
 import sysconfig
@@ -85,8 +119,8 @@ export PYO3_PYTHON="$VENV_DIR/bin/python"
 export LD_LIBRARY_PATH="$PY_LIBDIR:${LD_LIBRARY_PATH:-}"
 export RUSTFLAGS="-L native=$PY_LIBDIR -l python$PY_VERSION ${RUSTFLAGS:-}"
 
-echo "Running Rust tests with explicit libpython link flags"
-cargo test
+echo "Running Rust tests with explicit libpython link flags and features: $CARGO_TEST_FEATURES"
+cargo test --features "$CARGO_TEST_FEATURES"
 
 cd "$ROOT_DIR"
 echo "Running Python tests"
@@ -94,4 +128,6 @@ python -m pytest
 
 echo "Runpod setup complete."
 echo "For CUDA smoke test, run:"
-echo "  source \"$VENV_DIR/bin/activate\" && python scripts/run_m6_smoke.py"
+echo "  source \"$VENV_DIR/bin/activate\" && python scripts/run_m6_smoke.py --device cuda"
+echo "For Rust ONNX pipeline training, run:"
+echo "  great-kingdom-rust-onnx-pipeline --device cuda --pipeline-config configs/runpod/pipeline-runpod.json --train-config configs/runpod/train-runpod.json --arena-config configs/runpod/arena-runpod.json"
