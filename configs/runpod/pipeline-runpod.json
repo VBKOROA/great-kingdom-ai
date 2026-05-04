@@ -10,7 +10,7 @@
   "replay_capacity": 500000,
   "resume": true,
   "seed_start": 0,
-  "self_play_games": 256,
+  "self_play_games": 512,
   "skip_arena": false,
   "self_play": {
     "max_turns": 200,
@@ -21,7 +21,7 @@
     "gumbel_seed": 2026,
     "temperature_turns": 12,
     "sampling_temperature": 1.0,
-    "playout_cap_randomization": false,
+    "playout_cap_randomization": true,
     "playout_cap_full_search_fraction": 0.25,
     "playout_cap_full_simulations": 128,
     "playout_cap_fast_simulations": 16,
