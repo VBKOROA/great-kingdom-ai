@@ -108,6 +108,18 @@ def parse_action_index(text: str) -> int:
     return action
 
 
+def parse_action_sequence(raw: str) -> list[int]:
+    actions: list[int] = []
+    for token in raw.replace(",", " ").split():
+        parsed = parse_command(token)
+        if parsed.action is None:
+            raise ValueError(f"replay token must be an action or coordinate: {token!r}")
+        actions.append(parsed.action)
+    if not actions:
+        raise ValueError("replay action sequence is empty")
+    return actions
+
+
 def parse_coordinate(text: str) -> tuple[int, int] | None:
     if len(text) < 2 or len(text) > 3:
         return None
@@ -203,6 +215,49 @@ def outcome_line(state: GameStateProtocol) -> str:
     )
 
 
+def move_line(*, turn: int, player: int, action: int) -> str:
+    player_name = PLAYER_NAMES.get(player, f"Player {player}")
+    return f"Move {turn + 1:>2}: {player_name} {index_to_coordinate(action)} (action {action})"
+
+
+def replay_actions(
+    state: GameStateProtocol,
+    actions: Iterable[int],
+    *,
+    pause: bool = False,
+    input_fn: Callable[[str], str] = input,
+    print_fn: Callable[[str], None] = print,
+) -> int:
+    action_list = list(actions)
+    print_fn(render_board(state.board()))
+    print_fn(status_line(state))
+
+    for turn, action in enumerate(action_list):
+        if state.is_terminal():
+            print_fn(f"Replay stopped: game already ended before move {turn + 1}.")
+            return 1
+
+        player = state.current_player()
+        print_fn(move_line(turn=turn, player=player, action=action))
+        try:
+            state.apply_action(action)
+        except ValueError as exc:
+            print_fn(f"Illegal replay move: {exc}")
+            return 1
+
+        print_fn(render_board(state.board()))
+        if state.is_terminal():
+            print_fn(outcome_line(state))
+            return 0
+        print_fn(status_line(state))
+        if pause and turn != len(action_list) - 1:
+            input_fn("Press Enter for next move...")
+
+    if not state.is_terminal():
+        print_fn("Replay ended before terminal outcome.")
+    return 0
+
+
 def run_repl(
     *,
     input_fn: Callable[[str], str] = input,
@@ -263,16 +318,52 @@ def run_repl(
     return 0
 
 
+def run_replay(
+    actions: Iterable[int],
+    *,
+    pause: bool = False,
+    input_fn: Callable[[str], str] = input,
+    print_fn: Callable[[str], None] = print,
+) -> int:
+    try:
+        import great_kingdom_core as core  # type: ignore[import-untyped]
+    except ModuleNotFoundError as exc:
+        raise SystemExit(
+            "great_kingdom_core is not installed. Build it first with:\n"
+            "  cd rust/great_kingdom_core\n"
+            "  ../../.venv/bin/python -m maturin develop\n"
+            "  cd ../.."
+        ) from exc
+
+    state = cast(GameStateProtocol, core.GameState())
+    return replay_actions(state, actions, pause=pause, input_fn=input_fn, print_fn=print_fn)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="great-kingdom-play",
         description="Manual self-play CLI backed by the Rust Great Kingdom rules engine.",
     )
+    parser.add_argument(
+        "--replay-actions",
+        help="replay comma/space separated action indexes or coordinates, e.g. '20,68,C3'",
+    )
+    parser.add_argument(
+        "--pause",
+        action="store_true",
+        help="wait for Enter between replay moves",
+    )
     return parser
 
 
 def main() -> NoReturn:
-    build_parser().parse_args()
+    args = build_parser().parse_args()
+    if args.replay_actions is not None:
+        try:
+            actions = parse_action_sequence(args.replay_actions)
+        except ValueError as exc:
+            raise SystemExit(f"Replay input error: {exc}") from exc
+        raise SystemExit(run_replay(actions, pause=args.pause))
     raise SystemExit(run_repl())
 
 

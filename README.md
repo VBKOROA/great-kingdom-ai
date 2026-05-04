@@ -65,6 +65,13 @@ python -m pytest
 great-kingdom-play
 ```
 
+Arena나 self-play 로그의 action index 수순을 CLI에서 재생하려면 다음처럼 실행합니다.
+
+```bash
+great-kingdom-play --replay-actions '20,68,77'
+great-kingdom-play --replay-actions '20,68,77' --pause
+```
+
 CLI에서 사용할 수 있는 입력은 다음과 같습니다.
 
 - `A1`부터 `I9`: 해당 좌표에 현재 플레이어 성 놓기
