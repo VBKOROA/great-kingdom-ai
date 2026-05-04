@@ -396,7 +396,7 @@ great-kingdom-import-legacy-pipeline \
 - 신규 smoke test가 최소 1개의 terminal game을 만든다.
 - replay sample shape가 올바르고 값이 finite이다.
 
-### 4단계: Rust ONNX 전용 Pipeline과 Legacy Import
+### ~~4단계: Rust ONNX 전용 Pipeline과 Legacy Import~~
 
 작업:
 

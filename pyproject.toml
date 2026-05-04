@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "numpy>=2.0",
+  "safetensors>=0.4",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +33,8 @@ great-kingdom-train = "great_kingdom_ai.train:main"
 great-kingdom-evaluate = "great_kingdom_ai.evaluate:main"
 great-kingdom-pipeline = "great_kingdom_ai.pipeline:main"
 great-kingdom-export-onnx = "great_kingdom_ai.onnx_export:main"
+great-kingdom-rust-onnx-pipeline = "great_kingdom_ai.rust_onnx_pipeline:main"
+great-kingdom-import-legacy-pipeline = "great_kingdom_ai.rust_onnx_replay:main"
 
 [tool.setuptools.packages.find]
 where = ["python"]
