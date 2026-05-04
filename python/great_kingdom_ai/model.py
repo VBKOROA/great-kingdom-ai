@@ -74,6 +74,17 @@ class PolicyValueNetwork(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if not torch.jit.is_tracing():
+            self._validate_input_shape(x)
+
+        features = self.backbone(self.stem(x))
+        board_logits = self.policy_spatial(features).flatten(start_dim=1)
+        pass_logits = self.policy_pass(features)
+        policy_logits = torch.cat([board_logits, pass_logits], dim=1)
+        value = self.value_head(features).squeeze(-1)
+        return policy_logits, value
+
+    def _validate_input_shape(self, x: torch.Tensor) -> None:
         if x.ndim != 4:
             raise ValueError(f"expected input rank 4 [batch, channels, 9, 9], got {x.ndim}")
         if x.shape[1:] != (self.config.input_channels, BOARD_SIZE, BOARD_SIZE):
@@ -82,13 +93,6 @@ class PolicyValueNetwork(nn.Module):
                 f"[batch, {self.config.input_channels}, {BOARD_SIZE}, {BOARD_SIZE}], "
                 f"got {tuple(x.shape)}"
             )
-
-        features = self.backbone(self.stem(x))
-        board_logits = self.policy_spatial(features).flatten(start_dim=1)
-        pass_logits = self.policy_pass(features)
-        policy_logits = torch.cat([board_logits, pass_logits], dim=1)
-        value = self.value_head(features).squeeze(-1)
-        return policy_logits, value
 
 
 def create_model(preset: str = "small", **overrides: int) -> PolicyValueNetwork:
