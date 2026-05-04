@@ -19,6 +19,8 @@ ai = [
 dev = [
   "maturin>=1.8",
   "mypy>=1.13",
+  "onnx>=1.17",
+  "onnxruntime>=1.20",
   "pytest>=8.3",
   "ruff>=0.8",
 ]
@@ -29,6 +31,7 @@ great-kingdom-random-self-play = "great_kingdom_ai.self_play:main"
 great-kingdom-train = "great_kingdom_ai.train:main"
 great-kingdom-evaluate = "great_kingdom_ai.evaluate:main"
 great-kingdom-pipeline = "great_kingdom_ai.pipeline:main"
+great-kingdom-export-onnx = "great_kingdom_ai.onnx_export:main"
 
 [tool.setuptools.packages.find]
 where = ["python"]

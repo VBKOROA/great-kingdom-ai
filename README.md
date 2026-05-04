@@ -129,6 +129,19 @@ Arena의 `batch_size`는 동시에 진행할 평가 게임 수입니다. `batch_
 Runpod RTX 3090에서는 우선 `20`을 권장합니다. CUDA OOM이 나면 `8` 또는 `4`로 낮춰서 다시
 실행합니다.
 
+학습 checkpoint를 Rust ONNX self-play 준비용 ONNX 모델로 내보내려면 다음 명령을 사용합니다.
+기본 export는 FP32, opset 17, dynamic batch axis를 사용합니다.
+
+```bash
+great-kingdom-export-onnx \
+  --checkpoint data/pipeline/checkpoints/best.pt \
+  --output data/pipeline/checkpoints/best.onnx \
+  --check-parity
+```
+
+`--check-parity`는 ONNX Runtime CPU provider로 작은 random feature batch를 실행하고 PyTorch
+checkpoint 출력과 비교합니다. 로컬 FP32 기준 허용 오차는 `1e-5`입니다.
+
 ## Runpod 학습 환경
 
 본격적인 CUDA 학습은 다음 환경을 기준으로 합니다.

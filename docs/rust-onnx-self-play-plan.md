@@ -347,7 +347,7 @@ great-kingdom-import-legacy-pipeline \
 
 ## 구현 단계
 
-### 1단계: Export와 수치 일치 테스트
+### ~~1단계: Export와 수치 일치 테스트~~
 
 작업:
 
