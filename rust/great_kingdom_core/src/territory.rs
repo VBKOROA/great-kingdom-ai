@@ -47,6 +47,25 @@ impl GameState {
         self.region_is_territory_of(&region, _player)
     }
 
+    pub(crate) fn territory_owners(&self) -> [Option<Player>; BOARD_CELLS] {
+        let mut visited = [false; BOARD_CELLS];
+        let mut owners = [None; BOARD_CELLS];
+
+        for index in 0..BOARD_CELLS {
+            if visited[index] || self.board[index] != Cell::Empty {
+                continue;
+            }
+
+            let region = self.empty_region_from(index, &mut visited);
+            let owner = self.region_owner(&region);
+            for cell_index in region {
+                owners[cell_index] = owner;
+            }
+        }
+
+        owners
+    }
+
     fn empty_region_from(&self, start: usize, visited: &mut [bool; BOARD_CELLS]) -> Vec<usize> {
         let mut region = Vec::new();
         let mut queue = VecDeque::from([start]);
@@ -69,6 +88,11 @@ impl GameState {
     }
 
     fn region_is_territory_of(&self, region: &[usize], player: Player) -> bool {
+        self.region_owner(region) == Some(player)
+    }
+
+    fn region_owner(&self, region: &[usize]) -> Option<Player> {
+        let mut boundary_player = None;
         let mut has_player_boundary = false;
         let mut touches_top = false;
         let mut touches_bottom = false;
@@ -88,15 +112,34 @@ impl GameState {
                 match self.board[neighbor] {
                     // 빈 칸은 같은 region에 속해야 하고, 중립 성은 경계로 쓸 수 있다.
                     Cell::Empty | Cell::Neutral => {}
-                    cell if cell == player.cell() => has_player_boundary = true,
+                    Cell::Blue => match boundary_player {
+                        None => {
+                            boundary_player = Some(Player::Blue);
+                            has_player_boundary = true;
+                        }
+                        Some(Player::Blue) => {}
+                        Some(Player::Orange) => return None,
+                    },
+                    Cell::Orange => match boundary_player {
+                        None => {
+                            boundary_player = Some(Player::Orange);
+                            has_player_boundary = true;
+                        }
+                        Some(Player::Orange) => {}
+                        Some(Player::Blue) => return None,
+                    },
                     // 상대 성에 맞닿은 영역은 그 플레이어의 확정 영토가 아니다.
-                    Cell::Blue | Cell::Orange => return false,
                 }
             }
         }
 
         // 플레이어 성이 최소 하나는 경계에 있어야 하며, 네 변 모두에 닿은 열린 영역은 제외한다.
-        has_player_boundary && !(touches_top && touches_bottom && touches_left && touches_right)
+        if has_player_boundary && !(touches_top && touches_bottom && touches_left && touches_right)
+        {
+            boundary_player
+        } else {
+            None
+        }
     }
 }
 

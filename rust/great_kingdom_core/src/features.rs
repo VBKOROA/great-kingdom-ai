@@ -36,7 +36,8 @@ impl GameState {
         let opponent_remaining = remaining_castles(opponent, self);
         let current_player_is_blue = f32::from(player == Player::Blue);
         let previous_move_was_pass = f32::from(self.previous_pass);
-        let legal_mask = self.legal_action_mask();
+        let territory_owners = self.territory_owners();
+        let can_place = player.used_count(self) < CASTLES_PER_PLAYER;
 
         for index in 0..BOARD_CELLS {
             match self.board[index] {
@@ -51,17 +52,20 @@ impl GameState {
                 }
                 Cell::Empty => {
                     set_channel(&mut planes, FeatureChannel::Empty, index, 1.0);
-                    if self.is_territory_of(index, player) {
+                    if territory_owners[index] == Some(player) {
                         set_channel(&mut planes, FeatureChannel::OwnTerritory, index, 1.0);
                     }
-                    if self.is_territory_of(index, opponent) {
+                    if territory_owners[index] == Some(opponent) {
                         set_channel(&mut planes, FeatureChannel::OpponentTerritory, index, 1.0);
                     }
                 }
                 Cell::Blue | Cell::Orange => {}
             }
 
-            if legal_mask[index] {
+            if can_place
+                && self.board[index] == Cell::Empty
+                && territory_owners[index] != Some(opponent)
+            {
                 set_channel(&mut planes, FeatureChannel::LegalPlace, index, 1.0);
             }
             set_channel(
@@ -115,6 +119,10 @@ mod tests {
 
     fn value(planes: &[f32], channel: FeatureChannel, index: usize) -> f32 {
         planes[channel as usize * BOARD_CELLS + index]
+    }
+
+    fn index(row: usize, col: usize) -> usize {
+        row * BOARD_SIZE + col
     }
 
     #[test]
@@ -176,5 +184,26 @@ mod tests {
         );
         assert_eq!(value(&planes, FeatureChannel::PreviousMoveWasPass, 0), 1.0);
         assert_eq!(state.legal_action_mask()[crate::game::PASS_ACTION], true);
+    }
+
+    #[test]
+    fn feature_legal_places_match_rule_legal_mask() {
+        let mut board = [Cell::Empty; BOARD_CELLS];
+        board[CENTER_INDEX] = Cell::Neutral;
+        board[index(0, 1)] = Cell::Blue;
+        board[index(1, 0)] = Cell::Blue;
+        board[index(1, 2)] = Cell::Blue;
+        board[index(2, 1)] = Cell::Blue;
+        let state = state_with_board(board, Player::Orange);
+        let planes = state.feature_planes_array();
+        let legal_mask = state.legal_action_mask();
+
+        for (action, is_legal) in legal_mask.iter().take(BOARD_CELLS).enumerate() {
+            assert_eq!(
+                value(&planes, FeatureChannel::LegalPlace, action),
+                f32::from(*is_legal),
+                "legal-place feature diverged from rule legal mask at action {action}",
+            );
+        }
     }
 }
