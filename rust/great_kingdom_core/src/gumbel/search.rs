@@ -33,7 +33,8 @@ impl GumbelSearch {
         max_considered_actions = 16,
         c_visit = 50.0,
         c_scale = 1.0,
-        seed = 0
+        seed = 0,
+        policy_target_temperature = 1.0
     ))]
     pub fn py_new(
         simulations: u32,
@@ -41,8 +42,16 @@ impl GumbelSearch {
         c_visit: f32,
         c_scale: f32,
         seed: u64,
+        policy_target_temperature: f32,
     ) -> PyResult<Self> {
-        let config = GumbelConfig::new(simulations, max_considered_actions, c_visit, c_scale, seed);
+        let config = GumbelConfig::new_with_policy_target_temperature(
+            simulations,
+            max_considered_actions,
+            c_visit,
+            c_scale,
+            seed,
+            policy_target_temperature,
+        );
         config.validate()?;
         Ok(Self::new(config))
     }
@@ -65,6 +74,11 @@ impl GumbelSearch {
     #[must_use]
     pub fn c_scale(&self) -> f32 {
         self.config.c_scale
+    }
+
+    #[must_use]
+    pub fn policy_target_temperature(&self) -> f32 {
+        self.config.policy_target_temperature
     }
 
     #[must_use]
@@ -391,6 +405,7 @@ impl GumbelSearch {
             log_priors,
             self.config.c_visit,
             self.config.c_scale,
+            self.config.policy_target_temperature,
         );
 
         GumbelResult {
@@ -516,6 +531,7 @@ impl GumbelSearch {
             log_priors,
             self.config.c_visit,
             self.config.c_scale,
+            self.config.policy_target_temperature,
         );
 
         Ok(GumbelResult {

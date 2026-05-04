@@ -37,7 +37,8 @@ impl GumbelSelfPlayBatch {
         max_considered_actions = 16,
         c_visit = 50.0,
         c_scale = 1.0,
-        seed = 2026
+        seed = 2026,
+        policy_target_temperature = 1.0
     ))]
     pub fn py_new(
         game_count: usize,
@@ -46,11 +47,19 @@ impl GumbelSelfPlayBatch {
         c_visit: f32,
         c_scale: f32,
         seed: u64,
+        policy_target_temperature: f32,
     ) -> PyResult<Self> {
         if game_count == 0 {
             return Err(PyValueError::new_err("game_count must be positive"));
         }
-        let config = GumbelConfig::new(simulations, max_considered_actions, c_visit, c_scale, seed);
+        let config = GumbelConfig::new_with_policy_target_temperature(
+            simulations,
+            max_considered_actions,
+            c_visit,
+            c_scale,
+            seed,
+            policy_target_temperature,
+        );
         config.validate()?;
         Ok(Self::new(game_count, config))
     }
@@ -607,6 +616,7 @@ impl GumbelSelfPlayBatch {
                 log_priors,
                 self.searches[game_index].config.c_visit,
                 self.searches[game_index].config.c_scale,
+                self.searches[game_index].config.policy_target_temperature,
             );
             let selected_action = schedulers[game_index]
                 .as_ref()

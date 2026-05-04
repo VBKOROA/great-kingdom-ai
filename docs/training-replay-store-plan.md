@@ -321,14 +321,14 @@ if turn < root_logit_temperature_turns:
 
 ## 구현 체크리스트
 
-- `SelfPlayConfig`에 `policy_target_temperature` 추가
-- Rust `GumbelConfig`에 `policy_target_temperature` 추가
-- PyO3 생성자 인자 추가
-- `root_improved_policy_target()`의 target softmax에 temperature 적용
-- 기존 테스트가 기본값에서 기존 동작을 유지하는지 확인
-- `policy_target_temperature > 1.0`에서 target entropy가 증가하는 테스트 추가
-- replay diagnostics로 entropy 변화 확인
-- Runpod config에 보수적 후보값 적용
+- [x] `SelfPlayConfig`에 `policy_target_temperature` 추가
+- [x] Rust `GumbelConfig`에 `policy_target_temperature` 추가
+- [x] PyO3 생성자 인자 추가
+- [x] `root_improved_policy_target()`의 target softmax에 temperature 적용
+- [x] 기존 테스트가 기본값에서 기존 동작을 유지하는지 확인
+- [x] `policy_target_temperature > 1.0`에서 target entropy가 증가하는 테스트 추가
+- [ ] replay diagnostics로 entropy 변화 확인
+- [x] Runpod config에 보수적 후보값 적용
 
 ## Runpod 재검증
 

@@ -90,6 +90,7 @@ pub(crate) fn root_improved_policy_target(
     log_priors: &[f32; ACTION_SPACE],
     c_visit: f32,
     c_scale: f32,
+    policy_target_temperature: f32,
 ) -> RootImprovedPolicy {
     let mut policy_target = [0.0; ACTION_SPACE];
     if legal_actions.is_empty() {
@@ -112,18 +113,19 @@ pub(crate) fn root_improved_policy_target(
 
     let improved_logits =
         root_policy_target_logits(root, legal_actions, log_priors, c_visit, c_scale);
+    let temperature = policy_target_temperature.max(1.0e-6);
     let max_logit = improved_logits
         .iter()
-        .map(|(_, logit)| *logit)
+        .map(|(_, logit)| *logit / temperature)
         .fold(f32::NEG_INFINITY, f32::max);
     let sum_exp = improved_logits
         .iter()
-        .map(|(_, logit)| (*logit - max_logit).exp())
+        .map(|(_, logit)| (*logit / temperature - max_logit).exp())
         .sum::<f32>();
 
     if sum_exp.is_finite() && sum_exp > 0.0 {
         for (action, logit) in improved_logits {
-            policy_target[action] = (logit - max_logit).exp() / sum_exp;
+            policy_target[action] = (logit / temperature - max_logit).exp() / sum_exp;
         }
     }
 
@@ -301,7 +303,7 @@ mod tests {
         log_priors[0] = 0.5_f32.ln();
         log_priors[1] = 0.5_f32.ln();
 
-        let improved = root_improved_policy_target(&root, &legal, &log_priors, 1.0, 1.0);
+        let improved = root_improved_policy_target(&root, &legal, &log_priors, 1.0, 1.0, 1.0);
         let prior_only = softmax_candidates(&candidates);
 
         assert_eq!(improved.selected_action, Some(1));
@@ -332,7 +334,7 @@ mod tests {
         log_priors[0] = 0.5_f32.ln();
         log_priors[1] = 0.5_f32.ln();
 
-        let improved = root_improved_policy_target(&root, &legal, &log_priors, 1.0, 1.0);
+        let improved = root_improved_policy_target(&root, &legal, &log_priors, 1.0, 1.0, 1.0);
 
         assert_eq!(improved.selected_action, Some(0));
         assert_close(improved.policy_target[0], 0.5);
@@ -353,7 +355,7 @@ mod tests {
         log_priors[0] = 0.5_f32.ln();
         log_priors[1] = 0.5_f32.ln();
 
-        let improved = root_improved_policy_target(&root, &legal, &log_priors, 1.0, 1.0);
+        let improved = root_improved_policy_target(&root, &legal, &log_priors, 1.0, 1.0, 1.0);
 
         assert!(improved.policy_target[1] > 0.0);
         assert_close(improved.policy_target.iter().sum::<f32>(), 1.0);
@@ -378,9 +380,54 @@ mod tests {
         high_root.edges[0].visit_count = 1;
         high_root.edges[0].value_sum = 0.0;
 
-        let low_improved = root_improved_policy_target(&low_root, &legal, &log_priors, 1.0, 1.0);
-        let high_improved = root_improved_policy_target(&high_root, &legal, &log_priors, 1.0, 1.0);
+        let low_improved =
+            root_improved_policy_target(&low_root, &legal, &log_priors, 1.0, 1.0, 1.0);
+        let high_improved =
+            root_improved_policy_target(&high_root, &legal, &log_priors, 1.0, 1.0, 1.0);
 
         assert!(high_improved.policy_target[1] > low_improved.policy_target[1]);
+    }
+
+    #[test]
+    fn policy_target_temperature_increases_entropy() {
+        let candidates = [
+            RootCandidate {
+                action: 0,
+                log_prior: 0.5_f32.ln(),
+                gumbel: 0.0,
+                score: 0.5_f32.ln(),
+            },
+            RootCandidate {
+                action: 1,
+                log_prior: 0.5_f32.ln(),
+                gumbel: 0.0,
+                score: 0.5_f32.ln(),
+            },
+        ];
+        let mut root = GumbelNode::root_from_candidates(&GameState::new(), &candidates, 0.0);
+        root.edges[0].visit_count = 1;
+        root.edges[0].value_sum = -1.0;
+        root.edges[1].visit_count = 1;
+        root.edges[1].value_sum = 1.0;
+        let legal = [0, 1];
+        let mut log_priors = [f32::NEG_INFINITY; ACTION_SPACE];
+        log_priors[0] = 0.5_f32.ln();
+        log_priors[1] = 0.5_f32.ln();
+
+        let baseline = root_improved_policy_target(&root, &legal, &log_priors, 4.0, 1.0, 1.0);
+        let softened = root_improved_policy_target(&root, &legal, &log_priors, 4.0, 1.0, 2.0);
+
+        assert_eq!(baseline.selected_action, softened.selected_action);
+        assert!(entropy(&softened.policy_target) > entropy(&baseline.policy_target));
+        assert!(softened.policy_target[1] < baseline.policy_target[1]);
+        assert_close(softened.policy_target.iter().sum::<f32>(), 1.0);
+    }
+
+    fn entropy(policy: &[f32; ACTION_SPACE]) -> f32 {
+        policy
+            .iter()
+            .filter(|probability| **probability > 0.0)
+            .map(|probability| -probability * probability.ln())
+            .sum()
     }
 }

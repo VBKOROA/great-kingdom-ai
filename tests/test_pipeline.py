@@ -17,7 +17,7 @@ from great_kingdom_ai.pipeline import (
     run_pipeline,
 )
 from great_kingdom_ai.replay_buffer import ReplaySample
-from great_kingdom_ai.self_play import GameLog, SelfPlayConfig, MoveLog
+from great_kingdom_ai.self_play import GameLog, MoveLog, SelfPlayConfig
 from great_kingdom_ai.train import TrainingConfig
 
 
@@ -129,6 +129,7 @@ def test_generate_self_play_samples_passes_gumbel_config() -> None:
             min_replay_samples=1,
             gumbel_simulations=32,
             gumbel_max_considered_actions=8,
+            policy_target_temperature=2.0,
             gumbel_seed=7,
         ),
         runner=recording_runner,
@@ -137,6 +138,7 @@ def test_generate_self_play_samples_passes_gumbel_config() -> None:
 
     assert seen_configs[0].gumbel_simulations == 32
     assert seen_configs[0].gumbel_max_considered_actions == 8
+    assert seen_configs[0].policy_target_temperature == pytest.approx(2.0)
     assert seen_configs[0].gumbel_seed == 7
 
 

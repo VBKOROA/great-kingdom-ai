@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import shutil
 import time
 from collections.abc import Callable, Sequence
@@ -57,6 +58,7 @@ class PipelineConfig:
     gumbel_max_considered_actions: int = 16
     gumbel_c_visit: float = 50.0
     gumbel_c_scale: float = 1.0
+    policy_target_temperature: float = 1.0
     gumbel_seed: int = 0
     leaf_batch_size: int = 8
     self_play_max_turns: int = 200
@@ -463,6 +465,7 @@ def generate_self_play_samples(
         gumbel_max_considered_actions=pipeline_config.gumbel_max_considered_actions,
         gumbel_c_visit=pipeline_config.gumbel_c_visit,
         gumbel_c_scale=pipeline_config.gumbel_c_scale,
+        policy_target_temperature=pipeline_config.policy_target_temperature,
         gumbel_seed=pipeline_config.gumbel_seed,
         temperature_turns=pipeline_config.temperature_turns,
         sampling_temperature=pipeline_config.sampling_temperature,
@@ -693,6 +696,11 @@ def _validate_pipeline_config(config: PipelineConfig) -> None:
         raise ValueError("gumbel_c_visit must be positive")
     if config.gumbel_c_scale <= 0.0:
         raise ValueError("gumbel_c_scale must be positive")
+    if (
+        not math.isfinite(config.policy_target_temperature)
+        or config.policy_target_temperature <= 0.0
+    ):
+        raise ValueError("policy_target_temperature must be finite and positive")
     if config.leaf_batch_size <= 0:
         raise ValueError("leaf_batch_size must be positive")
     if not 0.0 < config.playout_cap_full_search_fraction <= 1.0:
@@ -844,6 +852,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="maximum root actions considered by Gumbel search",
     )
     self_play_group.add_argument(
+        "--policy-target-temperature",
+        type=float,
+        default=None,
+        help="temperature applied only to replay policy targets",
+    )
+    self_play_group.add_argument(
         "--self-play-batch-size",
         type=int,
         default=None,
@@ -903,6 +917,7 @@ def _configs_from_args(
         "min_replay_samples": args.min_replay_samples,
         "gumbel_simulations": args.gumbel_simulations,
         "gumbel_max_considered_actions": args.gumbel_max_considered_actions,
+        "policy_target_temperature": args.policy_target_temperature,
         "self_play_batch_size": args.self_play_batch_size,
         "leaf_batch_size": args.leaf_batch_size,
         "playout_cap_randomization": True if args.playout_cap_randomization else None,

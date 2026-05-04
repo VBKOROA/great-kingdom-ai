@@ -6,10 +6,10 @@ import pytest
 from great_kingdom_ai.self_play import (
     SelfPlayConfig,
     choose_random_legal_action,
-    play_self_play_game,
-    play_self_play_games_batched,
     play_random_game,
     play_random_games,
+    play_self_play_game,
+    play_self_play_games_batched,
     summarize_logs,
 )
 
@@ -491,6 +491,15 @@ def test_play_self_play_game_uses_gumbel_policy_target_and_selected_action() -> 
 
 def test_search_self_play_config_samples_only_opening_turns_by_default() -> None:
     assert SelfPlayConfig().temperature_turns == 10
+
+
+def test_self_play_config_defaults_to_unscaled_policy_targets() -> None:
+    assert SelfPlayConfig().policy_target_temperature == pytest.approx(1.0)
+
+
+def test_self_play_config_rejects_invalid_policy_target_temperature() -> None:
+    with pytest.raises(ValueError, match="policy_target_temperature"):
+        SelfPlayConfig(policy_target_temperature=0.0)
 
 
 def test_play_self_play_game_can_skip_fast_playout_cap_turns() -> None:

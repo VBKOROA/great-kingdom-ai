@@ -18,12 +18,14 @@ def test_gumbel_search_constructor_exposes_config() -> None:
         c_visit=25.0,
         c_scale=1.5,
         seed=123,
+        policy_target_temperature=2.0,
     )
 
     assert search.simulations() == 32
     assert search.max_considered_actions() == 8
     assert search.c_visit() == 25.0
     assert search.c_scale() == 1.5
+    assert search.policy_target_temperature() == 2.0
     assert search.seed() == 123
 
 
@@ -38,6 +40,7 @@ def test_gumbel_search_constructor_exposes_config() -> None:
         ({"max_considered_actions": 0}, "max_considered_actions"),
         ({"c_visit": 0.0}, "c_visit"),
         ({"c_scale": -1.0}, "c_scale"),
+        ({"policy_target_temperature": 0.0}, "policy_target_temperature"),
     ],
 )
 def test_gumbel_search_rejects_invalid_config(
