@@ -10,8 +10,15 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = []
 extension-module = ["pyo3/extension-module"]
+onnx-cuda = ["ort/cuda"]
 
 [dependencies]
+ort = { version = "=2.0.0-rc.10", default-features = false, features = [
+    "copy-dylibs",
+    "download-binaries",
+    "ndarray",
+    "std",
+] }
 pyo3 = { version = "0.25" }
 rayon = "1.12.0"
 

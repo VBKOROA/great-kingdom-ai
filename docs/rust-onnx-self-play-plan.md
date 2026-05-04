@@ -363,7 +363,7 @@ great-kingdom-import-legacy-pipeline \
 - value shape가 `[batch]`이다.
 - FP32 CPU 기준 max absolute diff가 `1e-5` 안에 들어온다.
 
-### 2단계: Rust ONNX Runtime 기본 골격
+### ~~2단계: Rust ONNX Runtime 기본 골격~~
 
 작업:
 

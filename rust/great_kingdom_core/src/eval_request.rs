@@ -82,6 +82,20 @@ impl EvalRequest {
 
 impl EvalRequest {
     #[must_use]
+    pub fn feature_values(&self) -> Vec<f32> {
+        if let Some(feature_bytes) = &self.feature_bytes {
+            return feature_bytes
+                .chunks_exact(core::mem::size_of::<f32>())
+                .map(|bytes| f32::from_ne_bytes(bytes.try_into().expect("f32 chunks are 4 bytes")))
+                .collect();
+        }
+        self.states
+            .iter()
+            .flat_map(GameState::feature_planes)
+            .collect()
+    }
+
+    #[must_use]
     pub(crate) fn new_with_precomputed_bytes(states: Vec<GameState>) -> Self {
         Self::new_with_optional_game_indexes(states, None)
     }

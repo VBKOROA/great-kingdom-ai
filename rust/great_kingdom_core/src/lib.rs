@@ -4,6 +4,7 @@ mod eval_request;
 mod features;
 mod game;
 mod gumbel;
+mod onnx;
 mod rules;
 mod territory;
 
@@ -13,6 +14,7 @@ pub use game::{
     FEATURE_CHANNELS, GameEndReason, GameOutcome, GameState, InvalidAction, PASS_ACTION, Player,
 };
 pub use gumbel::{GumbelArenaBatch, GumbelConfig, GumbelResult, GumbelSearch, GumbelSelfPlayBatch};
+pub use onnx::{NetworkOutput, OnnxDevice, OnnxError, OnnxEvaluator, OnnxEvaluatorConfig};
 
 #[pyfunction]
 #[must_use]
