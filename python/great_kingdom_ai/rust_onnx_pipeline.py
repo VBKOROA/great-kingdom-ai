@@ -135,15 +135,38 @@ def run_rust_onnx_pipeline(
     completed_iterations = _load_completed_iteration_count(paths["metrics_path"], pipeline_config)
     seed_cursor = _initial_seed_cursor(pipeline_config)
     summaries: list[RustOnnxPipelineIterationSummary] = []
+    first_iteration = completed_iterations + 1
+    last_iteration = completed_iterations + pipeline_config.iterations
+
+    printer.title("Rust ONNX Pipeline")
+    printer.metric("work dir", pipeline_config.work_dir)
+    printer.metric("resume", pipeline_config.resume)
+    printer.metric("completed iterations", completed_iterations)
+    printer.metric("train device", train_config.device)
+    printer.metric("onnx device", pipeline_config.onnx_device)
+    printer.metric(
+        "self-play",
+        (
+            f"games={pipeline_config.self_play_games}, "
+            f"batch={pipeline_config.rust_self_play_batch_size}, "
+            f"onnx_batch={pipeline_config.onnx_max_batch_size}"
+        ),
+    )
+    printer.metric("training", f"steps={train_config.steps}, batch={train_config.batch_size}")
+
     for iteration in range(
-        completed_iterations + 1,
-        completed_iterations + pipeline_config.iterations + 1,
+        first_iteration,
+        last_iteration + 1,
     ):
-        printer.title(f"Rust ONNX Iteration {iteration}")
+        phase_total = 5 if pipeline_config.skip_arena else 6
+        printer.title(f"Rust ONNX Iteration {iteration}/{last_iteration}")
         onnx_path = paths["onnx_checkpoint_dir"] / f"best-{iteration:06d}.onnx"
+        printer.step(f"exporting best checkpoint -> {onnx_path}")
         export_checkpoint_to_onnx(paths["best_checkpoint"], onnx_path, device=train_config.device)
+        printer.progress("iteration", 1, phase_total, detail="onnx export complete")
 
         artifact_dir = paths["self_play_dir"] / f"iteration-{iteration:06d}"
+        printer.step(f"running Rust ONNX self-play -> {artifact_dir}")
         self_play_summary = runner(
             RustOnnxSelfPlayConfig(
                 onnx_model_path=onnx_path,
@@ -157,27 +180,51 @@ def run_rust_onnx_pipeline(
             )
         )
         seed_cursor += self_play_summary.games
+        printer.progress(
+            "self-play games",
+            self_play_summary.games,
+            pipeline_config.self_play_games,
+            detail=f"samples={self_play_summary.samples}, seed_next={seed_cursor}",
+        )
+        printer.progress("iteration", 2, phase_total, detail="self-play complete")
+
+        printer.step("importing Rust self-play artifacts into replay")
         replay_import = import_rust_self_play_artifacts(
             artifact_dir=self_play_summary.artifact_dir,
             replay_path=paths["replay_path"],
             replay_capacity=pipeline_config.replay_capacity,
             game_log_path=paths["game_log_path"],
         )
+        printer.metric("imported games", replay_import.imported_games)
+        printer.metric("imported samples", replay_import.imported_samples)
+        printer.progress("iteration", 3, phase_total, detail="replay import complete")
+
         replay = ReplayBuffer.load(paths["replay_path"])
         candidate_checkpoint = paths["candidate_dir"] / f"candidate-{iteration:06d}.pt"
+        printer.metric("replay samples", len(replay))
+        printer.step(f"training candidate -> {candidate_checkpoint}")
         train_summary = train_from_replay(
             replay,
             train_config,
             checkpoint_path=candidate_checkpoint,
             resume_path=paths["best_checkpoint"],
             log_every=max(1, train_config.steps // 10),
+            progress_callback=lambda current, target, loss: printer.progress(
+                "train",
+                current,
+                target,
+                detail=f"loss={loss['total']:.4f}",
+            ),
         )
         shutil.copy2(candidate_checkpoint, paths["candidate_checkpoint"])
+        printer.metric("train steps", f"{train_summary.start_step}->{train_summary.end_step}")
+        printer.progress("iteration", 4, phase_total, detail="training complete")
 
         candidate_win_rate: float | None = None
         promoted = False
         if not pipeline_config.skip_arena:
             report_path = paths["arena_dir"] / f"arena-{iteration:06d}.json"
+            printer.step(f"arena evaluation -> {report_path}")
             candidate_model = load_model_from_checkpoint(
                 candidate_checkpoint,
                 device=arena_config.device,
@@ -190,9 +237,16 @@ def run_rust_onnx_pipeline(
                 candidate_model=candidate_model,
                 best_model=best_model,
                 config=arena_config,
+                progress_callback=lambda current, target, game: printer.progress(
+                    "arena games",
+                    current,
+                    target,
+                    detail=f"winner={game.winner}, elapsed={printer.elapsed()}",
+                ),
             )
             save_arena_report(report, report_path)
             candidate_win_rate = report.summary.candidate_win_rate
+            printer.metric("candidate win rate", f"{candidate_win_rate:.3f}")
             promoted = (
                 promote_candidate_if_needed(
                     candidate_checkpoint=candidate_checkpoint,
@@ -202,6 +256,10 @@ def run_rust_onnx_pipeline(
                 if pipeline_config.promote
                 else False
             )
+            printer.metric("promoted", promoted)
+            printer.progress("iteration", 5, phase_total, detail="arena complete")
+        else:
+            printer.progress("iteration", 5, phase_total, detail="arena skipped")
 
         iteration_summary = RustOnnxPipelineIterationSummary(
             iteration=iteration,
@@ -216,6 +274,8 @@ def run_rust_onnx_pipeline(
         )
         summaries.append(iteration_summary)
         _append_metrics(paths["metrics_path"], iteration_summary)
+        printer.done(f"iteration {iteration} complete in {printer.elapsed()}")
+        printer.progress("iteration", phase_total, phase_total, detail="metrics written")
 
     return RustOnnxPipelineSummary(
         iterations=summaries,
@@ -276,7 +336,7 @@ def main() -> NoReturn:
     for key, value in {
         "work_dir": args.work_dir,
         "iterations": args.iterations,
-        "onnx_device": args.onnx_device,
+        "onnx_device": args.onnx_device if args.onnx_device is not None else args.device,
         "self_play_games": args.self_play_games,
         "skip_arena": True if args.skip_arena else None,
     }.items():

@@ -146,6 +146,7 @@ class PipelinePrinter:
     def __init__(self, *, enabled: bool = True) -> None:
         self.enabled = enabled
         self.started_at = time.monotonic()
+        self.bar_width = 28
 
     def title(self, text: str) -> None:
         if self.enabled:
@@ -167,8 +168,17 @@ class PipelinePrinter:
         if not self.enabled:
             return
         percent = 100.0 if target <= 0 else min(100.0, current / target * 100.0)
+        filled = (
+            self.bar_width
+            if target <= 0
+            else round(self.bar_width * min(current, target) / target)
+        )
+        bar = "#" * filled + "." * (self.bar_width - filled)
         suffix = f"  {detail}" if detail else ""
-        print(f"  {key:<18} {current:>6}/{target:<6} {percent:>6.1f}%{suffix}", flush=True)
+        print(
+            f"  {key:<18} [{bar}] {current:>6}/{target:<6} {percent:>6.1f}%{suffix}",
+            flush=True,
+        )
 
     def elapsed(self) -> str:
         return _format_duration(time.monotonic() - self.started_at)

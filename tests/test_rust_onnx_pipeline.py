@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -85,8 +86,11 @@ def test_rust_onnx_pipeline_dispatches_runner_and_imports_replay(
         checkpoint_path: str | Path,
         resume_path: str | Path | None,
         log_every: int,
+        progress_callback: Any = None,
     ) -> FakeTrainSummary:
         del replay, config, resume_path, log_every
+        if progress_callback is not None:
+            progress_callback(3, 3, {"total": 0.5})
         destination = Path(checkpoint_path)
         destination.write_text("candidate", encoding="utf-8")
         return FakeTrainSummary(destination)
@@ -116,3 +120,81 @@ def test_rust_onnx_pipeline_dispatches_runner_and_imports_replay(
     assert exported[0][1] == tmp_path / "checkpoints" / "onnx" / "best-000001.onnx"
     assert (tmp_path / "checkpoints" / "candidate.pt").read_text(encoding="utf-8") == "candidate"
     assert (tmp_path / "replay" / "game_logs.json").is_file()
+
+
+def test_main_applies_device_to_onnx_device_when_not_explicit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_run_rust_onnx_pipeline(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return pipeline_module.RustOnnxPipelineSummary(
+            iterations=[],
+            replay_samples=0,
+            best_checkpoint=tmp_path / "best.pt",
+            replay_path=tmp_path / "replay.npz",
+        )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "great-kingdom-rust-onnx-pipeline",
+            "--device",
+            "cuda",
+            "--json",
+        ],
+    )
+    monkeypatch.setattr(pipeline_module, "load_training_config", lambda path: TrainingConfig())
+    monkeypatch.setattr(pipeline_module, "load_arena_config", lambda path: ArenaConfig())
+    monkeypatch.setattr(pipeline_module, "run_rust_onnx_pipeline", fake_run_rust_onnx_pipeline)
+
+    try:
+        pipeline_module.main()
+    except SystemExit as exc:
+        assert exc.code == 0
+
+    config = captured["pipeline_config"]
+    assert config.onnx_device == "cuda"
+
+
+def test_main_prefers_explicit_onnx_device_over_device(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_run_rust_onnx_pipeline(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return pipeline_module.RustOnnxPipelineSummary(
+            iterations=[],
+            replay_samples=0,
+            best_checkpoint=tmp_path / "best.pt",
+            replay_path=tmp_path / "replay.npz",
+        )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "great-kingdom-rust-onnx-pipeline",
+            "--device",
+            "cuda",
+            "--onnx-device",
+            "cpu",
+            "--json",
+        ],
+    )
+    monkeypatch.setattr(pipeline_module, "load_training_config", lambda path: TrainingConfig())
+    monkeypatch.setattr(pipeline_module, "load_arena_config", lambda path: ArenaConfig())
+    monkeypatch.setattr(pipeline_module, "run_rust_onnx_pipeline", fake_run_rust_onnx_pipeline)
+
+    try:
+        pipeline_module.main()
+    except SystemExit as exc:
+        assert exc.code == 0
+
+    config = captured["pipeline_config"]
+    assert config.onnx_device == "cpu"
