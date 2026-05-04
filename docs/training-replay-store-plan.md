@@ -327,8 +327,15 @@ if turn < root_logit_temperature_turns:
 - [x] `root_improved_policy_target()`의 target softmax에 temperature 적용
 - [x] 기존 테스트가 기본값에서 기존 동작을 유지하는지 확인
 - [x] `policy_target_temperature > 1.0`에서 target entropy가 증가하는 테스트 추가
-- [ ] replay diagnostics로 entropy 변화 확인
+- [x] replay diagnostics로 entropy 변화 확인
 - [x] Runpod config에 보수적 후보값 적용
+
+Runpod smoke 결과:
+
+- 16 games: `entropy.p50 = 0.689`, `max_probability.p50 = 0.693`
+- 64 games: `entropy.p50 = 0.681`, `max_probability.p50 = 0.685`
+- 두 run 모두 `legal.rows_with_illegal_target_mass = 0`
+- raw replay 1000 step train smoke: `kl 2.4746 -> 0.7273`
 
 ## Runpod 재검증
 

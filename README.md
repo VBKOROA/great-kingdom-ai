@@ -196,8 +196,8 @@ great-kingdom-rust-onnx-pipeline \
 ```
 
 기존 replay를 중복 state 기준으로 평균낸 학습용 replay로 변환하려면 다음 명령을 사용합니다.
-Rust ONNX pipeline은 기본적으로 각 iteration의 training 직전에 이 변환을 수행해
-`replay/replay-aggregated.npz`를 학습 입력으로 사용합니다.
+현재 Runpod pipeline 기본값은 raw replay 학습입니다. Aggregated replay는 기존 replay를 살리거나
+중복 state 충돌을 진단할 때 쓰는 보조 도구로 둡니다.
 
 ```bash
 great-kingdom-aggregate-replay \
@@ -206,9 +206,9 @@ great-kingdom-aggregate-replay \
   --pretty
 ```
 
-`configs/runpod/pipeline-runpod.json`은 Rust ONNX self-play 경로용 설정입니다. 첫 실행 때
-`data/runpod/pipeline`의 기존 replay/checkpoint/log가 있으면
-`data/runpod/onnx-pipeline`으로 한 번 import한 뒤 이어서 학습합니다.
+`configs/runpod/pipeline-runpod.json`은 Rust ONNX self-play 경로용 설정입니다. 현재 기본 work dir은
+`data/runpod/onnx-pipeline-t2`이고, 새 temperature target replay를 기존 replay와 섞지 않기 위해
+legacy replay import는 기본적으로 꺼져 있습니다.
 
 ## 테스트와 품질 확인
 
