@@ -12,6 +12,8 @@
   "resume": true,
   "seed_start": 0,
   "self_play_games": 512,
+  "min_replay_samples": 5000,
+  "max_self_play_games": 1024,
   "skip_arena": false,
   "self_play": {
     "max_turns": 200,

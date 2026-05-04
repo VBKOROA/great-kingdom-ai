@@ -54,6 +54,8 @@ class RustOnnxPipelineConfig:
     import_legacy_on_first_run: bool = False
     replay_capacity: int = 10000
     self_play_games: int = 2
+    min_replay_samples: int = 0
+    max_self_play_games: int | None = None
     seed_start: int = 0
     onnx_device: str = "cpu"
     onnx_max_batch_size: int = 128
@@ -153,7 +155,8 @@ def run_rust_onnx_pipeline(
     printer.metric(
         "self-play",
         (
-            f"games={pipeline_config.self_play_games}, "
+            f"games>={pipeline_config.self_play_games}, "
+            f"samples>={pipeline_config.min_replay_samples}, "
             f"batch={pipeline_config.rust_self_play_batch_size}, "
             f"onnx_batch={pipeline_config.onnx_max_batch_size}"
         ),
@@ -171,38 +174,20 @@ def run_rust_onnx_pipeline(
         export_checkpoint_to_onnx(paths["best_checkpoint"], onnx_path, device=train_config.device)
         printer.progress("iteration", 1, phase_total, detail="onnx export complete")
 
-        artifact_dir = paths["self_play_dir"] / f"iteration-{iteration:06d}"
-        printer.step(f"running Rust ONNX self-play -> {artifact_dir}")
-        self_play_summary = runner(
-            RustOnnxSelfPlayConfig(
-                onnx_model_path=onnx_path,
-                output_dir=artifact_dir,
-                games=pipeline_config.self_play_games,
-                seed_start=seed_cursor,
-                onnx_device=pipeline_config.onnx_device,
-                onnx_max_batch_size=pipeline_config.onnx_max_batch_size,
-                rust_self_play_batch_size=pipeline_config.rust_self_play_batch_size,
-                self_play=pipeline_config.self_play,
-            )
-        )
-        seed_cursor += self_play_summary.games
-        printer.progress(
-            "self-play games",
-            self_play_summary.games,
-            pipeline_config.self_play_games,
-            detail=f"samples={self_play_summary.samples}, seed_next={seed_cursor}",
-        )
-        printer.progress("iteration", 2, phase_total, detail="self-play complete")
-
-        printer.step("importing Rust self-play artifacts into replay")
-        replay_import = import_rust_self_play_artifacts(
-            artifact_dir=self_play_summary.artifact_dir,
+        artifact_root = paths["self_play_dir"] / f"iteration-{iteration:06d}"
+        self_play_summary, replay_import, seed_cursor = _generate_and_import_self_play(
+            pipeline_config=pipeline_config,
+            onnx_path=onnx_path,
+            artifact_root=artifact_root,
             replay_path=paths["replay_path"],
-            replay_capacity=pipeline_config.replay_capacity,
             game_log_path=paths["game_log_path"],
+            seed_cursor=seed_cursor,
+            runner=runner,
+            printer=printer,
         )
         printer.metric("imported games", replay_import.imported_games)
         printer.metric("imported samples", replay_import.imported_samples)
+        printer.progress("iteration", 2, phase_total, detail="self-play/import complete")
         printer.progress("iteration", 3, phase_total, detail="replay import complete")
 
         replay = _prepare_training_replay(
@@ -337,6 +322,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--onnx-device", choices=["cpu", "cuda"], default=None)
     parser.add_argument("--device", choices=["cpu", "cuda"], default=None)
     parser.add_argument("--self-play-games", type=int, default=None)
+    parser.add_argument("--min-replay-samples", type=int, default=None)
+    parser.add_argument("--max-self-play-games", type=int, default=None)
     parser.add_argument("--skip-arena", action="store_true")
     parser.add_argument("--json", action="store_true")
     return parser
@@ -355,6 +342,8 @@ def main() -> NoReturn:
         "iterations": args.iterations,
         "onnx_device": args.onnx_device if args.onnx_device is not None else args.device,
         "self_play_games": args.self_play_games,
+        "min_replay_samples": args.min_replay_samples,
+        "max_self_play_games": args.max_self_play_games,
         "skip_arena": True if args.skip_arena else None,
     }.items():
         if value is not None:
@@ -401,6 +390,112 @@ def _ensure_dirs(config: RustOnnxPipelineConfig) -> None:
             path.mkdir(parents=True, exist_ok=True)
 
 
+def _generate_and_import_self_play(
+    *,
+    pipeline_config: RustOnnxPipelineConfig,
+    onnx_path: Path,
+    artifact_root: Path,
+    replay_path: Path,
+    game_log_path: Path,
+    seed_cursor: int,
+    runner: Callable[[RustOnnxSelfPlayConfig], RustSelfPlayRunSummary],
+    printer: PipelinePrinter,
+) -> tuple[RustSelfPlayRunSummary, RustReplayImportSummary, int]:
+    total_games = 0
+    total_samples = 0
+    imported_games = 0
+    imported_samples = 0
+    replay_samples = 0
+    batch_index = 0
+
+    while (
+        total_games < pipeline_config.self_play_games
+        or total_samples < pipeline_config.min_replay_samples
+    ):
+        if (
+            pipeline_config.max_self_play_games is not None
+            and total_games >= pipeline_config.max_self_play_games
+        ):
+            raise RuntimeError(
+                "Rust ONNX self-play reached max_self_play_games="
+                f"{pipeline_config.max_self_play_games} with samples="
+                f"{total_samples} < {pipeline_config.min_replay_samples}"
+            )
+
+        game_count = _next_self_play_game_count(
+            pipeline_config,
+            total_games=total_games,
+            total_samples=total_samples,
+        )
+        batch_index += 1
+        artifact_dir = artifact_root / f"batch-{batch_index:03d}"
+        printer.step(f"running Rust ONNX self-play -> {artifact_dir}")
+        self_play_summary = runner(
+            RustOnnxSelfPlayConfig(
+                onnx_model_path=onnx_path,
+                output_dir=artifact_dir,
+                games=game_count,
+                seed_start=seed_cursor,
+                onnx_device=pipeline_config.onnx_device,
+                onnx_max_batch_size=pipeline_config.onnx_max_batch_size,
+                rust_self_play_batch_size=pipeline_config.rust_self_play_batch_size,
+                self_play=pipeline_config.self_play,
+            )
+        )
+        seed_cursor += self_play_summary.games
+        total_games += self_play_summary.games
+        total_samples += self_play_summary.samples
+        printer.progress(
+            "self-play games",
+            total_games,
+            pipeline_config.self_play_games,
+            detail=f"samples={total_samples}, seed_next={seed_cursor}",
+        )
+
+        printer.step("importing Rust self-play artifacts into replay")
+        replay_import = import_rust_self_play_artifacts(
+            artifact_dir=self_play_summary.artifact_dir,
+            replay_path=replay_path,
+            replay_capacity=pipeline_config.replay_capacity,
+            game_log_path=game_log_path,
+        )
+        imported_games += replay_import.imported_games
+        imported_samples += replay_import.imported_samples
+        replay_samples = replay_import.replay_samples
+
+    return (
+        RustSelfPlayRunSummary(
+            artifact_dir=artifact_root,
+            games=total_games,
+            samples=total_samples,
+            onnx_model_path=onnx_path,
+            onnx_device=pipeline_config.onnx_device,
+        ),
+        RustReplayImportSummary(
+            artifact_dir=artifact_root,
+            replay_path=replay_path,
+            imported_samples=imported_samples,
+            replay_samples=replay_samples,
+            imported_games=imported_games,
+        ),
+        seed_cursor,
+    )
+
+
+def _next_self_play_game_count(
+    config: RustOnnxPipelineConfig,
+    *,
+    total_games: int,
+    total_samples: int,
+) -> int:
+    remaining_min_games = max(1, config.self_play_games - total_games)
+    if total_samples < config.min_replay_samples and total_games >= config.self_play_games:
+        remaining_min_games = max(remaining_min_games, config.self_play_games)
+    if config.max_self_play_games is not None:
+        remaining_min_games = min(remaining_min_games, config.max_self_play_games - total_games)
+    return max(1, remaining_min_games)
+
+
 def _validate_config(config: RustOnnxPipelineConfig) -> None:
     if config.iterations <= 0:
         raise ValueError("iterations must be positive")
@@ -408,6 +503,13 @@ def _validate_config(config: RustOnnxPipelineConfig) -> None:
         raise ValueError("replay_capacity must be positive")
     if config.self_play_games < 0:
         raise ValueError("self_play_games must be non-negative")
+    if config.min_replay_samples < 0:
+        raise ValueError("min_replay_samples must be non-negative")
+    if (
+        config.max_self_play_games is not None
+        and config.max_self_play_games < config.self_play_games
+    ):
+        raise ValueError("max_self_play_games must be at least self_play_games")
     if config.onnx_max_batch_size <= 0:
         raise ValueError("onnx_max_batch_size must be positive")
     if config.rust_self_play_batch_size <= 0:

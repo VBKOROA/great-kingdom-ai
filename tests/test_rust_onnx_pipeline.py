@@ -135,6 +135,72 @@ def test_rust_onnx_arena_config_offsets_seed_start_by_iteration() -> None:
     assert config.seed_start == 100040
 
 
+def test_rust_onnx_pipeline_runs_more_games_until_min_replay_samples(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    seen_seed_starts: list[int] = []
+
+    def recording_runner(config: RustOnnxSelfPlayConfig) -> RustSelfPlayRunSummary:
+        seen_seed_starts.append(config.seed_start)
+        return fake_runner(config)
+
+    def fake_save_checkpoint(state: object, path: str | Path) -> Path:
+        del state
+        destination = Path(path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("best", encoding="utf-8")
+        return destination
+
+    def fake_export(checkpoint_path: str | Path, output_path: str | Path, **kwargs: Any) -> object:
+        del checkpoint_path, kwargs
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_text("onnx", encoding="utf-8")
+        return object()
+
+    def fake_train_from_replay(
+        replay: Any,
+        config: TrainingConfig,
+        *,
+        checkpoint_path: str | Path,
+        resume_path: str | Path | None,
+        log_every: int,
+        progress_callback: Any = None,
+    ) -> FakeTrainSummary:
+        del replay, config, resume_path, log_every, progress_callback
+        destination = Path(checkpoint_path)
+        destination.write_text("candidate", encoding="utf-8")
+        return FakeTrainSummary(destination)
+
+    monkeypatch.setattr(pipeline_module, "create_train_state", lambda config: object())
+    monkeypatch.setattr(pipeline_module, "save_checkpoint", fake_save_checkpoint)
+    monkeypatch.setattr(pipeline_module, "export_checkpoint_to_onnx", fake_export)
+    monkeypatch.setattr(pipeline_module, "train_from_replay", fake_train_from_replay)
+
+    summary = run_rust_onnx_pipeline(
+        pipeline_config=RustOnnxPipelineConfig(
+            work_dir=tmp_path,
+            iterations=1,
+            replay_capacity=8,
+            self_play_games=1,
+            min_replay_samples=4,
+            max_self_play_games=2,
+            skip_arena=True,
+            aggregate_replay=False,
+        ),
+        train_config=TrainingConfig(batch_size=1, steps=1, device="cpu"),
+        arena_config=ArenaConfig(games=1, device="cpu"),
+        printer=PipelinePrinter(enabled=False),
+        rust_self_play_runner=recording_runner,
+    )
+
+    assert seen_seed_starts == [0, 1]
+    assert summary.iterations[0].self_play.games == 2
+    assert summary.iterations[0].self_play.samples == 4
+    assert summary.iterations[0].replay_import.imported_samples == 4
+    assert summary.replay_samples == 4
+
+
 def test_rust_onnx_pipeline_uses_distinct_arena_seed_windows(
     tmp_path: Path,
     monkeypatch,
