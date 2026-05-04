@@ -38,7 +38,7 @@ install_rust() {
 
 install_rust_native_deps() {
   local missing=()
-  local packages=(libssl-dev openssl pkg-config)
+  local packages=(libssl-dev openssl patchelf pkg-config)
 
   if ! command -v dpkg-query >/dev/null 2>&1; then
     echo "dpkg-query를 찾을 수 없어 native dependency 확인을 건너뜁니다."
