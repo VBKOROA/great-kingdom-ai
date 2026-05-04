@@ -112,6 +112,19 @@ great-kingdom-train \
   --device cpu
 ```
 
+학습 wiring을 먼저 확인하려면 같은 batch 하나만 반복해서 overfit 시켜봅니다. 정상이라면
+`total`, `policy`, `value`가 짧은 step 안에 뚜렷하게 내려가야 합니다.
+
+```bash
+great-kingdom-single-batch-overfit \
+  --replay data/pipeline/replay.npz \
+  --config configs/runpod/train-runpod.json \
+  --device cuda \
+  --steps 1000 \
+  --batch-size 512 \
+  --log-every 50
+```
+
 후보 모델과 best 모델을 arena에서 비교하려면 다음 명령을 사용합니다.
 
 ```bash

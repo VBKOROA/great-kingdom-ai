@@ -30,6 +30,7 @@ dev = [
 great-kingdom-play = "great_kingdom_ai.cli:main"
 great-kingdom-random-self-play = "great_kingdom_ai.self_play:main"
 great-kingdom-train = "great_kingdom_ai.train:main"
+great-kingdom-single-batch-overfit = "great_kingdom_ai.single_batch_overfit:main"
 great-kingdom-evaluate = "great_kingdom_ai.evaluate:main"
 great-kingdom-pipeline = "great_kingdom_ai.pipeline:main"
 great-kingdom-export-onnx = "great_kingdom_ai.onnx_export:main"
