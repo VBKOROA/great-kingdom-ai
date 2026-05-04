@@ -4,7 +4,7 @@
   "legacy_import_dir": "data/runpod/pipeline",
   "import_legacy_on_first_run": true,
   "onnx_device": "cuda",
-  "onnx_max_batch_size": 1024,
+  "onnx_max_batch_size": 32768,
   "rust_self_play_batch_size": 256,
   "promote": true,
   "replay_capacity": 500000,

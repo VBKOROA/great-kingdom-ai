@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use pyo3::{prelude::*, types::PyBytes};
 use rayon::prelude::*;
 
@@ -7,6 +9,7 @@ use crate::game::{ACTION_SPACE, BOARD_CELLS, FEATURE_CHANNELS, GameState};
 #[derive(Clone, Debug)]
 pub struct EvalRequest {
     states: Vec<GameState>,
+    feature_values: Option<Vec<f32>>,
     feature_bytes: Option<Vec<u8>>,
     legal_mask_bytes: Option<Vec<u8>>,
     game_indexes: Option<Vec<usize>>,
@@ -26,6 +29,21 @@ impl EvalRequest {
 
     #[must_use]
     pub fn feature_planes(&self) -> Vec<Vec<f32>> {
+        if let Some(feature_values) = &self.feature_values {
+            return feature_values
+                .chunks_exact(FEATURE_CHANNELS * BOARD_CELLS)
+                .map(Vec::from)
+                .collect();
+        }
+        if let Some(feature_bytes) = &self.feature_bytes {
+            return feature_bytes
+                .chunks_exact(core::mem::size_of::<f32>())
+                .map(|bytes| f32::from_ne_bytes(bytes.try_into().expect("f32 chunks are 4 bytes")))
+                .collect::<Vec<_>>()
+                .chunks_exact(FEATURE_CHANNELS * BOARD_CELLS)
+                .map(Vec::from)
+                .collect();
+        }
         self.states
             .iter()
             .map(GameState::feature_planes)
@@ -36,6 +54,9 @@ impl EvalRequest {
     pub fn feature_plane_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
         if let Some(feature_bytes) = &self.feature_bytes {
             return PyBytes::new(py, feature_bytes);
+        }
+        if let Some(feature_values) = &self.feature_values {
+            return PyBytes::new(py, f32_slice_as_bytes(feature_values));
         }
         let mut features = Vec::with_capacity(self.states.len() * FEATURE_CHANNELS * BOARD_CELLS);
         for state in &self.states {
@@ -83,16 +104,30 @@ impl EvalRequest {
 impl EvalRequest {
     #[must_use]
     pub fn feature_values(&self) -> Vec<f32> {
-        if let Some(feature_bytes) = &self.feature_bytes {
-            return feature_bytes
-                .chunks_exact(core::mem::size_of::<f32>())
-                .map(|bytes| f32::from_ne_bytes(bytes.try_into().expect("f32 chunks are 4 bytes")))
-                .collect();
+        self.feature_values_ref().into_owned()
+    }
+
+    #[must_use]
+    pub(crate) fn feature_values_ref(&self) -> Cow<'_, [f32]> {
+        if let Some(feature_values) = &self.feature_values {
+            return Cow::Borrowed(feature_values);
         }
-        self.states
-            .iter()
-            .flat_map(GameState::feature_planes)
-            .collect()
+        if let Some(feature_bytes) = &self.feature_bytes {
+            return Cow::Owned(
+                feature_bytes
+                    .chunks_exact(core::mem::size_of::<f32>())
+                    .map(|bytes| {
+                        f32::from_ne_bytes(bytes.try_into().expect("f32 chunks are 4 bytes"))
+                    })
+                    .collect(),
+            );
+        }
+        Cow::Owned(
+            self.states
+                .iter()
+                .flat_map(GameState::feature_planes)
+                .collect(),
+        )
     }
 
     #[must_use]
@@ -135,10 +170,10 @@ impl EvalRequest {
                     *target = u8::from(is_legal);
                 }
             });
-
         Self {
             states,
-            feature_bytes: Some(f32_slice_as_bytes(&features).to_vec()),
+            feature_values: Some(features),
+            feature_bytes: None,
             legal_mask_bytes: Some(masks),
             game_indexes,
         }

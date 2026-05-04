@@ -147,7 +147,7 @@ impl OnnxEvaluator {
             });
         }
 
-        let features = request.feature_values();
+        let features = request.feature_values_ref();
         let expected = request.len() * FEATURE_VALUES_PER_POSITION;
         if features.len() != expected {
             return Err(OnnxError::InvalidRequest(format!(
