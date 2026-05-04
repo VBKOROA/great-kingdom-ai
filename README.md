@@ -208,9 +208,10 @@ great-kingdom-aggregate-replay \
 
 `configs/runpod/pipeline-runpod.json`은 Rust ONNX self-play 경로용 설정입니다. 현재 기본 work dir은
 `data/runpod/onnx-pipeline-t2`이고, 새 temperature target replay를 기존 replay와 섞지 않기 위해
-legacy replay import는 기본적으로 꺼져 있습니다. Runpod 기본값은 최소 `512` games와
-`5000` replay samples를 모두 만족할 때까지 self-play를 추가 실행하고, runaway를 막기 위해
-`1024` games에서 멈춥니다.
+legacy replay import는 기본적으로 꺼져 있습니다. Runpod 기본값은 최소 `384` games와
+`8192` replay samples를 모두 만족할 때까지 self-play를 추가 실행하고, runaway를 막기 위해
+`1024` games에서 멈춥니다. ONNX inference는 최대 `8192` positions 단위로 chunking해 RTX 3090
+24GB에서 큰 leaf wave를 한 번에 밀어 넣지 않도록 합니다.
 
 ## 테스트와 품질 확인
 
