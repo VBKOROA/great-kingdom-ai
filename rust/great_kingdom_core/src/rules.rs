@@ -24,13 +24,13 @@ impl GameState {
         }
 
         let mut actions: Vec<usize> = if self.current_player.used_count(self) < CASTLES_PER_PLAYER {
+            let opponent = self.current_player.other();
+            let territory_owners = self.territory_owners();
             self.board
                 .iter()
                 .enumerate()
                 .filter_map(|(idx, cell)| {
-                    (*cell == Cell::Empty
-                        && !self.is_territory_of(idx, self.current_player.other()))
-                    .then_some(idx)
+                    (*cell == Cell::Empty && territory_owners[idx] != Some(opponent)).then_some(idx)
                 })
                 .collect()
         } else {
