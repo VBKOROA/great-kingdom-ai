@@ -225,6 +225,10 @@ def run_rust_onnx_pipeline(
         if not pipeline_config.skip_arena:
             report_path = paths["arena_dir"] / f"arena-{iteration:06d}.json"
             printer.step(f"arena evaluation -> {report_path}")
+            arena_search_config = _arena_config_for_pipeline(
+                arena_config,
+                iteration=iteration,
+            )
             candidate_model = load_model_from_checkpoint(
                 candidate_checkpoint,
                 device=arena_config.device,
@@ -236,7 +240,7 @@ def run_rust_onnx_pipeline(
             report = run_arena(
                 candidate_model=candidate_model,
                 best_model=best_model,
-                config=arena_config,
+                config=arena_search_config,
                 progress_callback=lambda current, target, game: printer.progress(
                     "arena games",
                     current,
@@ -394,6 +398,18 @@ def _validate_config(config: RustOnnxPipelineConfig) -> None:
         raise ValueError("onnx_max_batch_size must be positive")
     if config.rust_self_play_batch_size <= 0:
         raise ValueError("rust_self_play_batch_size must be positive")
+
+
+def _arena_config_for_pipeline(
+    arena_config: ArenaConfig,
+    *,
+    iteration: int,
+) -> ArenaConfig:
+    if iteration <= 0:
+        raise ValueError("iteration must be positive")
+    data = asdict(arena_config)
+    data["seed_start"] = arena_config.seed_start + (iteration - 1) * arena_config.games
+    return ArenaConfig(**data)
 
 
 def _load_completed_iteration_count(path: Path, config: RustOnnxPipelineConfig) -> int:
