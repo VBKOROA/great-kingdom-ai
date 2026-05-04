@@ -7,9 +7,9 @@ Self-play 추론을 Python/PyTorch 콜백 경로에서 Rust/ONNX Runtime 경로�
 최종 구조는 다음과 같다.
 
 - Python: PyTorch 학습, checkpoint 저장, ONNX export
-- Rust: 규칙 엔진, Gumbel search, ONNX 모델 추론, self-play 데이터 생성
+- Rust: 규칙 엔진, Gumbel search, ONNX 모델 추론
 - 기존 Python pipeline: PyTorch self-play 경로를 안정적인 legacy/fallback 경로로 유지
-- 신규 Rust ONNX pipeline: Rust가 만든 self-play 데이터를 replay buffer로 적재하고 학습 수행
+- 신규 Rust ONNX pipeline: Python wrapper가 Rust ONNX search 경로로 self-play를 실행하고, 생성 데이터를 replay buffer로 적재해 학습 수행
 
 ## 현재 구조
 
@@ -208,9 +208,11 @@ pub trait GumbelEvaluator {
 
 이렇게 해야 기존 Python 테스트와 API를 유지하면서 Rust ONNX 경로가 Python callback 없이 실행된다.
 
-### 4. Rust Self-Play Runner
+### 4. Rust ONNX Self-Play Runner Wrapper
 
-Rust에서 self-play game batch를 독립 실행하는 runner를 추가한다.
+첫 구현에서는 Python wrapper가 `great_kingdom_core` PyO3 API를 호출해 Rust ONNX search 경로로 self-play game batch를 실행한다.
+
+중요한 병목은 turn loop 자체보다 Gumbel search 내부의 root/leaf evaluation이 Python/PyTorch callback으로 반복 왕복하던 점이다. 따라서 첫 구현의 핵심은 turn orchestration 전체를 Rust로 옮기는 것이 아니라, search 내부의 고빈도 neural evaluation을 Rust `OnnxEvaluator`로 처리하는 것이다.
 
 담당 역할:
 
@@ -229,9 +231,10 @@ Rust에서 self-play game batch를 독립 실행하는 runner를 추가한다.
 
 권장 첫 단계:
 
-- Rust는 tensor 데이터와 metadata를 분리해 쓴다.
-- Python이 해당 파일을 읽어서 기존 `ReplayBuffer`에 넣는다.
+- Python wrapper는 Rust core에서 search 결과를 받아 tensor 데이터와 metadata를 분리해 쓴다.
+- Python converter가 해당 파일을 읽어서 기존 `ReplayBuffer`에 넣는다.
 - 병목이 확인된 뒤 필요하면 direct `.npz` 또는 memory-mapped 포맷으로 최적화한다.
+- Python wrapper/sample collection 또는 artifact write가 병목으로 확인되면 후속 단계에서 Rust-native runner와 shard writer를 검토한다.
 
 초기 저장 스펙:
 
@@ -249,7 +252,9 @@ Rust에서 self-play game batch를 독립 실행하는 runner를 추가한다.
   - `model_path`
   - `onnx_device`
   - `gumbel_config`
-  - `created_at`
+  - `seed_start`
+  - `games`
+  - `created_at` optional
 
 ### 5. Pipeline 연동
 
@@ -331,7 +336,7 @@ import 정책:
 - policy target sum, non-negative, value range 검증은 기존 `ReplayBuffer` 검증을 그대로 사용한다.
 - best checkpoint는 ONNX export의 원본이므로 가능한 한 그대로 복사한다.
 - game logs는 seed 충돌 방지를 위해 신규 pipeline의 `seed_start`를 `max(existing seeds)+1`로 잡을 수 있게 한다.
-- metrics는 신규 pipeline iteration count로 직접 이어 붙이지 않고 `legacy-import.json`에 provenance로 보관한다.
+- metrics는 신규 pipeline iteration count로 직접 이어 붙이지 않는다. 첫 구현은 import summary를 `legacy-import.json`에 기록하고, legacy metrics 전체 provenance 보존은 후속 개선으로 둔다.
 - import는 idempotent하게 만든다. 이미 import marker가 있으면 기본적으로 다시 실행하지 않는다.
 
 추가 명령 예시:
@@ -405,7 +410,7 @@ great-kingdom-import-legacy-pipeline \
 - `rust_onnx_replay.py`에 Rust artifact import와 legacy pipeline import 기능을 추가한다.
 - 첫 실행 시 legacy replay/checkpoint/log를 신규 work dir로 가져올 수 있게 한다.
 - self-play 전에 best checkpoint를 export한다.
-- Rust가 생성한 `safetensors` replay tensor와 JSON/JSONL metadata를 기존 replay buffer에 import한다.
+- Python wrapper가 Rust ONNX self-play 결과로 작성한 `safetensors` replay tensor와 JSON/JSONL metadata를 기존 replay buffer에 import한다.
 - pipeline dispatch는 fake Rust runner 테스트로도 검증해 GPU 의존성을 피한다.
 
 검증 기준:
@@ -518,7 +523,7 @@ legacy pipeline의 `metrics.jsonl`을 그대로 신규 pipeline의 iteration his
 
 대응:
 
-- legacy metrics는 신규 `metrics.jsonl`에 합치지 않고 `legacy-import.json`에 provenance로 저장한다.
+- legacy metrics는 신규 `metrics.jsonl`에 합치지 않는다. 첫 구현은 `legacy-import.json`에 import summary를 저장하고, 필요하면 후속 개선에서 legacy metrics provenance를 별도로 보존한다.
 - 신규 pipeline iteration은 1부터 시작한다.
 - seed cursor는 imported game logs의 최대 seed 다음 값에서 시작할 수 있게 별도 계산한다.
 - legacy work dir은 읽기 전용으로 취급하고 신규 work dir에 복사/변환 결과만 쓴다.
