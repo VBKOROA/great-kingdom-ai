@@ -150,7 +150,7 @@ impl GumbelSelfPlayBatch {
         if leaf_batch_size == 0 {
             return Err(PyValueError::new_err("leaf_batch_size must be positive"));
         }
-        let active_request = self.active_eval_request();
+        let active_request = self.active_eval_request_features();
         let root_output = evaluator
             .evaluate_request(&active_request)
             .map_err(|err| PyValueError::new_err(err.to_string()))?;
@@ -281,6 +281,15 @@ impl GumbelSelfPlayBatch {
             .enumerate()
             .filter_map(|(index, state)| (!state.is_terminal()).then_some(index))
             .collect()
+    }
+
+    fn active_eval_request_features(&self) -> EvalRequest {
+        EvalRequest::new_with_precomputed_features(
+            self.active_indexes()
+                .into_iter()
+                .map(|index| self.states[index].clone())
+                .collect(),
+        )
     }
 
     fn search_active(
@@ -492,7 +501,11 @@ impl GumbelSelfPlayBatch {
                 .iter()
                 .map(|leaf| leaf.state.clone())
                 .collect::<Vec<_>>();
-            let request = EvalRequest::new_with_precomputed_bytes(request_states);
+            let request = if evaluator.needs_legal_masks() {
+                EvalRequest::new_with_precomputed_bytes(request_states)
+            } else {
+                EvalRequest::new_with_precomputed_features(request_states)
+            };
             let request_elapsed = request_start.elapsed();
             let eval_start = Instant::now();
             let eval = evaluator.evaluate(request)?;

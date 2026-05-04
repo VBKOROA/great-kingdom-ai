@@ -8,6 +8,10 @@ pub(crate) trait GumbelEvaluator {
         Ok(())
     }
 
+    fn needs_legal_masks(&self) -> bool {
+        true
+    }
+
     fn evaluate(&mut self, request: EvalRequest) -> PyResult<GumbelEvalBatch>;
 }
 
@@ -43,6 +47,10 @@ impl<'a> OnnxGumbelEvaluator<'a> {
 }
 
 impl GumbelEvaluator for OnnxGumbelEvaluator<'_> {
+    fn needs_legal_masks(&self) -> bool {
+        false
+    }
+
     fn evaluate(&mut self, request: EvalRequest) -> PyResult<GumbelEvalBatch> {
         let output = self
             .evaluator

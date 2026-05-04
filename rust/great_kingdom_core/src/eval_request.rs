@@ -132,7 +132,12 @@ impl EvalRequest {
 
     #[must_use]
     pub(crate) fn new_with_precomputed_bytes(states: Vec<GameState>) -> Self {
-        Self::new_with_optional_game_indexes(states, None)
+        Self::new_with_options(states, None, true)
+    }
+
+    #[must_use]
+    pub(crate) fn new_with_precomputed_features(states: Vec<GameState>) -> Self {
+        Self::new_with_options(states, None, false)
     }
 
     #[must_use]
@@ -142,13 +147,14 @@ impl EvalRequest {
             game_indexes.len(),
             "EvalRequest game_indexes length must match states length",
         );
-        Self::new_with_optional_game_indexes(states, Some(game_indexes))
+        Self::new_with_options(states, Some(game_indexes), true)
     }
 
     #[must_use]
-    fn new_with_optional_game_indexes(
+    fn new_with_options(
         states: Vec<GameState>,
         game_indexes: Option<Vec<usize>>,
+        include_legal_masks: bool,
     ) -> Self {
         let mut features = Vec::with_capacity(states.len() * FEATURE_CHANNELS * BOARD_CELLS);
         features.resize(states.len() * FEATURE_CHANNELS * BOARD_CELLS, 0.0);
@@ -159,22 +165,26 @@ impl EvalRequest {
                 chunk.copy_from_slice(&state.feature_planes());
             });
 
-        let mut masks = Vec::with_capacity(states.len() * ACTION_SPACE);
-        masks.resize(states.len() * ACTION_SPACE, 0);
-        masks
-            .par_chunks_mut(ACTION_SPACE)
-            .zip(states.par_iter())
-            .for_each(|(chunk, state)| {
-                let legal_mask = state.legal_mask();
-                for (target, is_legal) in chunk.iter_mut().zip(legal_mask.into_iter()) {
-                    *target = u8::from(is_legal);
-                }
-            });
+        let legal_mask_bytes = include_legal_masks.then(|| {
+            let mut masks = Vec::with_capacity(states.len() * ACTION_SPACE);
+            masks.resize(states.len() * ACTION_SPACE, 0);
+            masks
+                .par_chunks_mut(ACTION_SPACE)
+                .zip(states.par_iter())
+                .for_each(|(chunk, state)| {
+                    let legal_mask = state.legal_mask();
+                    for (target, is_legal) in chunk.iter_mut().zip(legal_mask.into_iter()) {
+                        *target = u8::from(is_legal);
+                    }
+                });
+            masks
+        });
+
         Self {
             states,
             feature_values: Some(features),
             feature_bytes: None,
-            legal_mask_bytes: Some(masks),
+            legal_mask_bytes,
             game_indexes,
         }
     }
@@ -206,5 +216,12 @@ mod tests {
         );
 
         assert_eq!(request.game_indexes(), vec![3, 8]);
+    }
+
+    #[test]
+    fn feature_only_requests_can_compute_legal_masks_lazily() {
+        let request = EvalRequest::new_with_precomputed_features(vec![GameState::new()]);
+
+        assert_eq!(request.legal_masks()[0], GameState::new().legal_mask());
     }
 }
