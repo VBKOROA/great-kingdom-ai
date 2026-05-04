@@ -62,8 +62,13 @@ install_rust_native_deps() {
   fi
 
   echo "Installing Rust native dependencies: ${missing[*]}"
-  sudo apt-get update
-  sudo apt-get install -y "${missing[@]}"
+  if command -v sudo >/dev/null 2>&1; then
+    sudo apt-get update
+    sudo apt-get install -y "${missing[@]}"
+  else
+    apt-get update
+    apt-get install -y "${missing[@]}"
+  fi
 }
 
 # Python 확인 및 설치
