@@ -120,6 +120,10 @@ def test_rust_onnx_pipeline_dispatches_runner_and_imports_replay(
     assert exported[0][1] == tmp_path / "checkpoints" / "onnx" / "best-000001.onnx"
     assert (tmp_path / "checkpoints" / "candidate.pt").read_text(encoding="utf-8") == "candidate"
     assert (tmp_path / "replay" / "game_logs.json").is_file()
+    assert (tmp_path / "replay" / "replay-aggregated.npz").is_file()
+
+    with np.load(tmp_path / "replay" / "replay-aggregated.npz") as data:
+        assert data["features"].shape[0] == 2
 
 
 def test_rust_onnx_arena_config_offsets_seed_start_by_iteration() -> None:

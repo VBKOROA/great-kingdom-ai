@@ -20,6 +20,11 @@ from great_kingdom_ai.evaluate import (
 )
 from great_kingdom_ai.onnx_export import export_checkpoint_to_onnx
 from great_kingdom_ai.pipeline import PipelinePrinter
+from great_kingdom_ai.replay_aggregate import (
+    aggregate_duplicate_replay,
+    load_replay,
+    save_replay,
+)
 from great_kingdom_ai.replay_buffer import ReplayBuffer
 from great_kingdom_ai.rust_onnx_replay import (
     RustReplayImportSummary,
@@ -56,6 +61,7 @@ class RustOnnxPipelineConfig:
     skip_arena: bool = True
     promote: bool = True
     resume: bool = True
+    aggregate_replay: bool = True
     self_play: SelfPlayConfig = SelfPlayConfig()
 
 
@@ -199,9 +205,16 @@ def run_rust_onnx_pipeline(
         printer.metric("imported samples", replay_import.imported_samples)
         printer.progress("iteration", 3, phase_total, detail="replay import complete")
 
-        replay = ReplayBuffer.load(paths["replay_path"])
+        replay = _prepare_training_replay(
+            paths=paths,
+            replay_capacity=pipeline_config.replay_capacity,
+            aggregate_replay=pipeline_config.aggregate_replay,
+            printer=printer,
+        )
         candidate_checkpoint = paths["candidate_dir"] / f"candidate-{iteration:06d}.pt"
         printer.metric("replay samples", len(replay))
+        if pipeline_config.aggregate_replay:
+            printer.metric("training replay", paths["aggregated_replay_path"])
         printer.step(f"training candidate -> {candidate_checkpoint}")
         train_summary = train_from_replay(
             replay,
@@ -367,6 +380,7 @@ def main() -> NoReturn:
 def _paths(config: RustOnnxPipelineConfig) -> dict[str, Path]:
     return {
         "replay_path": config.work_dir / "replay" / "replay.npz",
+        "aggregated_replay_path": config.work_dir / "replay" / "replay-aggregated.npz",
         "game_log_path": config.work_dir / "replay" / "game_logs.json",
         "best_checkpoint": config.work_dir / "checkpoints" / "best.pt",
         "candidate_checkpoint": config.work_dir / "checkpoints" / "candidate.pt",
@@ -398,6 +412,30 @@ def _validate_config(config: RustOnnxPipelineConfig) -> None:
         raise ValueError("onnx_max_batch_size must be positive")
     if config.rust_self_play_batch_size <= 0:
         raise ValueError("rust_self_play_batch_size must be positive")
+
+
+def _prepare_training_replay(
+    *,
+    paths: dict[str, Path],
+    replay_capacity: int,
+    aggregate_replay: bool,
+    printer: PipelinePrinter,
+) -> ReplayBuffer:
+    if not aggregate_replay:
+        return ReplayBuffer.load(paths["replay_path"])
+
+    printer.step("aggregating duplicate replay states for training")
+    features, policies, values, capacity = load_replay(paths["replay_path"])
+    aggregated = aggregate_duplicate_replay(
+        features=features,
+        policies=policies,
+        values=values,
+        capacity=capacity if capacity is not None else replay_capacity,
+    )
+    save_replay(paths["aggregated_replay_path"], aggregated)
+    printer.metric("raw replay samples", features.shape[0])
+    printer.metric("aggregated samples", aggregated.features.shape[0])
+    return ReplayBuffer.load(paths["aggregated_replay_path"])
 
 
 def _arena_config_for_pipeline(

@@ -5,7 +5,7 @@
   "gumbel_c_visit": 50.0,
   "gumbel_c_scale": 1.0,
   "gumbel_seed": 2026,
-  "games": 20,
+  "games": 50,
   "batch_size": 20,
   "leaf_batch_size": 200,
   "max_turns": 200,

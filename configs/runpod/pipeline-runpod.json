@@ -6,6 +6,7 @@
   "onnx_device": "cuda",
   "onnx_max_batch_size": 32768,
   "rust_self_play_batch_size": 256,
+  "aggregate_replay": true,
   "promote": true,
   "replay_capacity": 500000,
   "resume": true,
