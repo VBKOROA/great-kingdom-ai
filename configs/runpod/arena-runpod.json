@@ -9,6 +9,6 @@
   "batch_size": 20,
   "leaf_batch_size": 128,
   "max_turns": 200,
-  "promotion_threshold": 0.55,
+  "promotion_threshold": 0.5,
   "seed_start": 100000
 }
