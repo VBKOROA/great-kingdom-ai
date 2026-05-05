@@ -21,12 +21,25 @@ from great_kingdom_ai.self_play import GameLog, MoveLog, SelfPlayConfig
 from great_kingdom_ai.train import TrainingConfig
 
 
+def make_pipeline_config(**overrides: object) -> PipelineConfig:
+    data: dict[str, object] = {}
+    data.update(overrides)
+    return PipelineConfig(**data)
+
+
 def make_sample(index: int) -> ReplaySample:
     features = np.zeros((FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
     features[index % FEATURE_CHANNELS, 0, 0] = 1.0
     policy = np.zeros(ACTION_SPACE, dtype=np.float32)
     policy[index % ACTION_SPACE] = 1.0
     return ReplaySample(features=features, policy=policy, value=1.0)
+
+
+def test_pipeline_config_defaults_policy_target_scale() -> None:
+    config = PipelineConfig()
+
+    assert config.policy_target_c_visit == pytest.approx(5.0)
+    assert config.policy_target_c_scale == pytest.approx(0.25)
 
 
 def fake_self_play_runner(
@@ -54,7 +67,7 @@ class FakeTrainSummary:
 
 
 def test_generate_self_play_samples_runs_until_game_and_sample_targets() -> None:
-    config = PipelineConfig(self_play_games=2, min_replay_samples=5, max_self_play_games=4)
+    config = make_pipeline_config(self_play_games=2, min_replay_samples=5, max_self_play_games=4)
 
     logs, samples = generate_self_play_samples(
         pipeline_config=config,
@@ -68,7 +81,7 @@ def test_generate_self_play_samples_runs_until_game_and_sample_targets() -> None
 
 
 def test_generate_self_play_samples_can_run_without_game_cap() -> None:
-    config = PipelineConfig(
+    config = make_pipeline_config(
         self_play_games=1,
         min_replay_samples=5,
         max_self_play_games=None,
@@ -95,7 +108,7 @@ def test_generate_self_play_samples_passes_playout_cap_config() -> None:
         return fake_self_play_runner(seed, config)
 
     generate_self_play_samples(
-        pipeline_config=PipelineConfig(
+        pipeline_config=make_pipeline_config(
             self_play_games=1,
             min_replay_samples=1,
             gumbel_simulations=100,
@@ -124,11 +137,13 @@ def test_generate_self_play_samples_passes_gumbel_config() -> None:
         return fake_self_play_runner(seed, config)
 
     generate_self_play_samples(
-        pipeline_config=PipelineConfig(
+        pipeline_config=make_pipeline_config(
             self_play_games=1,
             min_replay_samples=1,
             gumbel_simulations=32,
             gumbel_max_considered_actions=8,
+            policy_target_c_visit=5.0,
+            policy_target_c_scale=0.25,
             policy_target_temperature=2.0,
             gumbel_seed=7,
         ),
@@ -138,13 +153,15 @@ def test_generate_self_play_samples_passes_gumbel_config() -> None:
 
     assert seen_configs[0].gumbel_simulations == 32
     assert seen_configs[0].gumbel_max_considered_actions == 8
+    assert seen_configs[0].policy_target_c_visit == pytest.approx(5.0)
+    assert seen_configs[0].policy_target_c_scale == pytest.approx(0.25)
     assert seen_configs[0].policy_target_temperature == pytest.approx(2.0)
     assert seen_configs[0].gumbel_seed == 7
 
 
 def test_generate_self_play_samples_prints_progress(capsys) -> None:
     generate_self_play_samples(
-        pipeline_config=PipelineConfig(
+        pipeline_config=make_pipeline_config(
             self_play_games=1,
             min_replay_samples=3,
             max_self_play_games=2,
@@ -170,7 +187,7 @@ def test_generate_self_play_samples_uses_batched_model_priors(monkeypatch) -> No
     monkeypatch.setattr(pipeline_module, "play_self_play_games_batched", fake_batched_games)
 
     logs, samples = generate_self_play_samples(
-        pipeline_config=PipelineConfig(
+        pipeline_config=make_pipeline_config(
             self_play_games=2,
             min_replay_samples=1,
             self_play_batch_size=2,
@@ -187,7 +204,7 @@ def test_generate_self_play_samples_uses_batched_model_priors(monkeypatch) -> No
 def test_arena_config_for_pipeline_offsets_seed_start_by_iteration() -> None:
     config = pipeline_module._arena_config_for_pipeline(
         ArenaConfig(games=20, seed_start=100000),
-        PipelineConfig(gumbel_seed=2026),
+        make_pipeline_config(gumbel_seed=2026),
         iteration=3,
     )
 
@@ -199,7 +216,7 @@ def test_arena_config_for_pipeline_rejects_non_positive_iteration() -> None:
     with pytest.raises(ValueError, match="iteration must be positive"):
         pipeline_module._arena_config_for_pipeline(
             ArenaConfig(games=20, seed_start=100000),
-            PipelineConfig(),
+            make_pipeline_config(),
             iteration=0,
         )
 
@@ -282,7 +299,7 @@ def test_run_pipeline_saves_artifacts_and_promotes_candidate(
     monkeypatch.setattr(pipeline_module, "run_arena", fake_run_arena)
 
     summary = run_pipeline(
-        pipeline_config=PipelineConfig(
+        pipeline_config=make_pipeline_config(
             work_dir=tmp_path,
             iterations=2,
             self_play_games=1,
@@ -393,7 +410,7 @@ def test_run_pipeline_resume_continues_iteration_and_arena_seed_windows(
     monkeypatch.setattr(pipeline_module, "run_arena", fake_run_arena)
 
     summary = run_pipeline(
-        pipeline_config=PipelineConfig(
+        pipeline_config=make_pipeline_config(
             work_dir=tmp_path,
             iterations=2,
             self_play_games=1,
@@ -422,9 +439,23 @@ def test_run_pipeline_resume_continues_iteration_and_arena_seed_windows(
 
 def test_load_pipeline_config_parses_work_dir(tmp_path: Path) -> None:
     path = tmp_path / "pipeline.json"
-    path.write_text('{"work_dir": "data/x", "self_play_games": 3}', encoding="utf-8")
+    path.write_text(
+        (
+            '{"work_dir": "data/x", "self_play_games": 3, '
+            '"policy_target_c_visit": 5.0, "policy_target_c_scale": 0.25}'
+        ),
+        encoding="utf-8",
+    )
 
     config = load_pipeline_config(path)
 
     assert config.work_dir == Path("data/x")
     assert config.self_play_games == 3
+
+
+def test_load_pipeline_config_requires_policy_target_scale(tmp_path: Path) -> None:
+    path = tmp_path / "pipeline.json"
+    path.write_text('{"work_dir": "data/x", "self_play_games": 3}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="policy_target_c_visit"):
+        load_pipeline_config(path)

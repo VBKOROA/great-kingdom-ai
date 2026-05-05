@@ -21,6 +21,8 @@
     "gumbel_max_considered_actions": 16,
     "gumbel_c_visit": 50.0,
     "gumbel_c_scale": 1.0,
+    "policy_target_c_visit": 5.0,
+    "policy_target_c_scale": 0.25,
     "policy_target_temperature": 2.0,
     "gumbel_seed": 2026,
     "temperature_turns": 12,

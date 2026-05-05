@@ -297,8 +297,21 @@ def load_rust_onnx_pipeline_config(path: str | Path) -> RustOnnxPipelineConfig:
         data["legacy_import_dir"] = Path(data["legacy_import_dir"])
     self_play_data = data.pop("self_play", None)
     if isinstance(self_play_data, dict):
+        _require_policy_target_scale(self_play_data, "Rust ONNX self_play config")
         data["self_play"] = SelfPlayConfig(**self_play_data)
+    elif self_play_data is None:
+        raise ValueError("Rust ONNX pipeline config must set self_play")
     return RustOnnxPipelineConfig(**data)
+
+
+def _require_policy_target_scale(data: dict[str, Any], label: str) -> None:
+    missing = [
+        key
+        for key in ("policy_target_c_visit", "policy_target_c_scale")
+        if key not in data
+    ]
+    if missing:
+        raise ValueError(f"{label} must set {', '.join(missing)}")
 
 
 def build_parser() -> argparse.ArgumentParser:

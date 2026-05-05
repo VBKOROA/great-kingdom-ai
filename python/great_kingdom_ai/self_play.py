@@ -141,6 +141,8 @@ class SelfPlayConfig:
     gumbel_max_considered_actions: int = 16
     gumbel_c_visit: float = 50.0
     gumbel_c_scale: float = 1.0
+    policy_target_c_visit: float = 5.0
+    policy_target_c_scale: float = 0.25
     policy_target_temperature: float = 1.0
     gumbel_seed: int = 0
     temperature_turns: int = 10
@@ -162,6 +164,10 @@ class SelfPlayConfig:
             raise ValueError("gumbel_c_visit must be positive")
         if self.gumbel_c_scale <= 0.0:
             raise ValueError("gumbel_c_scale must be positive")
+        if not np.isfinite(self.policy_target_c_visit) or self.policy_target_c_visit <= 0.0:
+            raise ValueError("policy_target_c_visit must be finite and positive")
+        if not np.isfinite(self.policy_target_c_scale) or self.policy_target_c_scale <= 0.0:
+            raise ValueError("policy_target_c_scale must be finite and positive")
         if (
             not np.isfinite(self.policy_target_temperature)
             or self.policy_target_temperature <= 0.0
@@ -262,7 +268,8 @@ def play_self_play_game(
     | None = None,
 ) -> tuple[GameLog, list[ReplaySample]]:
     """Run one Gumbel self-play game and return replay samples with final value targets."""
-    config = config if config is not None else SelfPlayConfig()
+    if config is None:
+        raise ValueError("config must be provided")
     game_state = state if state is not None else create_core_game_state()
     search_engine = (
         search if search is not None else create_core_search_engine(config, seed_offset=seed)
@@ -454,6 +461,8 @@ def create_core_search_engine(
             c_scale=config.gumbel_c_scale,
             seed=config.gumbel_seed + seed_offset,
             policy_target_temperature=config.policy_target_temperature,
+            policy_target_c_visit=config.policy_target_c_visit,
+            policy_target_c_scale=config.policy_target_c_scale,
         ),
     )
 
@@ -480,6 +489,8 @@ def create_core_self_play_batch(
             c_scale=config.gumbel_c_scale,
             seed=config.gumbel_seed + seed_offset,
             policy_target_temperature=config.policy_target_temperature,
+            policy_target_c_visit=config.policy_target_c_visit,
+            policy_target_c_scale=config.policy_target_c_scale,
         ),
     )
 

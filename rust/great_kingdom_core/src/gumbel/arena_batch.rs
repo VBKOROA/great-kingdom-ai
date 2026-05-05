@@ -42,7 +42,9 @@ impl GumbelArenaBatch {
         c_visit = 50.0,
         c_scale = 1.0,
         seed = 2026,
-        policy_target_temperature = 1.0
+        policy_target_temperature = 1.0,
+        policy_target_c_visit = None,
+        policy_target_c_scale = None
     ))]
     pub fn py_new(
         game_count: usize,
@@ -54,17 +56,25 @@ impl GumbelArenaBatch {
         c_scale: f32,
         seed: u64,
         policy_target_temperature: f32,
+        policy_target_c_visit: Option<f32>,
+        policy_target_c_scale: Option<f32>,
     ) -> PyResult<Self> {
         if game_count == 0 {
             return Err(PyValueError::new_err("game_count must be positive"));
         }
-        let config = GumbelConfig::new_with_policy_target_temperature(
+        let policy_target_c_visit = policy_target_c_visit
+            .ok_or_else(|| PyValueError::new_err("policy_target_c_visit must be set"))?;
+        let policy_target_c_scale = policy_target_c_scale
+            .ok_or_else(|| PyValueError::new_err("policy_target_c_scale must be set"))?;
+        let config = GumbelConfig::new_with_policy_target_config(
             simulations,
             max_considered_actions,
             c_visit,
             c_scale,
             seed,
             policy_target_temperature,
+            policy_target_c_visit,
+            policy_target_c_scale,
         );
         config.validate()?;
         Ok(Self::new(game_count, seed_start, game_index_start, config))
@@ -509,6 +519,8 @@ impl GumbelArenaBatch {
                 log_priors,
                 search.config.c_visit,
                 search.config.c_scale,
+                search.config.policy_target_c_visit,
+                search.config.policy_target_c_scale,
                 search.config.policy_target_temperature,
             );
             let selected_action = schedulers[game_index]

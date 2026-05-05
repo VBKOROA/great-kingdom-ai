@@ -58,6 +58,8 @@ class PipelineConfig:
     gumbel_max_considered_actions: int = 16
     gumbel_c_visit: float = 50.0
     gumbel_c_scale: float = 1.0
+    policy_target_c_visit: float = 5.0
+    policy_target_c_scale: float = 0.25
     policy_target_temperature: float = 1.0
     gumbel_seed: int = 0
     leaf_batch_size: int = 8
@@ -465,6 +467,8 @@ def generate_self_play_samples(
         gumbel_max_considered_actions=pipeline_config.gumbel_max_considered_actions,
         gumbel_c_visit=pipeline_config.gumbel_c_visit,
         gumbel_c_scale=pipeline_config.gumbel_c_scale,
+        policy_target_c_visit=pipeline_config.policy_target_c_visit,
+        policy_target_c_scale=pipeline_config.policy_target_c_scale,
         policy_target_temperature=pipeline_config.policy_target_temperature,
         gumbel_seed=pipeline_config.gumbel_seed,
         temperature_turns=pipeline_config.temperature_turns,
@@ -645,9 +649,20 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
         data = json.load(file)
     if not isinstance(data, dict):
         raise ValueError("pipeline config must be a JSON object")
+    _require_policy_target_scale(data, "pipeline config")
     if "work_dir" in data:
         data["work_dir"] = Path(data["work_dir"])
     return PipelineConfig(**data)
+
+
+def _require_policy_target_scale(data: dict[str, Any], label: str) -> None:
+    missing = [
+        key
+        for key in ("policy_target_c_visit", "policy_target_c_scale")
+        if key not in data
+    ]
+    if missing:
+        raise ValueError(f"{label} must set {', '.join(missing)}")
 
 
 def _pipeline_paths(config: PipelineConfig) -> PipelineArtifacts:
@@ -696,6 +711,10 @@ def _validate_pipeline_config(config: PipelineConfig) -> None:
         raise ValueError("gumbel_c_visit must be positive")
     if config.gumbel_c_scale <= 0.0:
         raise ValueError("gumbel_c_scale must be positive")
+    if not math.isfinite(config.policy_target_c_visit) or config.policy_target_c_visit <= 0.0:
+        raise ValueError("policy_target_c_visit must be finite and positive")
+    if not math.isfinite(config.policy_target_c_scale) or config.policy_target_c_scale <= 0.0:
+        raise ValueError("policy_target_c_scale must be finite and positive")
     if (
         not math.isfinite(config.policy_target_temperature)
         or config.policy_target_temperature <= 0.0
@@ -858,6 +877,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="temperature applied only to replay policy targets",
     )
     self_play_group.add_argument(
+        "--policy-target-c-visit",
+        type=float,
+        default=None,
+        help="completed-Q visit scale applied only to replay policy targets",
+    )
+    self_play_group.add_argument(
+        "--policy-target-c-scale",
+        type=float,
+        default=None,
+        help="completed-Q value scale applied only to replay policy targets",
+    )
+    self_play_group.add_argument(
         "--self-play-batch-size",
         type=int,
         default=None,
@@ -917,6 +948,8 @@ def _configs_from_args(
         "min_replay_samples": args.min_replay_samples,
         "gumbel_simulations": args.gumbel_simulations,
         "gumbel_max_considered_actions": args.gumbel_max_considered_actions,
+        "policy_target_c_visit": args.policy_target_c_visit,
+        "policy_target_c_scale": args.policy_target_c_scale,
         "policy_target_temperature": args.policy_target_temperature,
         "self_play_batch_size": args.self_play_batch_size,
         "leaf_batch_size": args.leaf_batch_size,

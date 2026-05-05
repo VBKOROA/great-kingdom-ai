@@ -13,7 +13,7 @@ from great_kingdom_ai.replay_buffer import ReplaySample
 from great_kingdom_ai.rust_onnx_pipeline import RustOnnxPipelineConfig, run_rust_onnx_pipeline
 from great_kingdom_ai.rust_onnx_replay import write_rust_self_play_artifacts
 from great_kingdom_ai.rust_onnx_self_play import RustOnnxSelfPlayConfig, RustSelfPlayRunSummary
-from great_kingdom_ai.self_play import GameLog, MoveLog
+from great_kingdom_ai.self_play import GameLog, MoveLog, SelfPlayConfig
 from great_kingdom_ai.train import TrainingConfig
 
 
@@ -23,6 +23,10 @@ def make_sample(index: int) -> ReplaySample:
     policy = np.zeros(ACTION_SPACE, dtype=np.float32)
     policy[index % ACTION_SPACE] = 1.0
     return ReplaySample(features=features, policy=policy, value=1.0)
+
+
+def make_self_play_config() -> SelfPlayConfig:
+    return SelfPlayConfig(policy_target_c_visit=5.0, policy_target_c_scale=0.25)
 
 
 def fake_runner(config: RustOnnxSelfPlayConfig) -> RustSelfPlayRunSummary:
@@ -107,6 +111,7 @@ def test_rust_onnx_pipeline_dispatches_runner_and_imports_replay(
             replay_capacity=8,
             self_play_games=1,
             skip_arena=True,
+            self_play=make_self_play_config(),
         ),
         train_config=TrainingConfig(batch_size=1, steps=3, device="cpu"),
         arena_config=ArenaConfig(games=1, device="cpu"),
@@ -187,6 +192,7 @@ def test_rust_onnx_pipeline_runs_more_games_until_min_replay_samples(
             max_self_play_games=2,
             skip_arena=True,
             aggregate_replay=False,
+            self_play=make_self_play_config(),
         ),
         train_config=TrainingConfig(batch_size=1, steps=1, device="cpu"),
         arena_config=ArenaConfig(games=1, device="cpu"),
@@ -275,6 +281,7 @@ def test_rust_onnx_pipeline_uses_distinct_arena_seed_windows(
             replay_capacity=8,
             self_play_games=1,
             skip_arena=False,
+            self_play=make_self_play_config(),
         ),
         train_config=TrainingConfig(batch_size=1, steps=3, device="cpu"),
         arena_config=ArenaConfig(games=20, seed_start=100000, device="cpu"),

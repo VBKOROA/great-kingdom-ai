@@ -14,6 +14,12 @@ from great_kingdom_ai.self_play import (
 )
 
 
+def make_self_play_config(**overrides: object) -> SelfPlayConfig:
+    data: dict[str, object] = {}
+    data.update(overrides)
+    return SelfPlayConfig(**data)
+
+
 class LegalOnlyState:
     def __init__(self, legal_actions: list[int]) -> None:
         self._legal_actions = legal_actions
@@ -444,7 +450,7 @@ def test_play_self_play_game_records_policy_and_final_value_targets() -> None:
         seed=41,
         state=state,
         search=search,
-        config=SelfPlayConfig(
+        config=make_self_play_config(
             max_turns=5,
             temperature_turns=0,
         ),
@@ -473,7 +479,7 @@ def test_play_self_play_game_uses_gumbel_policy_target_and_selected_action() -> 
         seed=41,
         state=state,
         search=search,
-        config=SelfPlayConfig(
+        config=make_self_play_config(
             max_turns=5,
             temperature_turns=10,
             sampling_temperature=1.0,
@@ -490,16 +496,41 @@ def test_play_self_play_game_uses_gumbel_policy_target_and_selected_action() -> 
 
 
 def test_search_self_play_config_samples_only_opening_turns_by_default() -> None:
-    assert SelfPlayConfig().temperature_turns == 10
+    assert make_self_play_config().temperature_turns == 10
 
 
-def test_self_play_config_defaults_to_unscaled_policy_targets() -> None:
-    assert SelfPlayConfig().policy_target_temperature == pytest.approx(1.0)
+def test_self_play_config_defaults_policy_target_scale() -> None:
+    config = SelfPlayConfig()
+
+    assert config.policy_target_c_visit == pytest.approx(5.0)
+    assert config.policy_target_c_scale == pytest.approx(0.25)
+
+
+def test_self_play_config_accepts_policy_target_scale_override() -> None:
+    config = SelfPlayConfig(policy_target_c_visit=5.0, policy_target_c_scale=0.25)
+
+    assert config.policy_target_c_visit == pytest.approx(5.0)
+    assert config.policy_target_c_scale == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"policy_target_c_visit": 0.0}, "policy_target_c_visit"),
+        ({"policy_target_c_scale": -1.0}, "policy_target_c_scale"),
+    ],
+)
+def test_self_play_config_rejects_invalid_policy_target_scale(
+    kwargs: dict[str, object],
+    match: str,
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        make_self_play_config(**kwargs)
 
 
 def test_self_play_config_rejects_invalid_policy_target_temperature() -> None:
     with pytest.raises(ValueError, match="policy_target_temperature"):
-        SelfPlayConfig(policy_target_temperature=0.0)
+        make_self_play_config(policy_target_temperature=0.0)
 
 
 def test_play_self_play_game_can_skip_fast_playout_cap_turns() -> None:
@@ -512,7 +543,7 @@ def test_play_self_play_game_can_skip_fast_playout_cap_turns() -> None:
         seed=1,
         state=state,
         search=search,
-        config=SelfPlayConfig(
+        config=make_self_play_config(
             max_turns=5,
             temperature_turns=0,
             playout_cap_randomization=True,
@@ -537,7 +568,7 @@ def test_play_self_play_game_keeps_full_playout_cap_turns_as_samples() -> None:
         seed=3,
         state=state,
         search=search,
-        config=SelfPlayConfig(
+        config=make_self_play_config(
             max_turns=5,
             temperature_turns=0,
             playout_cap_randomization=True,
@@ -567,7 +598,7 @@ def test_play_self_play_games_batched_evaluates_root_priors_together() -> None:
         seeds=[11, 12],
         search_factory=lambda: FakeSearchSearch(visits),
         state_factory=lambda: MultiTurnSearchState(terminal_after=1),
-        config=SelfPlayConfig(
+        config=make_self_play_config(
             max_turns=5,
             temperature_turns=0,
         ),
@@ -602,7 +633,7 @@ def test_play_self_play_games_batched_uses_core_batch_when_available(monkeypatch
     results = play_self_play_games_batched(
         seeds=[21, 22],
         search_factory=lambda: FakeSearchSearch([0] * 82),
-        config=SelfPlayConfig(
+        config=make_self_play_config(
             max_turns=5,
             temperature_turns=0,
         ),
@@ -643,7 +674,7 @@ def test_play_self_play_games_batched_passes_leaf_evaluator_to_core_batch(monkey
     play_self_play_games_batched(
         seeds=[31, 32],
         search_factory=lambda: FakeSearchSearch([0] * 82),
-        config=SelfPlayConfig(
+        config=make_self_play_config(
             max_turns=5,
             temperature_turns=0,
             leaf_batch_size=32,
@@ -687,7 +718,7 @@ def test_play_self_play_games_batched_can_use_core_request_fast_path(monkeypatch
     play_self_play_games_batched(
         seeds=[41, 42],
         search_factory=lambda: FakeSearchSearch([0] * 82),
-        config=SelfPlayConfig(
+        config=make_self_play_config(
             max_turns=5,
             temperature_turns=0,
             leaf_batch_size=16,
@@ -721,7 +752,7 @@ def test_play_self_play_games_batched_uses_core_batch(monkeypatch) -> None:
     results = play_self_play_games_batched(
         seeds=[51, 52],
         search_factory=lambda: FakeGumbelSearch(1, [0.0] * 82),
-        config=SelfPlayConfig(
+        config=make_self_play_config(
             max_turns=5,
             temperature_turns=10,
         ),
@@ -748,7 +779,7 @@ def test_play_self_play_game_can_use_model_root_logits() -> None:
         seed=47,
         state=state,
         search=search,
-        config=SelfPlayConfig(),
+        config=make_self_play_config(),
         prior_provider=lambda current_state: priors,
     )
 
@@ -773,7 +804,7 @@ def test_play_self_play_game_passes_leaf_evaluator_when_available() -> None:
         seed=49,
         state=state,
         search=search,
-        config=SelfPlayConfig(),
+        config=make_self_play_config(),
         prior_provider=lambda current_state: [1.0 / 82.0] * 82,
         evaluator_provider=evaluator_provider,
     )

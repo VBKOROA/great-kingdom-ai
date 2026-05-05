@@ -3,6 +3,10 @@ import importlib.util
 import pytest
 
 
+def target_scale_kwargs() -> dict[str, float]:
+    return {"policy_target_c_visit": 5.0, "policy_target_c_scale": 0.25}
+
+
 @pytest.mark.skipif(
     importlib.util.find_spec("great_kingdom_core") is None,
     reason="great_kingdom_core extension is not installed",
@@ -19,12 +23,16 @@ def test_gumbel_search_constructor_exposes_config() -> None:
         c_scale=1.5,
         seed=123,
         policy_target_temperature=2.0,
+        policy_target_c_visit=5.0,
+        policy_target_c_scale=0.25,
     )
 
     assert search.simulations() == 32
     assert search.max_considered_actions() == 8
     assert search.c_visit() == 25.0
     assert search.c_scale() == 1.5
+    assert search.policy_target_c_visit() == 5.0
+    assert search.policy_target_c_scale() == 0.25
     assert search.policy_target_temperature() == 2.0
     assert search.seed() == 123
 
@@ -40,6 +48,8 @@ def test_gumbel_search_constructor_exposes_config() -> None:
         ({"max_considered_actions": 0}, "max_considered_actions"),
         ({"c_visit": 0.0}, "c_visit"),
         ({"c_scale": -1.0}, "c_scale"),
+        ({"policy_target_c_visit": 0.0}, "policy_target_c_visit"),
+        ({"policy_target_c_scale": -1.0}, "policy_target_c_scale"),
         ({"policy_target_temperature": 0.0}, "policy_target_temperature"),
     ],
 )
@@ -50,7 +60,21 @@ def test_gumbel_search_rejects_invalid_config(
     import great_kingdom_core as core  # type: ignore[import-untyped]
 
     with pytest.raises(ValueError, match=match):
-        core.GumbelSearch(**kwargs)
+        core.GumbelSearch(**{**target_scale_kwargs(), **kwargs})
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("great_kingdom_core") is None,
+    reason="great_kingdom_core extension is not installed",
+)
+def test_gumbel_search_requires_policy_target_scale() -> None:
+    import great_kingdom_core as core  # type: ignore[import-untyped]
+
+    with pytest.raises(ValueError, match="policy_target_c_visit"):
+        core.GumbelSearch(policy_target_c_scale=0.25)
+
+    with pytest.raises(ValueError, match="policy_target_c_scale"):
+        core.GumbelSearch(policy_target_c_visit=5.0)
 
 
 @pytest.mark.skipif(
@@ -61,7 +85,12 @@ def test_gumbel_result_shape_from_logits_skeleton() -> None:
     import great_kingdom_core as core  # type: ignore[import-untyped]
 
     state = core.GameState()
-    search = core.GumbelSearch(simulations=4, max_considered_actions=2, seed=7)
+    search = core.GumbelSearch(
+        simulations=4,
+        max_considered_actions=2,
+        seed=7,
+        **target_scale_kwargs(),
+    )
     logits = [0.0] * core.action_space()
     logits[0] = 20.0
 
@@ -81,7 +110,12 @@ def test_gumbel_result_shape_from_logits_skeleton() -> None:
 def test_gumbel_self_play_batch_constructor_and_active_request() -> None:
     import great_kingdom_core as core  # type: ignore[import-untyped]
 
-    batch = core.GumbelSelfPlayBatch(game_count=2, simulations=4, seed=99)
+    batch = core.GumbelSelfPlayBatch(
+        game_count=2,
+        simulations=4,
+        seed=99,
+        **target_scale_kwargs(),
+    )
 
     assert batch.len() == 2
     assert batch.active_count() == 2
@@ -105,6 +139,7 @@ def test_gumbel_arena_batch_constructor_and_basic_state_methods() -> None:
         simulations=4,
         max_considered_actions=2,
         seed=7,
+        **target_scale_kwargs(),
     )
 
     request = batch.active_eval_request()
@@ -130,7 +165,12 @@ def test_gumbel_arena_batch_constructor_and_basic_state_methods() -> None:
 def test_gumbel_arena_batch_active_request_excludes_terminal_games() -> None:
     import great_kingdom_core as core  # type: ignore[import-untyped]
 
-    batch = core.GumbelArenaBatch(game_count=2, simulations=4, max_considered_actions=2)
+    batch = core.GumbelArenaBatch(
+        game_count=2,
+        simulations=4,
+        max_considered_actions=2,
+        **target_scale_kwargs(),
+    )
 
     assert list(batch.apply_actions([81, None])) == [None, None]
     assert list(batch.apply_actions([81, None])) == [2, None]
@@ -154,7 +194,12 @@ def test_gumbel_arena_batch_search_rejects_mismatched_batches() -> None:
         request_len = request.len()  # type: ignore[attr-defined]
         return [[0.0] * core.action_space() for _ in range(request_len)], [0.0] * request_len
 
-    batch = core.GumbelArenaBatch(game_count=2, simulations=4, max_considered_actions=2)
+    batch = core.GumbelArenaBatch(
+        game_count=2,
+        simulations=4,
+        max_considered_actions=2,
+        **target_scale_kwargs(),
+    )
 
     with pytest.raises(ValueError, match="expected 2 policy rows"):
         batch.search_active_with_logits_and_evaluator(
@@ -187,7 +232,12 @@ def test_gumbel_arena_batch_search_returns_none_for_terminal_slots() -> None:
             rows.append(logits)
         return rows, [0.0] * request_len
 
-    batch = core.GumbelArenaBatch(game_count=2, simulations=4, max_considered_actions=2)
+    batch = core.GumbelArenaBatch(
+        game_count=2,
+        simulations=4,
+        max_considered_actions=2,
+        **target_scale_kwargs(),
+    )
     batch.apply_actions([81, None])
     batch.apply_actions([81, None])
 
@@ -230,6 +280,7 @@ def test_gumbel_arena_batch_batches_leaf_eval_with_game_metadata() -> None:
         simulations=4,
         max_considered_actions=2,
         seed=7,
+        **target_scale_kwargs(),
     )
     root_logits = [[0.0] * core.action_space() for _ in range(2)]
 
@@ -270,7 +321,12 @@ def test_gumbel_search_with_evaluator_batches_leaf_logits() -> None:
         return rows, [0.25] * request_len
 
     state = core.GameState()
-    search = core.GumbelSearch(simulations=6, max_considered_actions=4, seed=7)
+    search = core.GumbelSearch(
+        simulations=6,
+        max_considered_actions=4,
+        seed=7,
+        **target_scale_kwargs(),
+    )
     root_logits = [0.0] * core.action_space()
 
     result = search.search_with_logits_and_evaluator(
@@ -309,6 +365,7 @@ def test_gumbel_self_play_batch_batches_active_game_leaf_eval() -> None:
         simulations=4,
         max_considered_actions=2,
         seed=7,
+        **target_scale_kwargs(),
     )
     root_logits = [[0.0] * core.action_space() for _ in range(2)]
 

@@ -80,6 +80,8 @@ def test_core_onnx_self_play_smoke_reaches_terminal_game(tmp_path) -> None:
         simulations=2,
         max_considered_actions=2,
         seed=11,
+        policy_target_c_visit=5.0,
+        policy_target_c_scale=0.25,
     )
     samples: list[tuple[np.ndarray, np.ndarray]] = []
 

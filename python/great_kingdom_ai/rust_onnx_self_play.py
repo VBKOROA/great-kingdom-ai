@@ -112,6 +112,8 @@ def _run_one_batch(
         c_scale=config.self_play.gumbel_c_scale,
         seed=config.self_play.gumbel_seed + seed_start,
         policy_target_temperature=config.self_play.policy_target_temperature,
+        policy_target_c_visit=config.self_play.policy_target_c_visit,
+        policy_target_c_scale=config.self_play.policy_target_c_scale,
     )
     seeds = list(range(seed_start, seed_start + game_count))
     rngs = [random.Random(seed) for seed in seeds]

@@ -34,7 +34,9 @@ impl GumbelSearch {
         c_visit = 50.0,
         c_scale = 1.0,
         seed = 0,
-        policy_target_temperature = 1.0
+        policy_target_temperature = 1.0,
+        policy_target_c_visit = None,
+        policy_target_c_scale = None
     ))]
     pub fn py_new(
         simulations: u32,
@@ -43,14 +45,22 @@ impl GumbelSearch {
         c_scale: f32,
         seed: u64,
         policy_target_temperature: f32,
+        policy_target_c_visit: Option<f32>,
+        policy_target_c_scale: Option<f32>,
     ) -> PyResult<Self> {
-        let config = GumbelConfig::new_with_policy_target_temperature(
+        let policy_target_c_visit = policy_target_c_visit
+            .ok_or_else(|| PyValueError::new_err("policy_target_c_visit must be set"))?;
+        let policy_target_c_scale = policy_target_c_scale
+            .ok_or_else(|| PyValueError::new_err("policy_target_c_scale must be set"))?;
+        let config = GumbelConfig::new_with_policy_target_config(
             simulations,
             max_considered_actions,
             c_visit,
             c_scale,
             seed,
             policy_target_temperature,
+            policy_target_c_visit,
+            policy_target_c_scale,
         );
         config.validate()?;
         Ok(Self::new(config))
@@ -74,6 +84,16 @@ impl GumbelSearch {
     #[must_use]
     pub fn c_scale(&self) -> f32 {
         self.config.c_scale
+    }
+
+    #[must_use]
+    pub fn policy_target_c_visit(&self) -> f32 {
+        self.config.policy_target_c_visit
+    }
+
+    #[must_use]
+    pub fn policy_target_c_scale(&self) -> f32 {
+        self.config.policy_target_c_scale
     }
 
     #[must_use]
@@ -405,6 +425,8 @@ impl GumbelSearch {
             log_priors,
             self.config.c_visit,
             self.config.c_scale,
+            self.config.policy_target_c_visit,
+            self.config.policy_target_c_scale,
             self.config.policy_target_temperature,
         );
 
@@ -531,6 +553,8 @@ impl GumbelSearch {
             log_priors,
             self.config.c_visit,
             self.config.c_scale,
+            self.config.policy_target_c_visit,
+            self.config.policy_target_c_scale,
             self.config.policy_target_temperature,
         );
 

@@ -551,6 +551,8 @@ def create_core_search_engine(
             c_visit=config.gumbel_c_visit,
             c_scale=config.gumbel_c_scale,
             seed=config.gumbel_seed + seed_offset,
+            policy_target_c_visit=5.0,
+            policy_target_c_scale=0.25,
         ),
     )
 
@@ -585,6 +587,8 @@ def create_core_arena_batch(
             c_visit=config.gumbel_c_visit,
             c_scale=config.gumbel_c_scale,
             seed=config.gumbel_seed,
+            policy_target_c_visit=5.0,
+            policy_target_c_scale=0.25,
         ),
     )
 
