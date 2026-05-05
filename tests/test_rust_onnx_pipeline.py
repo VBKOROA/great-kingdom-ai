@@ -69,6 +69,8 @@ def test_rust_onnx_pipeline_dispatches_runner_and_imports_replay(
     monkeypatch,
 ) -> None:
     exported: list[tuple[Path, Path]] = []
+    resume_paths: list[Path | None] = []
+    bootstrap_paths: list[Path | None] = []
 
     def fake_save_checkpoint(state: object, path: str | Path) -> Path:
         del state
@@ -90,11 +92,15 @@ def test_rust_onnx_pipeline_dispatches_runner_and_imports_replay(
         *,
         checkpoint_path: str | Path,
         resume_path: str | Path | None,
-        bootstrap_weights_path: str | Path | None,
+        bootstrap_weights_path: str | Path | None = None,
         log_every: int,
         progress_callback: Any = None,
     ) -> FakeTrainSummary:
-        del replay, config, resume_path, bootstrap_weights_path, log_every
+        del replay, config, log_every
+        resume_paths.append(Path(resume_path) if resume_path is not None else None)
+        bootstrap_paths.append(
+            Path(bootstrap_weights_path) if bootstrap_weights_path is not None else None
+        )
         if progress_callback is not None:
             progress_callback(3, 3, {"total": 0.5})
         destination = Path(checkpoint_path)
@@ -125,6 +131,8 @@ def test_rust_onnx_pipeline_dispatches_runner_and_imports_replay(
     assert summary.replay_samples == 2
     assert exported[0][0] == tmp_path / "checkpoints" / "best.pt"
     assert exported[0][1] == tmp_path / "checkpoints" / "onnx" / "best-000001.onnx"
+    assert resume_paths == [tmp_path / "checkpoints" / "best.pt"]
+    assert bootstrap_paths == [None]
     assert (tmp_path / "checkpoints" / "candidate.pt").read_text(encoding="utf-8") == "candidate"
     assert (tmp_path / "replay" / "game_logs.json").is_file()
     assert (tmp_path / "replay" / "replay-aggregated.npz").is_file()
@@ -173,7 +181,7 @@ def test_rust_onnx_pipeline_runs_more_games_until_min_replay_samples(
         *,
         checkpoint_path: str | Path,
         resume_path: str | Path | None,
-        bootstrap_weights_path: str | Path | None,
+        bootstrap_weights_path: str | Path | None = None,
         log_every: int,
         progress_callback: Any = None,
     ) -> FakeTrainSummary:
@@ -237,7 +245,7 @@ def test_rust_onnx_pipeline_uses_distinct_arena_seed_windows(
         *,
         checkpoint_path: str | Path,
         resume_path: str | Path | None,
-        bootstrap_weights_path: str | Path | None,
+        bootstrap_weights_path: str | Path | None = None,
         log_every: int,
         progress_callback: Any = None,
     ) -> FakeTrainSummary:
