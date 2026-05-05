@@ -39,6 +39,23 @@ def test_summarize_replay_arrays_reports_policy_value_and_legal_stats() -> None:
     assert summary["legal"]["rows_with_illegal_target_mass"] == 0
 
 
+def test_summarize_replay_arrays_reports_aggregate_counts_and_weights() -> None:
+    features, policies, values = make_arrays()
+
+    summary = summarize_replay_arrays(
+        features=features,
+        policies=policies,
+        values=values,
+        counts=np.asarray([3, 1, 2], dtype=np.int64),
+        sample_weights=np.asarray([1.7, 1.0, 1.4], dtype=np.float32),
+        conflict_samples=0,
+    )
+
+    assert summary["aggregate_counts"]["duplicate_groups"] == 2
+    assert summary["aggregate_counts"]["represented_raw_rows"] == 6
+    assert summary["sample_weight"]["effective_weighted_rows"] == pytest.approx(4.1)
+
+
 def test_summarize_replay_arrays_detects_illegal_target_mass() -> None:
     features, policies, values = make_arrays()
     features[:, 4, :, :] = 0.0

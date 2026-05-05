@@ -6,6 +6,7 @@ from typing import Any
 
 import great_kingdom_ai.rust_onnx_pipeline as pipeline_module
 import numpy as np
+import pytest
 from great_kingdom_ai.evaluate import ArenaConfig, ArenaGameResult, ArenaReport, summarize_arena
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.pipeline import PipelinePrinter
@@ -130,6 +131,8 @@ def test_rust_onnx_pipeline_dispatches_runner_and_imports_replay(
 
     with np.load(tmp_path / "replay" / "replay-aggregated.npz") as data:
         assert data["features"].shape[0] == 2
+        assert data["counts"].tolist() == [1, 1]
+        assert data["sample_weights"].tolist() == pytest.approx([1.0, 1.0])
 
 
 def test_rust_onnx_arena_config_offsets_seed_start_by_iteration() -> None:

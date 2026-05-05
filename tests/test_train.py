@@ -41,6 +41,16 @@ def make_sample(index: int, value: float = 1.0) -> ReplaySample:
     return ReplaySample(features=features, policy=policy, value=value)
 
 
+def make_weighted_sample(index: int, value: float, sample_weight: float) -> ReplaySample:
+    sample = make_sample(index, value=value)
+    return ReplaySample(
+        features=sample.features,
+        policy=sample.policy,
+        value=sample.value,
+        sample_weight=sample_weight,
+    )
+
+
 def make_replay(size: int = 6) -> ReplayBuffer:
     buffer = ReplayBuffer(capacity=size)
     for index in range(size):
@@ -62,6 +72,29 @@ def test_compute_losses_returns_policy_value_and_regularization_terms() -> None:
     assert losses.value.item() >= 0.0
     assert losses.regularization.item() > 0.0
     assert losses.total.item() >= losses.policy.item()
+
+
+def test_compute_losses_uses_sample_weights() -> None:
+    config = TrainingConfig(batch_size=2)
+    state = create_train_state(config)
+    samples = [
+        make_weighted_sample(0, value=1.0, sample_weight=1.0),
+        make_weighted_sample(1, value=-1.0, sample_weight=5.0),
+    ]
+    batch = samples_to_batch(samples)
+    unweighted_batch = type(batch)(
+        features=batch.features,
+        policy=batch.policy,
+        value=batch.value,
+        legal_mask=batch.legal_mask,
+        sample_weight=torch.ones_like(batch.sample_weight),
+    )
+
+    weighted = compute_losses(state.model, batch)
+    unweighted = compute_losses(state.model, unweighted_batch)
+
+    assert batch.sample_weight.tolist() == pytest.approx([1.0, 5.0])
+    assert weighted.total.item() != pytest.approx(unweighted.total.item())
 
 
 def test_train_step_updates_model_parameters() -> None:

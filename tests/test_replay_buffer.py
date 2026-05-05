@@ -6,12 +6,21 @@ from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
 
 
-def make_sample(value: float = 1.0, action: int = 0) -> ReplaySample:
+def make_sample(
+    value: float = 1.0,
+    action: int = 0,
+    sample_weight: float = 1.0,
+) -> ReplaySample:
     features = np.zeros((FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
     features[0, 0, action % BOARD_SIZE] = 1.0
     policy = np.zeros(ACTION_SPACE, dtype=np.float32)
     policy[action] = 1.0
-    return ReplaySample(features=features, policy=policy, value=value)
+    return ReplaySample(
+        features=features,
+        policy=policy,
+        value=value,
+        sample_weight=sample_weight,
+    )
 
 
 def make_sample_with_root_logits(action: int = 0) -> ReplaySample:
@@ -73,3 +82,20 @@ def test_replay_buffer_save_and_load_root_policy_logits(tmp_path) -> None:  # ty
 
     assert batch[0].root_policy_logits is not None
     assert batch[0].root_policy_logits[5] == pytest.approx(3.0)
+
+
+def test_replay_buffer_save_and_load_sample_weights(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    path = tmp_path / "replay.npz"
+    buffer = ReplayBuffer(capacity=4)
+    buffer.push(make_sample(value=1.0, action=5, sample_weight=3.5))
+
+    buffer.save(path)
+    loaded = ReplayBuffer.load(path)
+    batch = loaded.sample(1, random.Random(1))
+
+    assert batch[0].sample_weight == pytest.approx(3.5)
+
+
+def test_replay_buffer_rejects_invalid_sample_weight() -> None:
+    with pytest.raises(ValueError, match="sample_weight"):
+        ReplayBuffer(capacity=1).push(make_sample(sample_weight=0.0))

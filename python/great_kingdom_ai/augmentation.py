@@ -65,6 +65,7 @@ def augment_sample(sample: ReplaySample, symmetry: Symmetry) -> ReplaySample:
         policy=transformed_policy,
         value=sample.value,
         root_policy_logits=transformed_root_logits,
+        sample_weight=sample.sample_weight,
     )
 
 

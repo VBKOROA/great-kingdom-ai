@@ -64,6 +64,8 @@ class RustOnnxPipelineConfig:
     promote: bool = True
     resume: bool = True
     aggregate_replay: bool = True
+    aggregate_replay_weight_mode: str = "sqrt_count"
+    aggregate_replay_weight_cap: float | None = 16.0
     self_play: SelfPlayConfig = SelfPlayConfig()
 
 
@@ -194,6 +196,8 @@ def run_rust_onnx_pipeline(
             paths=paths,
             replay_capacity=pipeline_config.replay_capacity,
             aggregate_replay=pipeline_config.aggregate_replay,
+            aggregate_replay_weight_mode=pipeline_config.aggregate_replay_weight_mode,
+            aggregate_replay_weight_cap=pipeline_config.aggregate_replay_weight_cap,
             printer=printer,
         )
         candidate_checkpoint = paths["candidate_dir"] / f"candidate-{iteration:06d}.pt"
@@ -524,6 +528,19 @@ def _validate_config(config: RustOnnxPipelineConfig) -> None:
         and config.max_self_play_games < config.self_play_games
     ):
         raise ValueError("max_self_play_games must be at least self_play_games")
+    if config.aggregate_replay_weight_mode not in {
+        "none",
+        "count",
+        "sqrt_count",
+        "log_count",
+        "capped_count",
+    }:
+        raise ValueError("aggregate_replay_weight_mode is invalid")
+    if (
+        config.aggregate_replay_weight_cap is not None
+        and config.aggregate_replay_weight_cap <= 0.0
+    ):
+        raise ValueError("aggregate_replay_weight_cap must be positive")
     if config.onnx_max_batch_size <= 0:
         raise ValueError("onnx_max_batch_size must be positive")
     if config.rust_self_play_batch_size <= 0:
@@ -535,22 +552,30 @@ def _prepare_training_replay(
     paths: dict[str, Path],
     replay_capacity: int,
     aggregate_replay: bool,
+    aggregate_replay_weight_mode: str,
+    aggregate_replay_weight_cap: float | None,
     printer: PipelinePrinter,
 ) -> ReplayBuffer:
     if not aggregate_replay:
         return ReplayBuffer.load(paths["replay_path"])
 
     printer.step("aggregating duplicate replay states for training")
-    features, policies, values, capacity = load_replay(paths["replay_path"])
+    features, policies, values, root_policy_logits, capacity = load_replay(paths["replay_path"])
     aggregated = aggregate_duplicate_replay(
         features=features,
         policies=policies,
         values=values,
+        root_policy_logits=root_policy_logits,
         capacity=capacity if capacity is not None else replay_capacity,
+        sample_weight_mode=aggregate_replay_weight_mode,
+        sample_weight_cap=aggregate_replay_weight_cap,
     )
     save_replay(paths["aggregated_replay_path"], aggregated)
     printer.metric("raw replay samples", features.shape[0])
     printer.metric("aggregated samples", aggregated.features.shape[0])
+    printer.metric("aggregate weight mode", aggregate_replay_weight_mode)
+    printer.metric("aggregate max count", int(aggregated.counts.max(initial=0)))
+    printer.metric("aggregate max weight", f"{aggregated.sample_weights.max(initial=1.0):.3f}")
     return ReplayBuffer.load(paths["aggregated_replay_path"])
 
 

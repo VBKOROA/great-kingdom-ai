@@ -39,6 +39,8 @@ def summarize_replay_arrays(
     policies: FloatArray,
     values: FloatArray,
     root_policy_logits: FloatArray | None = None,
+    counts: npt.NDArray[np.integer[Any]] | None = None,
+    sample_weights: FloatArray | None = None,
     capacity: int | None = None,
     conflict_samples: int = 20_000,
     seed: int = 0,
@@ -48,6 +50,12 @@ def summarize_replay_arrays(
     _validate_shapes(features, policies, values)
     if root_policy_logits is not None:
         _validate_root_policy_logits(root_policy_logits, policies.shape)
+    if counts is not None and counts.shape != values.shape:
+        raise ValueError(f"expected counts shape {(features.shape[0],)}, got {counts.shape}")
+    if sample_weights is not None and sample_weights.shape != values.shape:
+        raise ValueError(
+            f"expected sample_weights shape {(features.shape[0],)}, got {sample_weights.shape}"
+        )
     if conflict_samples < 0:
         raise ValueError("conflict_samples must be non-negative")
     if top_k <= 0:
@@ -103,12 +111,31 @@ def summarize_replay_arrays(
             legal_mask=legal_mask,
             top_k=top_k,
         )
+    if counts is not None:
+        summary["aggregate_counts"] = {
+            **_describe(counts.astype(np.float32)),
+            "duplicate_groups": int(np.count_nonzero(counts > 1)),
+            "represented_raw_rows": int(np.sum(counts)),
+        }
+    if sample_weights is not None:
+        summary["sample_weight"] = {
+            **_describe(sample_weights),
+            "effective_weighted_rows": float(np.sum(sample_weights)),
+        }
     return summary
 
 
 def load_replay_arrays(
     path: str | Path,
-) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray | None, int | None]:
+) -> tuple[
+    FloatArray,
+    FloatArray,
+    FloatArray,
+    FloatArray | None,
+    npt.NDArray[np.integer[Any]] | None,
+    FloatArray | None,
+    int | None,
+]:
     with np.load(Path(path)) as data:
         features = np.asarray(data["features"], dtype=np.float32)
         policies = np.asarray(data["policies"], dtype=np.float32)
@@ -118,8 +145,14 @@ def load_replay_arrays(
             if "root_policy_logits" in data
             else None
         )
+        counts = np.asarray(data["counts"], dtype=np.int64) if "counts" in data else None
+        sample_weights = (
+            np.asarray(data["sample_weights"], dtype=np.float32)
+            if "sample_weights" in data
+            else None
+        )
         capacity = int(data["capacity"]) if "capacity" in data else None
-    return features, policies, values, root_policy_logits, capacity
+    return features, policies, values, root_policy_logits, counts, sample_weights, capacity
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -317,12 +350,22 @@ def _action_label(action: int) -> str:
 
 def main() -> NoReturn:
     args = build_parser().parse_args()
-    features, policies, values, root_policy_logits, capacity = load_replay_arrays(args.replay)
+    (
+        features,
+        policies,
+        values,
+        root_policy_logits,
+        counts,
+        sample_weights,
+        capacity,
+    ) = load_replay_arrays(args.replay)
     summary = summarize_replay_arrays(
         features=features,
         policies=policies,
         values=values,
         root_policy_logits=root_policy_logits,
+        counts=counts,
+        sample_weights=sample_weights,
         capacity=capacity,
         conflict_samples=args.conflict_samples,
         seed=args.seed,

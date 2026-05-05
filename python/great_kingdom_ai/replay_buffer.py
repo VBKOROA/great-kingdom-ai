@@ -7,6 +7,7 @@ from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 
@@ -21,6 +22,7 @@ class ReplaySample:
     policy: np.ndarray
     value: float
     root_policy_logits: np.ndarray | None = None
+    sample_weight: float = 1.0
 
 
 class ReplayBuffer:
@@ -62,20 +64,27 @@ class ReplayBuffer:
             features = np.stack([sample.features for sample in samples], axis=0).astype(np.float32)
             policies = np.stack([sample.policy for sample in samples], axis=0).astype(np.float32)
             values = np.asarray([sample.value for sample in samples], dtype=np.float32)
+            sample_weights = np.asarray(
+                [sample.sample_weight for sample in samples],
+                dtype=np.float32,
+            )
         else:
             features = np.empty((0, *FEATURE_SHAPE), dtype=np.float32)
             policies = np.empty((0, ACTION_SPACE), dtype=np.float32)
             values = np.empty((0,), dtype=np.float32)
+            sample_weights = np.empty((0,), dtype=np.float32)
         payload: dict[str, np.ndarray] = {
             "capacity": np.asarray(self.capacity, dtype=np.int64),
             "features": features,
             "policies": policies,
             "values": values,
         }
+        if sample_weights.size and not np.allclose(sample_weights, 1.0):
+            payload["sample_weights"] = sample_weights
         root_policy_logits = _root_policy_logits_array(samples)
         if root_policy_logits is not None:
             payload["root_policy_logits"] = root_policy_logits
-        np.savez_compressed(destination, **payload)
+        np.savez_compressed(destination, **cast(dict[str, Any], payload))
 
     @classmethod
     def load(cls, path: str | Path) -> ReplayBuffer:
@@ -89,9 +98,16 @@ class ReplayBuffer:
                 if "root_policy_logits" in data
                 else None
             )
+            sample_weights = (
+                np.asarray(data["sample_weights"], dtype=np.float32)
+                if "sample_weights" in data
+                else np.ones(values.shape, dtype=np.float32)
+            )
 
         if features.shape[0] != policies.shape[0] or features.shape[0] != values.shape[0]:
             raise ValueError("replay buffer arrays have inconsistent lengths")
+        if sample_weights.shape != values.shape:
+            raise ValueError("replay buffer sample_weights shape must match values shape")
         if root_policy_logits is not None and root_policy_logits.shape != policies.shape:
             raise ValueError(
                 "replay buffer root_policy_logits shape must match policies shape"
@@ -111,6 +127,7 @@ class ReplayBuffer:
                     policy=policies[index],
                     value=float(values[index]),
                     root_policy_logits=root_logits,
+                    sample_weight=float(sample_weights[index]),
                 )
             )
         return buffer
@@ -120,6 +137,7 @@ def _validated_sample(sample: ReplaySample) -> ReplaySample:
     features = np.asarray(sample.features, dtype=np.float32)
     policy = np.asarray(sample.policy, dtype=np.float32)
     value = float(sample.value)
+    sample_weight = float(sample.sample_weight)
 
     if features.shape != FEATURE_SHAPE:
         raise ValueError(f"expected feature shape {FEATURE_SHAPE}, got {features.shape}")
@@ -144,6 +162,8 @@ def _validated_sample(sample: ReplaySample) -> ReplaySample:
         raise ValueError("policy target must be non-negative")
     if value < -1.0 or value > 1.0:
         raise ValueError("value target must be in [-1, 1]")
+    if not np.isfinite(sample_weight) or sample_weight <= 0.0:
+        raise ValueError("sample_weight must be finite and positive")
 
     return ReplaySample(
         features=features.copy(),
@@ -152,6 +172,7 @@ def _validated_sample(sample: ReplaySample) -> ReplaySample:
         root_policy_logits=(
             None if root_policy_logits is None else root_policy_logits.copy()
         ),
+        sample_weight=sample_weight,
     )
 
 

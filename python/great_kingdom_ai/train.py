@@ -8,7 +8,7 @@ import random
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import numpy as np
 
@@ -18,7 +18,7 @@ from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
 
 if TYPE_CHECKING:
     import torch
-    from torch import nn
+    from torch import Tensor, nn
     from torch.optim import Optimizer
     from torch.optim.lr_scheduler import LRScheduler
 
@@ -49,6 +49,7 @@ class TrainingBatch:
     policy: torch.Tensor
     value: torch.Tensor
     legal_mask: torch.Tensor
+    sample_weight: torch.Tensor
 
 
 @dataclass(frozen=True)
@@ -101,6 +102,7 @@ def samples_to_batch(
     features = np.stack([sample.features for sample in samples], axis=0).astype(np.float32)
     policies = np.stack([sample.policy for sample in samples], axis=0).astype(np.float32)
     values = np.asarray([sample.value for sample in samples], dtype=np.float32)
+    sample_weights = np.asarray([sample.sample_weight for sample in samples], dtype=np.float32)
     legal_masks = _legal_masks_from_features(features)
 
     return TrainingBatch(
@@ -108,6 +110,7 @@ def samples_to_batch(
         policy=torch.from_numpy(policies).to(device=device),
         value=torch.from_numpy(values).to(device=device),
         legal_mask=torch.from_numpy(legal_masks).to(device=device),
+        sample_weight=torch.from_numpy(sample_weights).to(device=device),
     )
 
 
@@ -132,11 +135,15 @@ def compute_losses(
             torch.finfo(policy_logits.dtype).min,
         )
         _validate_policy_targets_match_legal_mask(batch)
+    _validate_sample_weight(batch)
     log_policy = torch.log_softmax(policy_logits, dim=1)
-    policy_loss = -(batch.policy * log_policy).sum(dim=1).mean()
-    policy_entropy = _policy_target_entropy(batch.policy)
+    policy_loss = _weighted_mean(-(batch.policy * log_policy).sum(dim=1), batch.sample_weight)
+    policy_entropy = _policy_target_entropy(batch.policy, batch.sample_weight)
     policy_kl = policy_loss - policy_entropy
-    value_loss = torch.nn.functional.mse_loss(value, batch.value)
+    value_loss = _weighted_mean(
+        torch.nn.functional.mse_loss(value, batch.value, reduction="none"),
+        batch.sample_weight,
+    )
     regularization = _l2_regularization(model) * l2_loss_weight
     total = policy_loss_weight * policy_loss + value_loss_weight * value_loss + regularization
     return LossBreakdown(
@@ -184,7 +191,7 @@ def train_step(state: TrainState, batch: TrainingBatch, config: TrainingConfig) 
         l2_loss_weight=config.l2_loss_weight,
         mask_policy_loss=config.mask_policy_loss,
     )
-    losses.total.backward()
+    losses.total.backward()  # type: ignore[no-untyped-call]
     state.optimizer.step()
     state.scheduler.step()
     return losses
@@ -355,8 +362,8 @@ def _l2_regularization(model: nn.Module) -> torch.Tensor:
         if parameter.requires_grad
     ]
     if not parameters:
-        return torch.tensor(0.0)
-    return torch.stack(parameters).sum()
+        return cast("Tensor", torch.tensor(0.0))
+    return cast("Tensor", torch.stack(parameters).sum())
 
 
 def _legal_masks_from_features(features: np.ndarray) -> np.ndarray:
@@ -373,10 +380,26 @@ def _validate_policy_targets_match_legal_mask(batch: TrainingBatch) -> None:
         raise ValueError("policy target assigns probability to illegal actions")
 
 
-def _policy_target_entropy(policy: torch.Tensor) -> torch.Tensor:
+def _validate_sample_weight(batch: TrainingBatch) -> None:
+    torch = _import_torch()
+    if batch.sample_weight.shape != batch.value.shape:
+        raise ValueError("sample_weight shape must match value target shape")
+    if not bool(torch.isfinite(batch.sample_weight).all()):
+        raise ValueError("sample_weight must be finite")
+    if float(batch.sample_weight.min().detach().cpu()) <= 0.0:
+        raise ValueError("sample_weight must be positive")
+
+
+def _policy_target_entropy(policy: torch.Tensor, sample_weight: torch.Tensor) -> torch.Tensor:
     torch = _import_torch()
     positive = policy > 0.0
-    return -(policy[positive] * torch.log(policy[positive])).sum() / policy.shape[0]
+    per_row = -(torch.where(positive, policy * torch.log(policy.clamp_min(1e-45)), 0.0)).sum(dim=1)
+    return _weighted_mean(per_row, sample_weight)
+
+
+def _weighted_mean(values: torch.Tensor, sample_weight: torch.Tensor) -> torch.Tensor:
+    weights = sample_weight.to(dtype=values.dtype)
+    return (values * weights).sum() / weights.sum()
 
 
 def _import_torch() -> Any:

@@ -24,6 +24,14 @@ def make_arrays() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return features, policies, values
 
 
+def make_root_logits() -> np.ndarray:
+    root_logits = np.full((3, ACTION_SPACE), -2.0, dtype=np.float32)
+    root_logits[0, 0] = 2.0
+    root_logits[1, 1] = 2.0
+    root_logits[2, 2] = 2.0
+    return root_logits
+
+
 def test_aggregate_duplicate_replay_averages_targets() -> None:
     features, policies, values = make_arrays()
 
@@ -37,6 +45,8 @@ def test_aggregate_duplicate_replay_averages_targets() -> None:
     assert replay.capacity == 10
     assert replay.features.shape[0] == 2
     assert replay.counts.tolist() == [2, 1]
+    assert replay.sample_weights[0] == pytest.approx(np.sqrt(2.0))
+    assert replay.sample_weights[1] == pytest.approx(1.0)
     assert replay.policies[0, 0] == pytest.approx(0.5)
     assert replay.policies[0, 1] == pytest.approx(0.5)
     assert replay.policies[0].sum() == pytest.approx(1.0)
@@ -46,16 +56,43 @@ def test_aggregate_duplicate_replay_averages_targets() -> None:
 
 def test_aggregate_duplicate_replay_save_and_load_round_trip(tmp_path) -> None:
     features, policies, values = make_arrays()
-    replay = aggregate_duplicate_replay(features=features, policies=policies, values=values)
+    replay = aggregate_duplicate_replay(
+        features=features,
+        policies=policies,
+        values=values,
+        root_policy_logits=make_root_logits(),
+    )
     output_path = tmp_path / "aggregated.npz"
 
     save_replay(output_path, replay)
-    loaded_features, loaded_policies, loaded_values, capacity = load_replay(output_path)
+    loaded_features, loaded_policies, loaded_values, loaded_root_logits, capacity = load_replay(
+        output_path
+    )
 
     assert capacity == 2
     assert np.array_equal(loaded_features, replay.features)
     assert np.allclose(loaded_policies, replay.policies)
     assert np.allclose(loaded_values, replay.values)
+    assert loaded_root_logits is not None
+    assert np.isfinite(loaded_root_logits).all()
+
+    with np.load(output_path) as data:
+        assert data["counts"].tolist() == [2, 1]
+        assert data["sample_weights"][0] == pytest.approx(np.sqrt(2.0))
+
+
+def test_aggregate_duplicate_replay_supports_count_weight_modes() -> None:
+    features, policies, values = make_arrays()
+
+    replay = aggregate_duplicate_replay(
+        features=features,
+        policies=policies,
+        values=values,
+        sample_weight_mode="log_count",
+    )
+
+    assert replay.sample_weights[0] == pytest.approx(np.log1p(2.0))
+    assert replay.sample_weights[1] == pytest.approx(np.log1p(1.0))
 
 
 def test_aggregate_duplicate_replay_rejects_shape_mismatch() -> None:

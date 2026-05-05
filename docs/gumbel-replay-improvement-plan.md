@@ -210,12 +210,41 @@ arena가 여전히 정체되거나 opening duplicate가 계속 gradient를 지�
 
 권장 순서:
 
-1. 현재 `replay_aggregate.py`의 offline aggregate를 count 저장까지 확장한다.
-2. train loss에 optional sample weight를 추가한다.
-3. pipeline replay store를 online aggregate 형태로 바꾼다.
+1. [x] 현재 `replay_aggregate.py`의 offline aggregate를 count 저장까지 확장한다.
+2. [x] train loss에 optional sample weight를 추가한다.
+3. [x] Rust ONNX pipeline의 training replay artifact를 count-aware aggregate로 만든다.
+4. [ ] offline artifact로 arena까지 검증한 뒤 pipeline replay store를 online aggregate 형태로 바꾼다.
 
 처음부터 online store까지 한 번에 바꾸지 말고, offline artifact로 arena까지 검증한 뒤 pipeline에
 넣는다.
+
+현재 구현은 raw replay를 그대로 보존하고, 학습 직전에 `replay-aggregated.npz`를 만든다. 이 파일은
+다음을 추가 저장한다.
+
+```text
+counts
+sample_weights
+root_policy_logits
+```
+
+기본 weight는 `sqrt_count`이고 cap은 `16.0`이다. 즉 시작 state가 수백 번 등장해도 gradient weight가
+수백 배가 되지 않고, 한 번 등장한 state와 완전히 같은 weight가 되지도 않는다.
+
+빠른 검증용 설정:
+
+```text
+configs/runpod/rust-onnx-aggregate-diagnostics.json
+configs/runpod/train-aggregate-diagnostics.json
+configs/runpod/arena-aggregate-diagnostics.json
+```
+
+검증 기준:
+
+- raw replay diagnostics에서는 duplicate/value conflict가 기존처럼 보일 수 있다.
+- aggregated replay diagnostics에서는 `aggregate_counts.represented_raw_rows`가 raw row 수를 나타내고,
+  `conflicts.duplicate_groups`가 0에 가까워야 한다.
+- `sample_weight.max`는 `sqrt_count`/cap 때문에 raw duplicate count보다 훨씬 작아야 한다.
+- 20-game arena는 빠른 smoke signal이고 최종 strength 판정은 기존 full Runpod config로 본다.
 
 ### 4. Completed-Q value ablation
 
@@ -271,8 +300,9 @@ exploration을 더 강하게 주면 policy/value target variance가 커질 수 �
 2. [x] target-vs-prior diagnostics 추가
 3. 현재 5 / 0.25 / T=2 설정으로 arena 판정
 4. 약하면 10 / 0.5 / T=2 sharpen ablation
-5. count-aware aggregate replay store 검증
-6. 마지막으로 Completed-Q value blending ablation
+5. [x] count-aware aggregate replay store 구현
+6. count-aware aggregate replay store Runpod 검증
+7. 마지막으로 Completed-Q value blending ablation
 ```
 
 가장 중요한 점은 value loss를 낮추는 변경을 성급히 기본 경로에 넣지 않는 것이다. 지금은 terminal
