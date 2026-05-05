@@ -1,8 +1,8 @@
 {
   "iterations": 50,
-  "work_dir": "data/runpod/onnx-pipeline-aggregate",
-  "legacy_import_dir": "data/runpod/onnx-pipeline",
-  "import_legacy_on_first_run": true,
+  "work_dir": "data/runpod/onnx-pipeline-aggregate-fresh",
+  "legacy_import_dir": null,
+  "import_legacy_on_first_run": false,
   "onnx_device": "cuda",
   "onnx_max_batch_size": 8192,
   "rust_self_play_batch_size": 256,
