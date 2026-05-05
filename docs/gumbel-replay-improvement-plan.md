@@ -257,7 +257,7 @@ exploration을 더 강하게 주면 policy/value target variance가 커질 수 �
 ## 최종 권장 순서
 
 ```text
-1. weight-only bootstrap 구현
+1. [x] weight-only bootstrap 구현
 2. target-vs-prior diagnostics 추가
 3. 현재 5 / 0.25 / T=2 설정으로 arena 판정
 4. 약하면 10 / 0.5 / T=2 sharpen ablation

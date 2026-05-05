@@ -89,10 +89,11 @@ def test_rust_onnx_pipeline_dispatches_runner_and_imports_replay(
         *,
         checkpoint_path: str | Path,
         resume_path: str | Path | None,
+        bootstrap_weights_path: str | Path | None,
         log_every: int,
         progress_callback: Any = None,
     ) -> FakeTrainSummary:
-        del replay, config, resume_path, log_every
+        del replay, config, resume_path, bootstrap_weights_path, log_every
         if progress_callback is not None:
             progress_callback(3, 3, {"total": 0.5})
         destination = Path(checkpoint_path)
@@ -169,10 +170,11 @@ def test_rust_onnx_pipeline_runs_more_games_until_min_replay_samples(
         *,
         checkpoint_path: str | Path,
         resume_path: str | Path | None,
+        bootstrap_weights_path: str | Path | None,
         log_every: int,
         progress_callback: Any = None,
     ) -> FakeTrainSummary:
-        del replay, config, resume_path, log_every, progress_callback
+        del replay, config, resume_path, bootstrap_weights_path, log_every, progress_callback
         destination = Path(checkpoint_path)
         destination.write_text("candidate", encoding="utf-8")
         return FakeTrainSummary(destination)
@@ -232,10 +234,11 @@ def test_rust_onnx_pipeline_uses_distinct_arena_seed_windows(
         *,
         checkpoint_path: str | Path,
         resume_path: str | Path | None,
+        bootstrap_weights_path: str | Path | None,
         log_every: int,
         progress_callback: Any = None,
     ) -> FakeTrainSummary:
-        del replay, config, resume_path, log_every, progress_callback
+        del replay, config, resume_path, bootstrap_weights_path, log_every, progress_callback
         destination = Path(checkpoint_path)
         destination.write_text("candidate", encoding="utf-8")
         return FakeTrainSummary(destination)

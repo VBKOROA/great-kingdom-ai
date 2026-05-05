@@ -241,23 +241,59 @@ def load_checkpoint(
     )
 
 
+def load_checkpoint_weights(
+    path: str | Path,
+    config: TrainingConfig,
+) -> TrainState:
+    """Load only model weights from a checkpoint and create fresh training state."""
+    torch = _import_torch()
+    from great_kingdom_ai.model import ModelConfig, PolicyValueNetwork
+
+    checkpoint = torch.load(Path(path), map_location=config.device, weights_only=False)
+    model_config = ModelConfig(**checkpoint["model_config"])
+    model = PolicyValueNetwork(model_config).to(device=config.device)
+    model.load_state_dict(checkpoint["model_state"])
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config.learning_rate,
+        weight_decay=config.weight_decay,
+    )
+    scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer,
+        step_size=config.lr_decay_steps,
+        gamma=config.lr_decay_gamma,
+    )
+    return TrainState(
+        model=model,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        step=0,
+        model_preset=str(checkpoint.get("model_preset", "custom")),
+    )
+
+
 def train_from_replay(
     replay: ReplayBuffer,
     config: TrainingConfig,
     *,
     checkpoint_path: str | Path | None = None,
     resume_path: str | Path | None = None,
+    bootstrap_weights_path: str | Path | None = None,
     log_every: int = 0,
     progress_callback: Callable[[int, int, dict[str, float]], None] | None = None,
 ) -> TrainSummary:
     if len(replay) < config.batch_size:
         raise ValueError("replay buffer must contain at least batch_size samples")
+    if resume_path is not None and bootstrap_weights_path is not None:
+        raise ValueError("resume_path and bootstrap_weights_path are mutually exclusive")
 
     torch = _import_torch()
     torch.manual_seed(config.seed)
     rng = random.Random(config.seed)
 
-    if resume_path is None:
+    if bootstrap_weights_path is not None:
+        state = load_checkpoint_weights(bootstrap_weights_path, config)
+    elif resume_path is None:
         state = create_train_state(config)
     else:
         state = load_checkpoint(
@@ -356,6 +392,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--replay", type=Path, required=True, help="Path to replay .npz file")
     parser.add_argument("--checkpoint", type=Path, required=True, help="Output checkpoint path")
     parser.add_argument("--resume", type=Path, default=None, help="Checkpoint to resume from")
+    parser.add_argument(
+        "--bootstrap-weights",
+        type=Path,
+        default=None,
+        help="Checkpoint to load model weights from without optimizer, scheduler, or step state",
+    )
     parser.add_argument("--config", type=Path, default=None, help="JSON TrainingConfig override")
     parser.add_argument("--device", choices=["cpu", "cuda"], default=None)
     parser.add_argument("--steps", type=int, default=None)
@@ -403,6 +445,7 @@ def print_training_startup_config(
     replay_path: Path,
     checkpoint_path: Path,
     resume_path: Path | None,
+    bootstrap_weights_path: Path | None = None,
 ) -> None:
     print(
         json.dumps(
@@ -416,6 +459,9 @@ def print_training_startup_config(
                 },
                 "checkpoint": str(checkpoint_path),
                 "resume": str(resume_path) if resume_path is not None else None,
+                "bootstrap_weights": (
+                    str(bootstrap_weights_path) if bootstrap_weights_path is not None else None
+                ),
             },
             sort_keys=True,
         )
@@ -432,12 +478,14 @@ def main() -> NoReturn:
         replay_path=args.replay,
         checkpoint_path=args.checkpoint,
         resume_path=args.resume,
+        bootstrap_weights_path=args.bootstrap_weights,
     )
     summary = train_from_replay(
         replay,
         config,
         checkpoint_path=args.checkpoint,
         resume_path=args.resume,
+        bootstrap_weights_path=args.bootstrap_weights,
         log_every=_log_every_from_args(args, config),
     )
     print(
@@ -468,6 +516,7 @@ __all__ = [
     "compute_losses",
     "create_train_state",
     "load_checkpoint",
+    "load_checkpoint_weights",
     "load_training_config",
     "print_training_startup_config",
     "samples_to_batch",

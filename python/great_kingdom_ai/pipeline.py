@@ -346,7 +346,8 @@ def run_pipeline(
             replay,
             train_config,
             checkpoint_path=candidate_checkpoint,
-            resume_path=paths.best_checkpoint,
+            resume_path=None,
+            bootstrap_weights_path=paths.best_checkpoint,
             log_every=max(1, train_config.steps // 10),
             progress_callback=lambda current, target, loss: printer.progress(
                 "train",

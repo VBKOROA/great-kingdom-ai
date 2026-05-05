@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import random
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -22,6 +23,7 @@ from great_kingdom_ai.train import (  # noqa: E402
     compute_losses,
     create_train_state,
     load_checkpoint,
+    load_checkpoint_weights,
     print_training_startup_config,
     samples_to_batch,
     save_checkpoint,
@@ -104,6 +106,45 @@ def test_checkpoint_round_trips_model_outputs_and_optimizer_state(tmp_path) -> N
     assert loaded.optimizer.state_dict()["state"]
 
 
+def test_checkpoint_weight_bootstrap_keeps_model_and_resets_training_state(tmp_path) -> None:
+    save_config = TrainingConfig(batch_size=2, steps=1, seed=5)
+    state = create_train_state(save_config)
+    batch = samples_to_batch(make_replay().sample(2, random.Random(5)))
+    train_step(state, batch, save_config)
+    state = type(state)(
+        model=state.model,
+        optimizer=state.optimizer,
+        scheduler=state.scheduler,
+        step=7,
+        model_preset=state.model_preset,
+    )
+    state.model.eval()
+    with torch.no_grad():
+        expected_policy, expected_value = state.model(batch.features)
+
+    checkpoint_path = save_checkpoint(state, tmp_path / "checkpoint.pt")
+    bootstrap_config = TrainingConfig(
+        learning_rate=5e-4,
+        weight_decay=2e-3,
+        lr_decay_steps=17,
+        lr_decay_gamma=0.8,
+    )
+    loaded = load_checkpoint_weights(checkpoint_path, bootstrap_config)
+    loaded.model.eval()
+    with torch.no_grad():
+        actual_policy, actual_value = loaded.model(batch.features)
+
+    assert loaded.step == 0
+    assert loaded.model_preset == "small"
+    assert torch.allclose(actual_policy, expected_policy)
+    assert torch.allclose(actual_value, expected_value)
+    assert loaded.optimizer.state_dict()["state"] == {}
+    assert loaded.optimizer.param_groups[0]["lr"] == pytest.approx(5e-4)
+    assert loaded.optimizer.param_groups[0]["weight_decay"] == pytest.approx(2e-3)
+    assert loaded.scheduler.state_dict()["step_size"] == 17
+    assert loaded.scheduler.state_dict()["gamma"] == pytest.approx(0.8)
+
+
 def test_train_from_replay_saves_checkpoint_and_resume_advances_step(tmp_path) -> None:
     replay = make_replay(size=8)
     first_checkpoint = tmp_path / "first.pt"
@@ -129,6 +170,42 @@ def test_train_from_replay_saves_checkpoint_and_resume_advances_step(tmp_path) -
     assert "policy_kl" in resumed.losses[-1]
 
 
+def test_train_from_replay_can_bootstrap_weights_without_resuming_step(tmp_path) -> None:
+    replay = make_replay(size=8)
+    first_checkpoint = tmp_path / "first.pt"
+    second_checkpoint = tmp_path / "second.pt"
+    config = TrainingConfig(batch_size=4, steps=2, seed=11)
+
+    first = train_from_replay(replay, config, checkpoint_path=first_checkpoint)
+    bootstrapped = train_from_replay(
+        replay,
+        TrainingConfig(batch_size=4, steps=1, seed=11),
+        checkpoint_path=second_checkpoint,
+        bootstrap_weights_path=first_checkpoint,
+        log_every=1,
+    )
+
+    assert first.end_step == 2
+    assert bootstrapped.start_step == 0
+    assert bootstrapped.end_step == 1
+    assert second_checkpoint.is_file()
+    assert bootstrapped.losses[-1]["total"] > 0.0
+
+
+def test_train_from_replay_rejects_resume_and_weight_bootstrap_together(tmp_path) -> None:
+    replay = make_replay(size=8)
+    checkpoint = tmp_path / "checkpoint.pt"
+    save_checkpoint(create_train_state(TrainingConfig()), checkpoint)
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        train_from_replay(
+            replay,
+            TrainingConfig(batch_size=4, steps=1),
+            resume_path=checkpoint,
+            bootstrap_weights_path=checkpoint,
+        )
+
+
 def test_train_parser_accepts_log_every_override() -> None:
     args = build_parser().parse_args(
         [
@@ -142,6 +219,21 @@ def test_train_parser_accepts_log_every_override() -> None:
     )
 
     assert args.log_every == 100
+
+
+def test_train_parser_accepts_weight_bootstrap_checkpoint() -> None:
+    args = build_parser().parse_args(
+        [
+            "--replay",
+            "replay.npz",
+            "--checkpoint",
+            "checkpoint.pt",
+            "--bootstrap-weights",
+            "best.pt",
+        ]
+    )
+
+    assert args.bootstrap_weights == Path("best.pt")
 
 
 def test_masked_policy_loss_rejects_illegal_target_mass() -> None:

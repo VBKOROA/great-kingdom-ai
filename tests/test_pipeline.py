@@ -225,7 +225,7 @@ def test_run_pipeline_saves_artifacts_and_promotes_candidate(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    resume_paths: list[Path | None] = []
+    bootstrap_paths: list[Path | None] = []
     arena_seed_starts: list[int] = []
 
     def fake_create_train_state(config: TrainingConfig) -> object:
@@ -244,11 +244,14 @@ def test_run_pipeline_saves_artifacts_and_promotes_candidate(
         *,
         checkpoint_path: str | Path,
         resume_path: str | Path | None,
+        bootstrap_weights_path: str | Path | None,
         log_every: int,
         progress_callback: Any = None,
     ) -> FakeTrainSummary:
-        del replay, config, log_every, progress_callback
-        resume_paths.append(Path(resume_path) if resume_path is not None else None)
+        del replay, config, resume_path, log_every, progress_callback
+        bootstrap_paths.append(
+            Path(bootstrap_weights_path) if bootstrap_weights_path is not None else None
+        )
         destination = Path(checkpoint_path)
         destination.write_text("candidate", encoding="utf-8")
         return FakeTrainSummary(
@@ -325,7 +328,7 @@ def test_run_pipeline_saves_artifacts_and_promotes_candidate(
     assert summary.artifacts.arena_report_path is not None
     assert summary.artifacts.arena_report_path.is_file()
     assert summary.artifacts.metrics_path.is_file()
-    assert resume_paths == [
+    assert bootstrap_paths == [
         tmp_path / "checkpoints" / "best.pt",
         tmp_path / "checkpoints" / "best.pt",
     ]
@@ -358,10 +361,11 @@ def test_run_pipeline_resume_continues_iteration_and_arena_seed_windows(
         *,
         checkpoint_path: str | Path,
         resume_path: str | Path | None,
+        bootstrap_weights_path: str | Path | None,
         log_every: int,
         progress_callback: Any = None,
     ) -> FakeTrainSummary:
-        del replay, config, resume_path, log_every, progress_callback
+        del replay, config, resume_path, bootstrap_weights_path, log_every, progress_callback
         destination = Path(checkpoint_path)
         destination.write_text("candidate", encoding="utf-8")
         return FakeTrainSummary(
