@@ -189,6 +189,37 @@ impl GumbelSelfPlayBatch {
         )
     }
 
+    #[pyo3(signature = (evaluator, leaf_batch_size = 16))]
+    pub fn search_active_with_onnx_evaluator_and_root_logits(
+        &mut self,
+        mut evaluator: PyRefMut<'_, OnnxEvaluator>,
+        leaf_batch_size: usize,
+    ) -> PyResult<(Vec<Option<GumbelResult>>, Vec<Vec<f32>>)> {
+        if leaf_batch_size == 0 {
+            return Err(PyValueError::new_err("leaf_batch_size must be positive"));
+        }
+        let active_request = self.active_eval_request_features();
+        let root_output = evaluator
+            .evaluate_request(&active_request)
+            .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let root_values = root_output.values;
+        let policy_logits: Vec<Vec<f32>> = root_output
+            .policy_logits
+            .into_iter()
+            .map(Vec::from)
+            .collect();
+        let root_policy_logits = policy_logits.clone();
+        let mut adapter = OnnxGumbelEvaluator::new(&mut evaluator);
+        let results = self.search_active_with_evaluator(
+            policy_logits,
+            true,
+            &mut adapter,
+            leaf_batch_size,
+            &root_values,
+        )?;
+        Ok((results, root_policy_logits))
+    }
+
     pub fn search_active_with_priors(
         &mut self,
         priors: Vec<Vec<f32>>,

@@ -20,6 +20,7 @@ class ReplaySample:
     features: np.ndarray
     policy: np.ndarray
     value: float
+    root_policy_logits: np.ndarray | None = None
 
 
 class ReplayBuffer:
@@ -65,13 +66,16 @@ class ReplayBuffer:
             features = np.empty((0, *FEATURE_SHAPE), dtype=np.float32)
             policies = np.empty((0, ACTION_SPACE), dtype=np.float32)
             values = np.empty((0,), dtype=np.float32)
-        np.savez_compressed(
-            destination,
-            capacity=np.asarray(self.capacity, dtype=np.int64),
-            features=features,
-            policies=policies,
-            values=values,
-        )
+        payload: dict[str, np.ndarray] = {
+            "capacity": np.asarray(self.capacity, dtype=np.int64),
+            "features": features,
+            "policies": policies,
+            "values": values,
+        }
+        root_policy_logits = _root_policy_logits_array(samples)
+        if root_policy_logits is not None:
+            payload["root_policy_logits"] = root_policy_logits
+        np.savez_compressed(destination, **payload)
 
     @classmethod
     def load(cls, path: str | Path) -> ReplayBuffer:
@@ -80,17 +84,33 @@ class ReplayBuffer:
             features = np.asarray(data["features"], dtype=np.float32)
             policies = np.asarray(data["policies"], dtype=np.float32)
             values = np.asarray(data["values"], dtype=np.float32)
+            root_policy_logits = (
+                np.asarray(data["root_policy_logits"], dtype=np.float32)
+                if "root_policy_logits" in data
+                else None
+            )
 
         if features.shape[0] != policies.shape[0] or features.shape[0] != values.shape[0]:
             raise ValueError("replay buffer arrays have inconsistent lengths")
+        if root_policy_logits is not None and root_policy_logits.shape != policies.shape:
+            raise ValueError(
+                "replay buffer root_policy_logits shape must match policies shape"
+            )
 
         buffer = cls(capacity)
         for index in range(features.shape[0]):
+            root_logits = (
+                root_policy_logits[index]
+                if root_policy_logits is not None
+                and np.isfinite(root_policy_logits[index]).all()
+                else None
+            )
             buffer.push(
                 ReplaySample(
                     features=features[index],
                     policy=policies[index],
                     value=float(values[index]),
+                    root_policy_logits=root_logits,
                 )
             )
         return buffer
@@ -105,6 +125,19 @@ def _validated_sample(sample: ReplaySample) -> ReplaySample:
         raise ValueError(f"expected feature shape {FEATURE_SHAPE}, got {features.shape}")
     if policy.shape != (ACTION_SPACE,):
         raise ValueError(f"expected policy shape {(ACTION_SPACE,)}, got {policy.shape}")
+    root_policy_logits = (
+        None
+        if sample.root_policy_logits is None
+        else np.asarray(sample.root_policy_logits, dtype=np.float32)
+    )
+    if root_policy_logits is not None:
+        if root_policy_logits.shape != (ACTION_SPACE,):
+            raise ValueError(
+                f"expected root_policy_logits shape {(ACTION_SPACE,)}, "
+                f"got {root_policy_logits.shape}"
+            )
+        if not np.isfinite(root_policy_logits).all():
+            raise ValueError("root_policy_logits must be finite")
     if not np.isclose(policy.sum(), 1.0):
         raise ValueError("policy target must sum to 1")
     if np.any(policy < 0.0):
@@ -112,4 +145,22 @@ def _validated_sample(sample: ReplaySample) -> ReplaySample:
     if value < -1.0 or value > 1.0:
         raise ValueError("value target must be in [-1, 1]")
 
-    return ReplaySample(features=features.copy(), policy=policy.copy(), value=value)
+    return ReplaySample(
+        features=features.copy(),
+        policy=policy.copy(),
+        value=value,
+        root_policy_logits=(
+            None if root_policy_logits is None else root_policy_logits.copy()
+        ),
+    )
+
+
+def _root_policy_logits_array(samples: list[ReplaySample]) -> np.ndarray | None:
+    if not any(sample.root_policy_logits is not None for sample in samples):
+        return None
+    rows = np.full((len(samples), ACTION_SPACE), np.nan, dtype=np.float32)
+    for index, sample in enumerate(samples):
+        if sample.root_policy_logits is None:
+            continue
+        rows[index] = np.asarray(sample.root_policy_logits, dtype=np.float32)
+    return rows

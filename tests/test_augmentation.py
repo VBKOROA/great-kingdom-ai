@@ -23,11 +23,21 @@ def make_sample(action: int) -> ReplaySample:
 
 def test_augment_sample_transforms_features_and_policy_together() -> None:
     sample = make_sample(action=1 * BOARD_SIZE + 2)
+    root_policy_logits = np.zeros(ACTION_SPACE, dtype=np.float32)
+    root_policy_logits[1 * BOARD_SIZE + 2] = 7.0
+    sample = ReplaySample(
+        features=sample.features,
+        policy=sample.policy,
+        value=sample.value,
+        root_policy_logits=root_policy_logits,
+    )
 
     augmented = augment_sample(sample, "rot90")
 
     assert augmented.features[0, 6, 1] == 1.0
     assert augmented.policy[6 * BOARD_SIZE + 1] == 0.75
+    assert augmented.root_policy_logits is not None
+    assert augmented.root_policy_logits[6 * BOARD_SIZE + 1] == 7.0
     assert augmented.policy[81] == 0.25
     assert augmented.value == -1.0
     assert np.isclose(augmented.policy.sum(), 1.0)

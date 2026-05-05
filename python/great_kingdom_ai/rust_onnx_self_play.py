@@ -9,7 +9,7 @@ from typing import Any, cast
 
 import numpy as np
 
-from great_kingdom_ai.features import BOARD_SIZE, FEATURE_CHANNELS
+from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.replay_buffer import ReplaySample
 from great_kingdom_ai.rust_onnx_replay import write_rust_self_play_artifacts
 from great_kingdom_ai.self_play import GameLog, MoveLog, SelfPlayConfig
@@ -118,7 +118,9 @@ def _run_one_batch(
     seeds = list(range(seed_start, seed_start + game_count))
     rngs = [random.Random(seed) for seed in seeds]
     moves: list[list[MoveLog]] = [[] for _ in seeds]
-    pending: list[list[tuple[int, np.ndarray, np.ndarray]]] = [[] for _ in seeds]
+    pending: list[list[tuple[int, np.ndarray, np.ndarray, np.ndarray | None]]] = [
+        [] for _ in seeds
+    ]
 
     for turn in range(config.self_play.max_turns):
         active_indexes = [int(index) for index in batch.active_game_indexes()]
@@ -145,10 +147,20 @@ def _run_one_batch(
         if config.self_play.playout_cap_randomization:
             batch.set_simulations(simulation_budgets)
 
-        results = batch.search_active_with_onnx_evaluator(
-            evaluator,
+        results, root_policy_logits_rows = _search_active_with_root_policy_logits(
+            batch,
+            evaluator=evaluator,
+            request=request,
             leaf_batch_size=config.self_play.leaf_batch_size,
         )
+        root_policy_logits_by_game = {
+            game_index: np.asarray(row, dtype=np.float32)
+            for game_index, row in zip(
+                active_indexes,
+                root_policy_logits_rows,
+                strict=True,
+            )
+        }
         actions: list[int | None] = [None] * game_count
         for game_index in active_indexes:
             result = results[game_index]
@@ -158,7 +170,12 @@ def _run_one_batch(
             action = int(result.selected_action())
             if use_full_by_game[game_index]:
                 pending[game_index].append(
-                    (players[game_index], features_by_game[game_index], policy)
+                    (
+                        players[game_index],
+                        features_by_game[game_index],
+                        policy,
+                        root_policy_logits_by_game[game_index],
+                    )
                 )
             moves[game_index].append(
                 MoveLog(turn=turn, player=players[game_index], action=action)
@@ -201,10 +218,36 @@ def _run_one_batch(
                 features=features,
                 policy=policy,
                 value=value_target_for_player(player=player, winner=int(winner)),
+                root_policy_logits=root_policy_logits,
             )
-            for player, features, policy in pending[game_index]
+            for player, features, policy, root_policy_logits in pending[game_index]
         )
     return logs, samples
+
+
+def _search_active_with_root_policy_logits(
+    batch: Any,
+    *,
+    evaluator: Any,
+    request: Any,
+    leaf_batch_size: int,
+) -> tuple[list[Any | None], list[list[float]]]:
+    if hasattr(batch, "search_active_with_onnx_evaluator_and_root_logits"):
+        results, root_policy_logits = batch.search_active_with_onnx_evaluator_and_root_logits(
+            evaluator,
+            leaf_batch_size=leaf_batch_size,
+        )
+        return list(results), [list(row) for row in root_policy_logits]
+
+    root_policy_logits, _root_values = evaluator.evaluate(request)
+    rows = [list(row) for row in root_policy_logits]
+    if any(len(row) != ACTION_SPACE for row in rows):
+        raise ValueError("ONNX evaluator returned invalid root policy logits shape")
+    results = batch.search_active_with_onnx_evaluator(
+        evaluator,
+        leaf_batch_size=leaf_batch_size,
+    )
+    return list(results), rows
 
 
 def _flat_features_for_replay(feature_planes: list[float]) -> np.ndarray:

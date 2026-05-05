@@ -63,3 +63,43 @@ def test_summarize_replay_arrays_rejects_shape_mismatch() -> None:
             policies=policies[:, :-1],
             values=values,
         )
+
+
+def test_summarize_replay_arrays_reports_target_vs_prior_diagnostics() -> None:
+    features, policies, values = make_arrays()
+    root_logits = np.full((3, ACTION_SPACE), -5.0, dtype=np.float32)
+    root_logits[0, 0] = 5.0
+    root_logits[1, 1] = 5.0
+    root_logits[2, 0] = 5.0
+
+    summary = summarize_replay_arrays(
+        features=features,
+        policies=policies,
+        values=values,
+        root_policy_logits=root_logits,
+        conflict_samples=0,
+    )
+
+    diagnostics = summary["target_vs_prior"]
+    assert diagnostics["available_rows"] == 3
+    assert diagnostics["missing_rows"] == 0
+    assert diagnostics["argmax_mismatch_count"] == 1
+    assert diagnostics["argmax_mismatch_ratio"] == pytest.approx(1 / 3)
+    assert diagnostics["kl_target_prior"]["mean"] > 0.0
+
+
+def test_summarize_replay_arrays_counts_missing_root_logits() -> None:
+    features, policies, values = make_arrays()
+    root_logits = np.full((3, ACTION_SPACE), np.nan, dtype=np.float32)
+    root_logits[0] = 0.0
+
+    summary = summarize_replay_arrays(
+        features=features,
+        policies=policies,
+        values=values,
+        root_policy_logits=root_logits,
+        conflict_samples=0,
+    )
+
+    assert summary["target_vs_prior"]["available_rows"] == 1
+    assert summary["target_vs_prior"]["missing_rows"] == 2

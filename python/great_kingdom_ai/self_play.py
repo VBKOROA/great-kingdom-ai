@@ -276,7 +276,7 @@ def play_self_play_game(
     )
     rng = random.Random(seed)
     moves: list[MoveLog] = []
-    pending_samples: list[tuple[int, np.ndarray, np.ndarray]] = []
+    pending_samples: list[tuple[int, np.ndarray, np.ndarray, np.ndarray | None]] = []
 
     for turn in range(config.max_turns):
         if game_state.is_terminal():
@@ -293,7 +293,7 @@ def play_self_play_game(
                 else config.playout_cap_fast_simulations
             )
             _set_search_simulations(search_engine, simulations)
-        result = _run_self_play_search(
+        result, root_policy_logits = _run_self_play_search(
             game_state,
             search_engine,
             rng,
@@ -311,7 +311,7 @@ def play_self_play_game(
         )
 
         if use_full_search:
-            pending_samples.append((player, features, policy))
+            pending_samples.append((player, features, policy, root_policy_logits))
         moves.append(MoveLog(turn=turn, player=player, action=action))
         game_state.apply_action(action)
     else:
@@ -327,8 +327,9 @@ def play_self_play_game(
             features=features,
             policy=policy,
             value=value_target_for_player(player=player, winner=winner),
+            root_policy_logits=root_policy_logits,
         )
-        for player, features, policy in pending_samples
+        for player, features, policy, root_policy_logits in pending_samples
     ]
     return (
         GameLog(
@@ -507,7 +508,7 @@ def _run_self_play_search(
         tuple[Sequence[Sequence[float]], Sequence[float]],
     ]
     | None = None,
-) -> SearchResultLike:
+) -> tuple[SearchResultLike, np.ndarray]:
     del rng
     root_logits = list(root_priors) if root_priors is not None else [0.0] * (PASS_ACTION + 1)
     root_value: float | None = None
@@ -522,20 +523,24 @@ def _run_self_play_search(
         if root_priors is None:
             root_logits = [float(value) for value in root_policies[0]]
         root_value = float(root_values[0])
+    root_policy_logits = np.asarray(root_logits, dtype=np.float32)
     if evaluator_provider is None:
-        return search.search_with_logits(state, root_logits)
+        return search.search_with_logits(state, root_logits), root_policy_logits
     if root_value is None:
         raise ValueError("Gumbel evaluator search requires an explicit root value")
 
     def gumbel_leaf_evaluator(request: Any) -> tuple[list[list[float]], list[float]]:
         return _evaluate_core_batch_policy_values(evaluator_provider, request)
 
-    return search.search_with_logits_and_evaluator(
-        state,
-        root_logits,
-        gumbel_leaf_evaluator,
-        root_value,
-        config.leaf_batch_size,
+    return (
+        search.search_with_logits_and_evaluator(
+            state,
+            root_logits,
+            gumbel_leaf_evaluator,
+            root_value,
+            config.leaf_batch_size,
+        ),
+        root_policy_logits,
     )
 
 
@@ -546,7 +551,7 @@ class _BatchedGame:
     search: SearchLike
     rng: random.Random
     moves: list[MoveLog] | None = None
-    pending_samples: list[tuple[int, np.ndarray, np.ndarray]] | None = None
+    pending_samples: list[tuple[int, np.ndarray, np.ndarray, np.ndarray | None]] | None = None
 
     def __post_init__(self) -> None:
         if self.moves is None:
@@ -597,7 +602,7 @@ def _play_self_play_games_core_batched(
     batch = create_core_self_play_batch(config, game_count=len(seeds))
     rngs = [random.Random(seed) for seed in seeds]
     moves: list[list[MoveLog]] = [[] for _ in seeds]
-    pending_samples: list[list[tuple[int, np.ndarray, np.ndarray]]] = [
+    pending_samples: list[list[tuple[int, np.ndarray, np.ndarray, np.ndarray | None]]] = [
         [] for _ in seeds
     ]
     territory_scores = [(0, 0) for _ in seeds]
@@ -651,6 +656,7 @@ def _play_self_play_games_core_batched(
             )
 
         noisy_priors = []
+        root_policy_logits_by_game: dict[int, np.ndarray] = {}
         use_full_by_game: dict[int, bool] = {}
         simulation_budgets: list[int | None] = [None] * batch.len()
         for game_index, prior, _mask in zip(active_indexes, priors, masks, strict=True):
@@ -665,6 +671,10 @@ def _play_self_play_games_core_batched(
                 )
             prior_values = [float(value) for value in prior]
             noisy_priors.append(prior_values)
+            root_policy_logits_by_game[game_index] = np.asarray(
+                prior_values,
+                dtype=np.float32,
+            )
 
         if config.playout_cap_randomization:
             batch.set_simulations(simulation_budgets)
@@ -707,7 +717,12 @@ def _play_self_play_games_core_batched(
             )
             if use_full_by_game[game_index]:
                 pending_samples[game_index].append(
-                    (players[game_index], features_by_game[game_index], policy)
+                    (
+                        players[game_index],
+                        features_by_game[game_index],
+                        policy,
+                        root_policy_logits_by_game[game_index],
+                    )
                 )
             moves[game_index].append(
                 MoveLog(turn=turn, player=players[game_index], action=action)
@@ -740,8 +755,9 @@ def _play_self_play_games_core_batched(
                 features=features,
                 policy=policy,
                 value=value_target_for_player(player=player, winner=winner),
+                root_policy_logits=root_policy_logits,
             )
-            for player, features, policy in pending_samples[game_index]
+            for player, features, policy, root_policy_logits in pending_samples[game_index]
         ]
         outputs.append(
             (
@@ -862,7 +878,7 @@ def _play_batched_self_play_turn(
         )
         _set_search_simulations(game.search, simulations)
 
-    result = _run_self_play_search(
+    result, root_policy_logits = _run_self_play_search(
         game.state,
         game.search,
         game.rng,
@@ -881,7 +897,7 @@ def _play_batched_self_play_turn(
 
     if use_full_search:
         assert game.pending_samples is not None
-        game.pending_samples.append((player, features, policy))
+        game.pending_samples.append((player, features, policy, root_policy_logits))
     assert game.moves is not None
     game.moves.append(MoveLog(turn=turn, player=player, action=action))
     game.state.apply_action(action)
@@ -899,8 +915,9 @@ def _finish_batched_game(game: _BatchedGame) -> tuple[GameLog, list[ReplaySample
             features=features,
             policy=policy,
             value=value_target_for_player(player=player, winner=winner),
+            root_policy_logits=root_policy_logits,
         )
-        for player, features, policy in game.pending_samples
+        for player, features, policy, root_policy_logits in game.pending_samples
     ]
     return (
         GameLog(

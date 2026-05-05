@@ -493,6 +493,9 @@ def test_play_self_play_game_uses_gumbel_policy_target_and_selected_action() -> 
     assert len(samples) == 1
     assert samples[0].policy[1] == pytest.approx(0.1)
     assert samples[0].policy[2] == pytest.approx(0.9)
+    assert samples[0].root_policy_logits is not None
+    assert samples[0].root_policy_logits[1] == pytest.approx(4.0)
+    assert samples[0].root_policy_logits[2] == pytest.approx(9.0)
 
 
 def test_search_self_play_config_samples_only_opening_turns_by_default() -> None:
@@ -611,6 +614,8 @@ def test_play_self_play_games_batched_evaluates_root_priors_together() -> None:
     assert [log.moves[0].action for log in logs] == [1, 1]
     assert len(samples) == 2
     assert batch_sizes == [2]
+    assert all(sample.root_policy_logits is not None for sample in samples)
+    assert all(sample.root_policy_logits[1] == pytest.approx(1.0) for sample in samples)
 
 
 def test_play_self_play_games_batched_uses_core_batch_when_available(monkeypatch) -> None:
@@ -760,9 +765,12 @@ def test_play_self_play_games_batched_uses_core_batch(monkeypatch) -> None:
     )
 
     logs = [log for log, _samples in results]
+    samples = [sample for _log, game_samples in results for sample in game_samples]
     assert root_batch_sizes == [2]
     assert fake_batch.applied_actions == [1, 1]
     assert [log.moves[0].action for log in logs] == [1, 1]
+    assert all(sample.root_policy_logits is not None for sample in samples)
+    assert all(sample.root_policy_logits[1] == pytest.approx(5.0) for sample in samples)
 
 
 def test_play_self_play_game_can_use_model_root_logits() -> None:

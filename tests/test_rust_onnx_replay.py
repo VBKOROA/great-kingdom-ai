@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from pathlib import Path
 
 import numpy as np
@@ -18,7 +19,14 @@ def make_sample(index: int) -> ReplaySample:
     features[index % FEATURE_CHANNELS, 0, 0] = 1.0
     policy = np.zeros(ACTION_SPACE, dtype=np.float32)
     policy[index % ACTION_SPACE] = 1.0
-    return ReplaySample(features=features, policy=policy, value=1.0)
+    root_policy_logits = np.full(ACTION_SPACE, -2.0, dtype=np.float32)
+    root_policy_logits[index % ACTION_SPACE] = 2.0
+    return ReplaySample(
+        features=features,
+        policy=policy,
+        value=1.0,
+        root_policy_logits=root_policy_logits,
+    )
 
 
 def make_log(seed: int) -> GameLog:
@@ -51,6 +59,8 @@ def test_import_rust_self_play_artifacts_extends_replay_and_logs(tmp_path: Path)
     assert summary.imported_samples == 2
     assert summary.imported_games == 1
     assert len(replay) == 2
+    sample = replay.sample(1, random.Random(1))[0]
+    assert sample.root_policy_logits is not None
     assert '"seed": 10' in (tmp_path / "replay" / "game_logs.json").read_text()
 
 

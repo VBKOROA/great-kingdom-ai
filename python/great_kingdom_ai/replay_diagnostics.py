@@ -38,6 +38,7 @@ def summarize_replay_arrays(
     features: FloatArray,
     policies: FloatArray,
     values: FloatArray,
+    root_policy_logits: FloatArray | None = None,
     capacity: int | None = None,
     conflict_samples: int = 20_000,
     seed: int = 0,
@@ -45,6 +46,8 @@ def summarize_replay_arrays(
 ) -> dict[str, Any]:
     """Return JSON-serializable diagnostics for replay arrays."""
     _validate_shapes(features, policies, values)
+    if root_policy_logits is not None:
+        _validate_root_policy_logits(root_policy_logits, policies.shape)
     if conflict_samples < 0:
         raise ValueError("conflict_samples must be non-negative")
     if top_k <= 0:
@@ -93,16 +96,30 @@ def summarize_replay_arrays(
             seed=seed,
             top_k=top_k,
         )
+    if root_policy_logits is not None:
+        summary["target_vs_prior"] = _target_vs_prior_diagnostics(
+            policies=policies,
+            root_policy_logits=root_policy_logits,
+            legal_mask=legal_mask,
+            top_k=top_k,
+        )
     return summary
 
 
-def load_replay_arrays(path: str | Path) -> tuple[FloatArray, FloatArray, FloatArray, int | None]:
+def load_replay_arrays(
+    path: str | Path,
+) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray | None, int | None]:
     with np.load(Path(path)) as data:
         features = np.asarray(data["features"], dtype=np.float32)
         policies = np.asarray(data["policies"], dtype=np.float32)
         values = np.asarray(data["values"], dtype=np.float32)
+        root_policy_logits = (
+            np.asarray(data["root_policy_logits"], dtype=np.float32)
+            if "root_policy_logits" in data
+            else None
+        )
         capacity = int(data["capacity"]) if "capacity" in data else None
-    return features, policies, values, capacity
+    return features, policies, values, root_policy_logits, capacity
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -131,6 +148,17 @@ def _validate_shapes(features: FloatArray, policies: FloatArray, values: FloatAr
         raise ValueError(f"expected values shape {(features.shape[0],)}, got {values.shape}")
 
 
+def _validate_root_policy_logits(
+    root_policy_logits: FloatArray,
+    expected_shape: tuple[int, int],
+) -> None:
+    if root_policy_logits.shape != expected_shape:
+        raise ValueError(
+            f"expected root_policy_logits shape {expected_shape}, "
+            f"got {root_policy_logits.shape}"
+        )
+
+
 def _legal_mask_from_features(features: FloatArray) -> BoolArray:
     legal_place = features[:, LEGAL_PLACE_FEATURE_CHANNEL].reshape(-1, BOARD_CELLS) > 0.5
     legal_mask = np.zeros((features.shape[0], ACTION_SPACE), dtype=np.bool_)
@@ -145,6 +173,64 @@ def _policy_entropy(policies: FloatArray) -> FloatArray:
     log_policy[positive] = np.log(policies[positive])
     entropy = -np.sum(np.where(positive, policies * log_policy, 0.0), axis=1)
     return cast(FloatArray, entropy)
+
+
+def _target_vs_prior_diagnostics(
+    *,
+    policies: FloatArray,
+    root_policy_logits: FloatArray,
+    legal_mask: BoolArray,
+    top_k: int,
+) -> dict[str, Any]:
+    available = np.isfinite(root_policy_logits).all(axis=1)
+    missing_rows = int(root_policy_logits.shape[0] - np.count_nonzero(available))
+    if not np.any(available):
+        return {
+            "available_rows": 0,
+            "missing_rows": missing_rows,
+        }
+
+    target = policies[available]
+    prior = _masked_softmax(root_policy_logits[available], legal_mask[available])
+    target_argmax = np.argmax(target, axis=1)
+    prior_argmax = np.argmax(prior, axis=1)
+    target_max = np.max(target, axis=1)
+    prior_max = np.max(prior, axis=1)
+    top1_delta = target_max - prior_max
+    target_prior_kl = _categorical_kl(target, prior)
+    prior_target_kl = _categorical_kl(prior, target)
+    argmax_mismatch = target_argmax != prior_argmax
+
+    return {
+        "available_rows": int(np.count_nonzero(available)),
+        "missing_rows": missing_rows,
+        "kl_target_prior": _describe(target_prior_kl),
+        "kl_prior_target": _describe(prior_target_kl),
+        "argmax_mismatch_ratio": float(np.mean(argmax_mismatch)),
+        "argmax_mismatch_count": int(np.count_nonzero(argmax_mismatch)),
+        "top1_probability_delta": _describe(top1_delta.astype(np.float32)),
+        "target_argmax_top": _top_actions(target_argmax, top_k=top_k),
+        "prior_argmax_top": _top_actions(prior_argmax, top_k=top_k),
+    }
+
+
+def _masked_softmax(logits: FloatArray, legal_mask: BoolArray) -> FloatArray:
+    masked_logits = np.where(legal_mask, logits, -np.inf)
+    row_max = np.max(masked_logits, axis=1, keepdims=True)
+    shifted = np.where(legal_mask, masked_logits - row_max, -np.inf)
+    exp_values = np.where(legal_mask, np.exp(shifted), 0.0)
+    sums = exp_values.sum(axis=1, keepdims=True)
+    if np.any(sums <= 0.0):
+        raise ValueError("legal mask must leave at least one action per row")
+    return cast(FloatArray, (exp_values / sums).astype(np.float32))
+
+
+def _categorical_kl(left: FloatArray, right: FloatArray) -> FloatArray:
+    epsilon = np.float32(1e-8)
+    left_clipped = np.clip(left, epsilon, 1.0)
+    right_clipped = np.clip(right, epsilon, 1.0)
+    kl = np.sum(left_clipped * (np.log(left_clipped) - np.log(right_clipped)), axis=1)
+    return cast(FloatArray, kl.astype(np.float32))
 
 
 def _describe(values: npt.NDArray[np.floating[Any]]) -> dict[str, float]:
@@ -231,11 +317,12 @@ def _action_label(action: int) -> str:
 
 def main() -> NoReturn:
     args = build_parser().parse_args()
-    features, policies, values, capacity = load_replay_arrays(args.replay)
+    features, policies, values, root_policy_logits, capacity = load_replay_arrays(args.replay)
     summary = summarize_replay_arrays(
         features=features,
         policies=policies,
         values=values,
+        root_policy_logits=root_policy_logits,
         capacity=capacity,
         conflict_samples=args.conflict_samples,
         seed=args.seed,

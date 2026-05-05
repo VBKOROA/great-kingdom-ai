@@ -50,11 +50,21 @@ def augment_sample(sample: ReplaySample, symmetry: Symmetry) -> ReplaySample:
         symmetry,
     ).reshape(BOARD_SIZE * BOARD_SIZE)
     transformed_policy[-1] = policy[-1]
+    transformed_root_logits = (
+        None
+        if sample.root_policy_logits is None
+        else _transform_policy_like_array(
+            np.asarray(sample.root_policy_logits, dtype=np.float32),
+            symmetry,
+            "root_policy_logits",
+        )
+    )
 
     return ReplaySample(
         features=_transform_spatial(features, symmetry).copy(),
         policy=transformed_policy,
         value=sample.value,
+        root_policy_logits=transformed_root_logits,
     )
 
 
@@ -96,3 +106,20 @@ def _transform_spatial(array: np.ndarray, symmetry: Symmetry) -> np.ndarray:
     if symmetry == "anti_transpose":
         return np.flip(np.swapaxes(array, -2, -1), axis=(-2, -1))
     raise ValueError(f"unknown symmetry: {symmetry}")
+
+
+def _transform_policy_like_array(
+    values: np.ndarray,
+    symmetry: Symmetry,
+    label: str,
+) -> np.ndarray:
+    if values.shape != (ACTION_SPACE,):
+        raise ValueError(f"expected {label} shape {(ACTION_SPACE,)}, got {values.shape}")
+    board_values = values[: BOARD_SIZE * BOARD_SIZE].reshape(BOARD_SIZE, BOARD_SIZE)
+    transformed = np.empty(ACTION_SPACE, dtype=np.float32)
+    transformed[: BOARD_SIZE * BOARD_SIZE] = _transform_spatial(
+        board_values,
+        symmetry,
+    ).reshape(BOARD_SIZE * BOARD_SIZE)
+    transformed[-1] = values[-1]
+    return transformed

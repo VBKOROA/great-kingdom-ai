@@ -201,13 +201,22 @@ def _samples_to_tensors(samples: list[ReplaySample]) -> dict[str, np.ndarray]:
         features = np.empty((0, *FEATURE_SHAPE), dtype=np.float32)
         policy = np.empty((0, ACTION_SPACE), dtype=np.float32)
         value = np.empty((0,), dtype=np.float32)
-    return {"features": features, "policy": policy, "value": value}
+    tensors = {"features": features, "policy": policy, "value": value}
+    root_policy_logits = _root_policy_logits_array(samples)
+    if root_policy_logits is not None:
+        tensors["root_policy_logits"] = root_policy_logits
+    return tensors
 
 
 def _samples_from_tensors(tensors: dict[str, np.ndarray]) -> list[ReplaySample]:
     features = np.asarray(tensors["features"], dtype=np.float32)
     policy = np.asarray(tensors["policy"], dtype=np.float32)
     value = np.asarray(tensors["value"], dtype=np.float32)
+    root_policy_logits = (
+        np.asarray(tensors["root_policy_logits"], dtype=np.float32)
+        if "root_policy_logits" in tensors
+        else None
+    )
     if features.shape[1:] != FEATURE_SHAPE:
         raise ValueError(f"expected features shape [N, {FEATURE_SHAPE}], got {features.shape}")
     if policy.shape != (features.shape[0], ACTION_SPACE):
@@ -215,8 +224,23 @@ def _samples_from_tensors(tensors: dict[str, np.ndarray]) -> list[ReplaySample]:
         raise ValueError(f"expected policy shape {expected_policy_shape}, got {policy.shape}")
     if value.shape != (features.shape[0],):
         raise ValueError(f"expected value shape {(features.shape[0],)}, got {value.shape}")
+    if root_policy_logits is not None and root_policy_logits.shape != policy.shape:
+        raise ValueError(
+            "expected root_policy_logits shape to match policy shape, "
+            f"got {root_policy_logits.shape}"
+        )
     return [
-        ReplaySample(features=features[index], policy=policy[index], value=float(value[index]))
+        ReplaySample(
+            features=features[index],
+            policy=policy[index],
+            value=float(value[index]),
+            root_policy_logits=(
+                root_policy_logits[index]
+                if root_policy_logits is not None
+                and np.isfinite(root_policy_logits[index]).all()
+                else None
+            ),
+        )
         for index in range(features.shape[0])
     ]
 
@@ -266,6 +290,17 @@ def _read_jsonl_dicts(path: Path) -> list[dict[str, Any]]:
 def _write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _root_policy_logits_array(samples: list[ReplaySample]) -> np.ndarray | None:
+    if not any(sample.root_policy_logits is not None for sample in samples):
+        return None
+    rows = np.full((len(samples), ACTION_SPACE), np.nan, dtype=np.float32)
+    for index, sample in enumerate(samples):
+        if sample.root_policy_logits is None:
+            continue
+        rows[index] = np.asarray(sample.root_policy_logits, dtype=np.float32)
+    return rows
 
 
 def _copy_if_exists(source: Path, destination: Path) -> Path | None:

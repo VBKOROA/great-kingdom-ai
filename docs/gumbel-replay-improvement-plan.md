@@ -71,6 +71,16 @@ E_target[completed_Q] - E_prior[completed_Q]
 처음에는 전부 구현하지 않아도 된다. 최소한 `KL(policy_target || root_prior)`와
 `target_argmax != prior_argmax ratio`는 넣는 것이 좋다.
 
+빠른 계측용 설정:
+
+```text
+configs/runpod/rust-onnx-search-diagnostics.json
+configs/runpod/train-search-diagnostics.json
+```
+
+이 설정은 arena/promotion/aggregate를 끄고 raw replay에 저장된 `root_policy_logits`로
+target-vs-prior diagnostics를 확인하는 용도다.
+
 ### 3. Aggregate는 정식 replay store 방향으로 본다
 
 Gumbel search에서는 같은 exact state가 여러 번 등장하는 것이 단순 낭비가 아니다. 서로 다른 Gumbel
@@ -258,7 +268,7 @@ exploration을 더 강하게 주면 policy/value target variance가 커질 수 �
 
 ```text
 1. [x] weight-only bootstrap 구현
-2. target-vs-prior diagnostics 추가
+2. [x] target-vs-prior diagnostics 추가
 3. 현재 5 / 0.25 / T=2 설정으로 arena 판정
 4. 약하면 10 / 0.5 / T=2 sharpen ablation
 5. count-aware aggregate replay store 검증
