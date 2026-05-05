@@ -1,6 +1,6 @@
 {
   "iterations": 50,
-  "work_dir": "data/runpod/onnx-pipeline-aggregate-midtarget",
+  "work_dir": "data/runpod/new-pipeline",
   "legacy_import_dir": null,
   "import_legacy_on_first_run": false,
   "onnx_device": "cuda",
