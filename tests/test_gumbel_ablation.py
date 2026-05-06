@@ -17,22 +17,22 @@ from great_kingdom_ai.self_play import MoveLog, SelfPlayConfig
 from great_kingdom_ai.train import TrainingConfig
 
 
-def test_ablation_configs_express_pure_and_modified_gumbel() -> None:
+def test_ablation_configs_express_pure_and_aggregate_only_gumbel() -> None:
     pure = module.load_rust_onnx_pipeline_config(module.DEFAULT_PURE_PIPELINE_CONFIG)
-    modified = module.load_rust_onnx_pipeline_config(module.DEFAULT_MODIFIED_PIPELINE_CONFIG)
+    aggregate = module.load_rust_onnx_pipeline_config(module.DEFAULT_MODIFIED_PIPELINE_CONFIG)
 
     assert pure.self_play.policy_target_c_visit == pure.self_play.gumbel_c_visit
     assert pure.self_play.policy_target_c_scale == pure.self_play.gumbel_c_scale
     assert pure.self_play.policy_target_temperature == 1.0
     assert pure.aggregate_replay is False
 
-    assert modified.self_play.gumbel_c_visit == pure.self_play.gumbel_c_visit
-    assert modified.self_play.gumbel_c_scale == pure.self_play.gumbel_c_scale
-    assert modified.aggregate_replay is True
-    assert modified.aggregate_replay_weight_mode == "sqrt_count"
-    assert modified.self_play.policy_target_c_visit != modified.self_play.gumbel_c_visit
-    assert modified.self_play.policy_target_c_scale != modified.self_play.gumbel_c_scale
-    assert modified.self_play.policy_target_temperature > 1.0
+    assert aggregate.self_play.gumbel_c_visit == pure.self_play.gumbel_c_visit
+    assert aggregate.self_play.gumbel_c_scale == pure.self_play.gumbel_c_scale
+    assert aggregate.self_play.policy_target_c_visit == pure.self_play.policy_target_c_visit
+    assert aggregate.self_play.policy_target_c_scale == pure.self_play.policy_target_c_scale
+    assert aggregate.self_play.policy_target_temperature == pure.self_play.policy_target_temperature
+    assert aggregate.aggregate_replay is True
+    assert aggregate.aggregate_replay_weight_mode == "sqrt_count"
 
     arena = module.load_arena_config(module.DEFAULT_ARENA_CONFIG)
     assert arena.games == 400
@@ -158,7 +158,7 @@ def test_run_gumbel_ablation_uses_shared_initial_checkpoint(
         printer=PipelinePrinter(enabled=False),
     )
 
-    assert seen_work_dirs == [tmp_path / "pure", tmp_path / "modified"]
+    assert seen_work_dirs == [tmp_path / "pure", tmp_path / "aggregate"]
     assert summary.arena_summary["candidate_win_rate"] == 1.0
     assert (tmp_path / "reports" / "summary.json").is_file()
-    assert (tmp_path / "reports" / "modified-vs-pure-arena.json").is_file()
+    assert (tmp_path / "reports" / "aggregate-vs-pure-arena.json").is_file()

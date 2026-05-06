@@ -32,7 +32,7 @@ from great_kingdom_ai.train import (
 )
 
 DEFAULT_PURE_PIPELINE_CONFIG = Path("configs/ablation/gumbel-pure-pipeline.json")
-DEFAULT_MODIFIED_PIPELINE_CONFIG = Path("configs/ablation/gumbel-modified-pipeline.json")
+DEFAULT_MODIFIED_PIPELINE_CONFIG = Path("configs/ablation/gumbel-aggregate-pipeline.json")
 DEFAULT_TRAIN_CONFIG = Path("configs/ablation/gumbel-train-runpod-fast.json")
 DEFAULT_ARENA_CONFIG = Path("configs/ablation/gumbel-arena-runpod-fast.json")
 DEFAULT_RUN_ROOT = Path("data/ablation/gumbel")
@@ -43,7 +43,7 @@ class GumbelAblationSummary:
     run_dir: Path
     initial_checkpoint: Path
     pure_pipeline: RustOnnxPipelineSummary
-    modified_pipeline: RustOnnxPipelineSummary
+    aggregate_pipeline: RustOnnxPipelineSummary
     arena_report: Path
     arena_summary: dict[str, Any]
 
@@ -52,7 +52,7 @@ class GumbelAblationSummary:
             "run_dir": str(self.run_dir),
             "initial_checkpoint": str(self.initial_checkpoint),
             "pure_pipeline": self.pure_pipeline.to_dict(),
-            "modified_pipeline": self.modified_pipeline.to_dict(),
+            "aggregate_pipeline": self.aggregate_pipeline.to_dict(),
             "arena_report": str(self.arena_report),
             "arena_summary": self.arena_summary,
         }
@@ -80,7 +80,7 @@ def run_gumbel_ablation(
     )
     modified_config = _variant_pipeline_config(
         modified_pipeline_config,
-        run_dir / "modified",
+        run_dir / "aggregate",
         min_replay_samples=train_config.batch_size,
     )
 
@@ -93,7 +93,7 @@ def run_gumbel_ablation(
         printer=printer,
     )
 
-    printer.title("Modified Gumbel")
+    printer.title("Aggregate-only Gumbel")
     _install_initial_checkpoint(initial_checkpoint, modified_config)
     modified_summary = run_rust_onnx_pipeline(
         pipeline_config=modified_config,
@@ -104,9 +104,9 @@ def run_gumbel_ablation(
 
     pure_candidate = _last_candidate_checkpoint(pure_summary, "pure")
     modified_candidate = _last_candidate_checkpoint(modified_summary, "modified")
-    report_path = run_dir / "reports" / "modified-vs-pure-arena.json"
+    report_path = run_dir / "reports" / "aggregate-vs-pure-arena.json"
 
-    printer.title("Modified vs Pure Arena")
+    printer.title("Aggregate-only vs Pure Arena")
     report = run_arena(
         candidate_model=load_model_from_checkpoint(modified_candidate, device=arena_config.device),
         best_model=load_model_from_checkpoint(pure_candidate, device=arena_config.device),
@@ -115,7 +115,7 @@ def run_gumbel_ablation(
             "arena games",
             current,
             target,
-            detail=f"winner={game.winner}, modified_player={game.candidate_player}",
+            detail=f"winner={game.winner}, aggregate_player={game.candidate_player}",
         ),
     )
     save_arena_report(report, report_path)
@@ -123,7 +123,7 @@ def run_gumbel_ablation(
         run_dir=run_dir,
         initial_checkpoint=initial_checkpoint,
         pure_pipeline=pure_summary,
-        modified_pipeline=modified_summary,
+        aggregate_pipeline=modified_summary,
         arena_report=report_path,
         arena_summary=report.summary.to_dict(),
     )
@@ -133,13 +133,16 @@ def run_gumbel_ablation(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run a quick pure-vs-modified Gumbel training ablation and arena."
+        description="Run a quick pure-vs-aggregate-only Gumbel training ablation and arena."
     )
     parser.add_argument("--pure-pipeline-config", type=Path, default=DEFAULT_PURE_PIPELINE_CONFIG)
     parser.add_argument(
+        "--aggregate-pipeline-config",
         "--modified-pipeline-config",
+        dest="modified_pipeline_config",
         type=Path,
         default=DEFAULT_MODIFIED_PIPELINE_CONFIG,
+        metavar="AGGREGATE_PIPELINE_CONFIG",
     )
     parser.add_argument("--train-config", type=Path, default=DEFAULT_TRAIN_CONFIG)
     parser.add_argument("--arena-config", type=Path, default=DEFAULT_ARENA_CONFIG)
