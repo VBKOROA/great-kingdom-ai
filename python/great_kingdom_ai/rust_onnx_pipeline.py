@@ -32,7 +32,7 @@ from great_kingdom_ai.replay_buffer import ReplayBuffer
 from great_kingdom_ai.rust_onnx_replay import (
     RustReplayImportSummary,
     import_legacy_pipeline_data,
-    import_rust_self_play_artifacts,
+    import_rust_self_play_samples,
 )
 from great_kingdom_ai.rust_onnx_self_play import (
     RustOnnxSelfPlayConfig,
@@ -404,7 +404,9 @@ def _paths(config: RustOnnxPipelineConfig) -> dict[str, Path]:
 
 
 def _ensure_dirs(config: RustOnnxPipelineConfig) -> None:
-    for path in _paths(config).values():
+    for name, path in _paths(config).items():
+        if name == "self_play_dir":
+            continue
         if path.suffix:
             path.parent.mkdir(parents=True, exist_ok=True)
         else:
@@ -451,7 +453,7 @@ def _generate_and_import_self_play(
         )
         batch_index += 1
         artifact_dir = artifact_root / f"batch-{batch_index:03d}"
-        printer.step(f"running Rust ONNX self-play -> {artifact_dir}")
+        printer.step(f"running Rust ONNX self-play batch {batch_index}")
         self_play_summary = runner(
             RustOnnxSelfPlayConfig(
                 onnx_model_path=onnx_path,
@@ -474,9 +476,25 @@ def _generate_and_import_self_play(
             detail=f"samples={total_samples}, seed_next={seed_cursor}",
         )
 
-        printer.step("importing Rust self-play artifacts into replay")
-        replay_import = import_rust_self_play_artifacts(
+        printer.step("adding Rust self-play samples to replay")
+        batch_samples = list(self_play_summary.replay_samples)
+        game_logs = list(self_play_summary.game_logs)
+        if len(batch_samples) != self_play_summary.samples:
+            raise RuntimeError(
+                "Rust ONNX self-play runner returned samples="
+                f"{self_play_summary.samples} but replay_samples="
+                f"{len(batch_samples)}"
+            )
+        if len(game_logs) != self_play_summary.games:
+            raise RuntimeError(
+                "Rust ONNX self-play runner returned games="
+                f"{self_play_summary.games} but game_logs={len(game_logs)}"
+            )
+
+        replay_import = import_rust_self_play_samples(
             artifact_dir=self_play_summary.artifact_dir,
+            samples=batch_samples,
+            logs=game_logs,
             replay_path=replay_path,
             replay_capacity=pipeline_config.replay_capacity,
             game_log_path=game_log_path,

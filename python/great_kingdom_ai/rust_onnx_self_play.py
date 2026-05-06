@@ -1,9 +1,9 @@
-"""Python wrapper for Rust ONNX self-play artifact generation."""
+"""Python wrapper for Rust ONNX self-play generation."""
 
 from __future__ import annotations
 
 import random
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -11,7 +11,6 @@ import numpy as np
 
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.replay_buffer import ReplaySample
-from great_kingdom_ai.rust_onnx_replay import write_rust_self_play_artifacts
 from great_kingdom_ai.self_play import GameLog, MoveLog, SelfPlayConfig
 from great_kingdom_ai.self_play_data import value_target_for_player
 
@@ -35,6 +34,8 @@ class RustSelfPlayRunSummary:
     samples: int
     onnx_model_path: Path
     onnx_device: str
+    replay_samples: tuple[ReplaySample, ...] = ()
+    game_logs: tuple[GameLog, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -71,28 +72,14 @@ def run_rust_onnx_self_play(config: RustOnnxSelfPlayConfig) -> RustSelfPlayRunSu
         seed += batch_size
         remaining -= batch_size
 
-    artifact_dir = write_rust_self_play_artifacts(
-        output_dir=config.output_dir,
-        samples=samples,
-        logs=logs,
-        manifest={
-            "format_version": 1,
-            "board_size": BOARD_SIZE,
-            "feature_channels": FEATURE_CHANNELS,
-            "action_space": 82,
-            "model_path": str(config.onnx_model_path),
-            "onnx_device": config.onnx_device,
-            "gumbel_config": asdict(config.self_play),
-            "seed_start": config.seed_start,
-            "games": config.games,
-        },
-    )
     return RustSelfPlayRunSummary(
-        artifact_dir=artifact_dir,
+        artifact_dir=config.output_dir,
         games=len(logs),
         samples=len(samples),
         onnx_model_path=config.onnx_model_path,
         onnx_device=config.onnx_device,
+        replay_samples=tuple(samples),
+        game_logs=tuple(logs),
     )
 
 

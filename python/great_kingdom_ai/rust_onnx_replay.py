@@ -1,4 +1,4 @@
-"""Replay import/export helpers for the Rust ONNX self-play pipeline."""
+"""Replay import helpers for the Rust ONNX self-play pipeline."""
 
 from __future__ import annotations
 
@@ -10,14 +10,10 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 import numpy as np
-from safetensors.numpy import load_file, save_file
 
-from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.online_aggregate_replay import OnlineAggregateReplayBuffer
 from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
 from great_kingdom_ai.self_play import GameLog
-
-FEATURE_SHAPE = (FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
 
 
 @dataclass(frozen=True)
@@ -64,28 +60,11 @@ class LegacyImportSummary:
         }
 
 
-def write_rust_self_play_artifacts(
-    *,
-    output_dir: str | Path,
-    samples: list[ReplaySample],
-    logs: list[GameLog],
-    manifest: dict[str, Any],
-) -> Path:
-    destination = Path(output_dir)
-    destination.mkdir(parents=True, exist_ok=True)
-    tensors = _samples_to_tensors(samples)
-    save_file(tensors, destination / "samples.safetensors")
-    with (destination / "games.jsonl").open("w", encoding="utf-8") as file:
-        for log in logs:
-            file.write(json.dumps(log.to_dict(), sort_keys=True))
-            file.write("\n")
-    _write_json(destination / "manifest.json", manifest)
-    return destination
-
-
-def import_rust_self_play_artifacts(
+def import_rust_self_play_samples(
     *,
     artifact_dir: str | Path,
+    samples: list[ReplaySample],
+    logs: list[GameLog],
     replay_path: str | Path,
     replay_capacity: int,
     game_log_path: str | Path | None = None,
@@ -97,9 +76,7 @@ def import_rust_self_play_artifacts(
     if not materialize_raw_replay and aggregate_replay_path is None:
         raise ValueError("materialize_raw_replay=False requires aggregate_replay_path")
 
-    source = Path(artifact_dir)
-    tensors = load_file(source / "samples.safetensors")
-    samples = _samples_from_tensors(tensors)
+    artifact = Path(artifact_dir)
     replay_file = Path(replay_path)
     replay_samples = 0
     if materialize_raw_replay:
@@ -124,19 +101,18 @@ def import_rust_self_play_artifacts(
         if not materialize_raw_replay:
             replay_samples = aggregate_samples
 
-    game_dicts = _read_jsonl_dicts(source / "games.jsonl")
     if game_log_path is not None:
         log_path = Path(game_log_path)
         existing = _read_json_list(log_path) if log_path.exists() else []
-        existing.extend(game_dicts)
+        existing.extend(log.to_dict() for log in logs)
         _write_json(log_path, existing)
 
     return RustReplayImportSummary(
-        artifact_dir=source,
+        artifact_dir=artifact,
         replay_path=replay_file,
         imported_samples=len(samples),
         replay_samples=replay_samples,
-        imported_games=len(game_dicts),
+        imported_games=len(logs),
     )
 
 
@@ -215,59 +191,6 @@ def main() -> NoReturn:
     )
     print(json.dumps(summary.to_dict(), sort_keys=True))
     raise SystemExit(0)
-
-
-def _samples_to_tensors(samples: list[ReplaySample]) -> dict[str, np.ndarray]:
-    if samples:
-        features = np.stack([sample.features for sample in samples]).astype(np.float32)
-        policy = np.stack([sample.policy for sample in samples]).astype(np.float32)
-        value = np.asarray([sample.value for sample in samples], dtype=np.float32)
-    else:
-        features = np.empty((0, *FEATURE_SHAPE), dtype=np.float32)
-        policy = np.empty((0, ACTION_SPACE), dtype=np.float32)
-        value = np.empty((0,), dtype=np.float32)
-    tensors = {"features": features, "policy": policy, "value": value}
-    root_policy_logits = _root_policy_logits_array(samples)
-    if root_policy_logits is not None:
-        tensors["root_policy_logits"] = root_policy_logits
-    return tensors
-
-
-def _samples_from_tensors(tensors: dict[str, np.ndarray]) -> list[ReplaySample]:
-    features = np.asarray(tensors["features"], dtype=np.float32)
-    policy = np.asarray(tensors["policy"], dtype=np.float32)
-    value = np.asarray(tensors["value"], dtype=np.float32)
-    root_policy_logits = (
-        np.asarray(tensors["root_policy_logits"], dtype=np.float32)
-        if "root_policy_logits" in tensors
-        else None
-    )
-    if features.shape[1:] != FEATURE_SHAPE:
-        raise ValueError(f"expected features shape [N, {FEATURE_SHAPE}], got {features.shape}")
-    if policy.shape != (features.shape[0], ACTION_SPACE):
-        expected_policy_shape = (features.shape[0], ACTION_SPACE)
-        raise ValueError(f"expected policy shape {expected_policy_shape}, got {policy.shape}")
-    if value.shape != (features.shape[0],):
-        raise ValueError(f"expected value shape {(features.shape[0],)}, got {value.shape}")
-    if root_policy_logits is not None and root_policy_logits.shape != policy.shape:
-        raise ValueError(
-            "expected root_policy_logits shape to match policy shape, "
-            f"got {root_policy_logits.shape}"
-        )
-    return [
-        ReplaySample(
-            features=features[index],
-            policy=policy[index],
-            value=float(value[index]),
-            root_policy_logits=(
-                root_policy_logits[index]
-                if root_policy_logits is not None
-                and np.isfinite(root_policy_logits[index]).all()
-                else None
-            ),
-        )
-        for index in range(features.shape[0])
-    ]
 
 
 def _load_replay_with_capacity(path: Path, capacity: int) -> ReplayBuffer:
@@ -368,34 +291,9 @@ def _read_json_list(path: Path) -> list[dict[str, Any]]:
     return [dict(item) for item in data if isinstance(item, dict)]
 
 
-def _read_jsonl_dicts(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    rows: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as file:
-        for line in file:
-            stripped = line.strip()
-            if stripped:
-                data = json.loads(stripped)
-                if isinstance(data, dict):
-                    rows.append(dict(data))
-    return rows
-
-
 def _write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True), encoding="utf-8")
-
-
-def _root_policy_logits_array(samples: list[ReplaySample]) -> np.ndarray | None:
-    if not any(sample.root_policy_logits is not None for sample in samples):
-        return None
-    rows = np.full((len(samples), ACTION_SPACE), np.nan, dtype=np.float32)
-    for index, sample in enumerate(samples):
-        if sample.root_policy_logits is None:
-            continue
-        rows[index] = np.asarray(sample.root_policy_logits, dtype=np.float32)
-    return rows
 
 
 def _copy_if_exists(source: Path, destination: Path) -> Path | None:
@@ -434,6 +332,5 @@ __all__ = [
     "LegacyImportSummary",
     "RustReplayImportSummary",
     "import_legacy_pipeline_data",
-    "import_rust_self_play_artifacts",
-    "write_rust_self_play_artifacts",
+    "import_rust_self_play_samples",
 ]

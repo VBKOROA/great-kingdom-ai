@@ -8,8 +8,7 @@ from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
 from great_kingdom_ai.rust_onnx_replay import (
     import_legacy_pipeline_data,
-    import_rust_self_play_artifacts,
-    write_rust_self_play_artifacts,
+    import_rust_self_play_samples,
 )
 from great_kingdom_ai.self_play import GameLog, MoveLog
 
@@ -39,17 +38,13 @@ def make_log(seed: int) -> GameLog:
     )
 
 
-def test_import_rust_self_play_artifacts_extends_replay_and_logs(tmp_path: Path) -> None:
+def test_import_rust_self_play_samples_extends_replay_and_logs(tmp_path: Path) -> None:
     artifact_dir = tmp_path / "artifact"
-    write_rust_self_play_artifacts(
-        output_dir=artifact_dir,
+
+    summary = import_rust_self_play_samples(
+        artifact_dir=artifact_dir,
         samples=[make_sample(0), make_sample(1)],
         logs=[make_log(10)],
-        manifest={"format_version": 1},
-    )
-
-    summary = import_rust_self_play_artifacts(
-        artifact_dir=artifact_dir,
         replay_path=tmp_path / "replay" / "replay.npz",
         replay_capacity=8,
         game_log_path=tmp_path / "replay" / "game_logs.json",
@@ -62,9 +57,10 @@ def test_import_rust_self_play_artifacts_extends_replay_and_logs(tmp_path: Path)
     sample = replay.sample(1, random.Random(1))[0]
     assert sample.root_policy_logits is not None
     assert '"seed": 10' in (tmp_path / "replay" / "game_logs.json").read_text()
+    assert not artifact_dir.exists()
 
 
-def test_import_rust_self_play_artifacts_updates_online_aggregate_replay(
+def test_import_rust_self_play_samples_updates_online_aggregate_replay(
     tmp_path: Path,
 ) -> None:
     artifact_dir = tmp_path / "artifact"
@@ -75,15 +71,11 @@ def test_import_rust_self_play_artifacts_updates_online_aggregate_replay(
         value=-1.0,
         root_policy_logits=first.root_policy_logits,
     )
-    write_rust_self_play_artifacts(
-        output_dir=artifact_dir,
+
+    import_rust_self_play_samples(
+        artifact_dir=artifact_dir,
         samples=[first, second],
         logs=[make_log(10)],
-        manifest={"format_version": 1},
-    )
-
-    import_rust_self_play_artifacts(
-        artifact_dir=artifact_dir,
         replay_path=tmp_path / "replay" / "replay.npz",
         replay_capacity=8,
         aggregate_replay_path=tmp_path / "replay" / "replay-aggregated.npz",
@@ -98,9 +90,10 @@ def test_import_rust_self_play_artifacts_updates_online_aggregate_replay(
     assert np.isclose(sample.policy[1], 0.5)
     assert np.isclose(sample.value, 0.0)
     assert np.isclose(sample.sample_weight, np.log1p(2.0))
+    assert not artifact_dir.exists()
 
 
-def test_import_rust_self_play_artifacts_can_skip_raw_replay_materialization(
+def test_import_rust_self_play_samples_can_skip_raw_replay_materialization(
     tmp_path: Path,
 ) -> None:
     artifact_dir = tmp_path / "artifact"
@@ -111,15 +104,11 @@ def test_import_rust_self_play_artifacts_can_skip_raw_replay_materialization(
         value=-1.0,
         root_policy_logits=first.root_policy_logits,
     )
-    write_rust_self_play_artifacts(
-        output_dir=artifact_dir,
+
+    summary = import_rust_self_play_samples(
+        artifact_dir=artifact_dir,
         samples=[first, second],
         logs=[make_log(10)],
-        manifest={"format_version": 1},
-    )
-
-    summary = import_rust_self_play_artifacts(
-        artifact_dir=artifact_dir,
         replay_path=tmp_path / "replay" / "replay.npz",
         replay_capacity=8,
         aggregate_replay_path=tmp_path / "replay" / "replay-aggregated.npz",
@@ -137,6 +126,7 @@ def test_import_rust_self_play_artifacts_can_skip_raw_replay_materialization(
     assert np.isclose(sample.policy[0], 0.5)
     assert np.isclose(sample.policy[1], 0.5)
     assert np.isclose(sample.value, 0.0)
+    assert not artifact_dir.exists()
 
 
 def test_import_legacy_pipeline_data_copies_replay_logs_and_checkpoints(

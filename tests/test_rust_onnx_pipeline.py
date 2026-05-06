@@ -12,7 +12,6 @@ from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.pipeline import PipelinePrinter
 from great_kingdom_ai.replay_buffer import ReplaySample
 from great_kingdom_ai.rust_onnx_pipeline import RustOnnxPipelineConfig, run_rust_onnx_pipeline
-from great_kingdom_ai.rust_onnx_replay import write_rust_self_play_artifacts
 from great_kingdom_ai.rust_onnx_self_play import RustOnnxSelfPlayConfig, RustSelfPlayRunSummary
 from great_kingdom_ai.self_play import GameLog, MoveLog, SelfPlayConfig
 from great_kingdom_ai.train import TrainingConfig
@@ -41,18 +40,14 @@ def fake_runner(config: RustOnnxSelfPlayConfig) -> RustSelfPlayRunSummary:
         )
     ]
     samples = [make_sample(config.seed_start), make_sample(config.seed_start + 1)]
-    artifact_dir = write_rust_self_play_artifacts(
-        output_dir=config.output_dir,
-        samples=samples,
-        logs=logs,
-        manifest={"format_version": 1, "model_path": str(config.onnx_model_path)},
-    )
     return RustSelfPlayRunSummary(
-        artifact_dir=artifact_dir,
+        artifact_dir=config.output_dir,
         games=len(logs),
         samples=len(samples),
         onnx_model_path=config.onnx_model_path,
         onnx_device=config.onnx_device,
+        replay_samples=tuple(samples),
+        game_logs=tuple(logs),
     )
 
 
@@ -144,6 +139,7 @@ def test_rust_onnx_pipeline_dispatches_runner_and_imports_replay(
     assert (tmp_path / "replay" / "game_logs.json").is_file()
     assert not (tmp_path / "replay" / "replay.npz").exists()
     assert (tmp_path / "replay" / "replay-aggregated.npz").is_file()
+    assert not (tmp_path / "self-play").exists()
 
     with np.load(tmp_path / "replay" / "replay-aggregated.npz") as data:
         assert data["features"].shape[0] == 2
