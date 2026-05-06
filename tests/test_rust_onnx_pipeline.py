@@ -142,6 +142,7 @@ def test_rust_onnx_pipeline_dispatches_runner_and_imports_replay(
     assert bootstrap_paths == [None]
     assert (tmp_path / "checkpoints" / "candidate.pt").read_text(encoding="utf-8") == "candidate"
     assert (tmp_path / "replay" / "game_logs.json").is_file()
+    assert not (tmp_path / "replay" / "replay.npz").exists()
     assert (tmp_path / "replay" / "replay-aggregated.npz").is_file()
 
     with np.load(tmp_path / "replay" / "replay-aggregated.npz") as data:

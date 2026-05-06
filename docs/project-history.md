@@ -247,6 +247,34 @@ compressed로 유지해서 다른 경로의 동작은 바꾸지 않았다. 이 �
 replay 파일 크기를 키우는 tradeoff를 갖는다. 다음 확인 포인트는 Runpod에서 import 단계 wall time이 줄었는지,
 그리고 디스크 사용량 증가가 운영상 허용 가능한지 확인하는 것이다.
 
+압축을 끈 뒤에도 `importing Rust self-play artifacts into replay` 단계에는 다음 구조적 병목 후보가 남아 있다.
+
+- `samples.safetensors`를 한 번에 읽고, `_samples_from_tensors()`에서 모든 row를 `ReplaySample` 객체 리스트로
+  풀어낸다. 이 과정은 sample마다 Python object 생성, `root_policy_logits` finite check, float 변환을 수행한다.
+- 기존 raw `replay.npz`를 `ReplayBuffer.load()`로 전체 로드한다. 로드 후 모든 row가 다시 `ReplaySample`로
+  재구성되고, `_validated_sample()`을 거치며 features/policy/root logits copy가 발생한다.
+- 새 sample을 붙인 뒤 `ReplayBuffer.save(..., compressed=False)`가 raw replay 전체를 `np.stack`으로 다시
+  배열화하고 `.npz` 전체를 재작성한다. 압축 CPU 비용은 줄었지만 O(N) 전체 복사와 전체 디스크 write는 그대로다.
+- `aggregate_replay=true`이면 `OnlineAggregateReplayBuffer.load()`가 aggregate replay 전체를 읽고 row마다
+  `_AggregateEntry`와 feature digest를 다시 만든다.
+- aggregate에 새 sample을 추가할 때 sample마다 validation/copy와 `features.tobytes()` 기반 `blake2b` hashing이
+  발생한다.
+- `OnlineAggregateReplayBuffer.save(..., compressed=False)`도 unique aggregate row 전체를 다시 stack/save한다.
+- `replay-aggregated.npz`가 없는 기존 work dir에서는 raw replay 전체를 한 번 읽어 online aggregate를 만드는
+  fallback이 있어 최초 1회 비용이 크다.
+- `game_logs.json`은 기존 JSON list 전체를 읽고 pretty JSON으로 전체 재작성한다. game 수가 커지면 작지만
+  누적되는 import tail latency가 될 수 있다.
+
+따라서 압축 해제 이후의 우선순위는 raw/aggregate replay의 전체 load-save 구조를 append/shard 기반 저장으로
+바꾸는 것이다. 그 다음 후보는 `ReplaySample` 객체화를 줄이고 NumPy 배열 batch 단위로 검증/저장하는 경로,
+aggregate digest 재생성 최소화, game log append-only 전환이다.
+
+가장 먼저 가성비가 큰 완화로, Rust ONNX pipeline의 `aggregate_replay=true` 경로에서는 import 단계에서 raw
+`replay.npz`를 매번 materialize하지 않도록 바꿨다. 이 경로는 학습에 `replay-aggregated.npz`를 사용하므로,
+새 self-play artifact는 online aggregate replay에만 반영하고 raw 원본은
+`self-play/iteration-*/batch-*/samples.safetensors` artifact로 남긴다. `aggregate_replay=false` 경로와
+직접 `import_rust_self_play_artifacts()`를 호출하는 기본 동작은 기존처럼 raw `replay.npz`를 저장한다.
+
 ## 10. 현재 성능 병목: Gumbel select hot path
 
 학습 품질 개선과 별개로, Runpod profile에서는 Gumbel search의 최대 성능 병목이 neural eval이 아니라 select 단계로 드러났다.

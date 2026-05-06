@@ -485,6 +485,7 @@ def _generate_and_import_self_play(
             ),
             aggregate_replay_weight_mode=pipeline_config.aggregate_replay_weight_mode,
             aggregate_replay_weight_cap=pipeline_config.aggregate_replay_weight_cap,
+            materialize_raw_replay=not pipeline_config.aggregate_replay,
         )
         imported_games += replay_import.imported_games
         imported_samples += replay_import.imported_samples

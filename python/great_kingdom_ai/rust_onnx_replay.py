@@ -92,25 +92,37 @@ def import_rust_self_play_artifacts(
     aggregate_replay_path: str | Path | None = None,
     aggregate_replay_weight_mode: str = "sqrt_count",
     aggregate_replay_weight_cap: float | None = 16.0,
+    materialize_raw_replay: bool = True,
 ) -> RustReplayImportSummary:
+    if not materialize_raw_replay and aggregate_replay_path is None:
+        raise ValueError("materialize_raw_replay=False requires aggregate_replay_path")
+
     source = Path(artifact_dir)
     tensors = load_file(source / "samples.safetensors")
     samples = _samples_from_tensors(tensors)
     replay_file = Path(replay_path)
-    replay = (
-        ReplayBuffer.load(replay_file) if replay_file.exists() else ReplayBuffer(replay_capacity)
-    )
-    replay.extend(samples)
-    replay.save(replay_file, compressed=False)
+    replay_samples = 0
+    if materialize_raw_replay:
+        replay = (
+            ReplayBuffer.load(replay_file)
+            if replay_file.exists()
+            else ReplayBuffer(replay_capacity)
+        )
+        replay.extend(samples)
+        replay.save(replay_file, compressed=False)
+        replay_samples = len(replay)
     if aggregate_replay_path is not None:
-        _extend_online_aggregate_replay(
+        aggregate_samples = _extend_online_aggregate_replay(
             aggregate_replay_path=Path(aggregate_replay_path),
             raw_replay_path=replay_file,
             replay_capacity=replay_capacity,
             samples=samples,
             sample_weight_mode=aggregate_replay_weight_mode,
             sample_weight_cap=aggregate_replay_weight_cap,
+            raw_replay_includes_samples=materialize_raw_replay,
         )
+        if not materialize_raw_replay:
+            replay_samples = aggregate_samples
 
     game_dicts = _read_jsonl_dicts(source / "games.jsonl")
     if game_log_path is not None:
@@ -123,7 +135,7 @@ def import_rust_self_play_artifacts(
         artifact_dir=source,
         replay_path=replay_file,
         imported_samples=len(samples),
-        replay_samples=len(replay),
+        replay_samples=replay_samples,
         imported_games=len(game_dicts),
     )
 
@@ -287,7 +299,8 @@ def _extend_online_aggregate_replay(
     samples: list[ReplaySample],
     sample_weight_mode: str,
     sample_weight_cap: float | None,
-) -> None:
+    raw_replay_includes_samples: bool,
+) -> int:
     if aggregate_replay_path.exists():
         replay = OnlineAggregateReplayBuffer.load(
             aggregate_replay_path,
@@ -302,11 +315,15 @@ def _extend_online_aggregate_replay(
             sample_weight_mode=sample_weight_mode,
             sample_weight_cap=sample_weight_cap,
         )
-        _extend_online_aggregate_from_file(
-            replay,
-            raw_replay_path,
-        )
+        if raw_replay_path.exists():
+            _extend_online_aggregate_from_file(
+                replay,
+                raw_replay_path,
+            )
+        if not raw_replay_includes_samples:
+            replay.extend(samples)
     replay.save(aggregate_replay_path, compressed=False)
+    return len(replay)
 
 
 def _extend_online_aggregate_from_file(
