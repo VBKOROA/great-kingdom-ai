@@ -254,11 +254,18 @@ action lookup table 적용 후 profile에서는 의미 있는 개선이 확인�
 `scheduler_next`, `state_clone`, `search`, `apply`, `inner_select`, `edge_lookup`, `leaf_clone`,
 `reserve_path`, `scheduler_reserve`, `terminal_backup`, `complete_reserved` 세부 시간이 출력된다.
 
+select detail profile에서는 `GameState::apply()`가 search 내부 시간의 대부분을 차지했다. 코어 규칙
+동작을 바꾸지 않고 원인을 더 좁히기 위해 `GKA_GAME_APPLY_PROFILE=1` 플래그를 추가했다. 이 플래그는
+기본값으로 10,000회 apply마다 `[gka-game-apply-profile]` 합산 로그를 출력하며,
+`terminal_check`, `place_validate`, `territory_check`, `place_mutate`, `opponent_destroyed`,
+`own_destroyed`, `pass_score`, `finish`, `switch_turn` 시간을 분리한다. 출력 주기는
+`GKA_GAME_APPLY_PROFILE_INTERVAL`로 조정한다.
+
 남은 우선순위는 다음이다.
 
-1. Runpod select detail profile로 `GameState::clone/apply`, scheduler, path/reserve 중 실제 병목을 확정한다.
-2. 병목이 scheduler 재검색이면 scheduler index API로 `next_action()` 이후 `reserve_visit(action)` 재검색을 줄인다.
-3. 그래도 backup 비중이 크면 backup 경로를 별도 최적화한다.
+1. Runpod apply profile로 territory/group destruction/pass scoring 중 실제 apply 병목을 확정한다.
+2. 병목이 검증/영토 체크면 search 전용 trusted apply 가능성을 검토한다.
+3. 병목이 group/liberty 탐색이면 해당 규칙 helper를 별도 최적화한다.
 
 기대 효과는 select 시간을 20~50% 줄여 전체 wall time을 약 8~20% 개선하는 것이다.
 
@@ -274,8 +281,8 @@ action lookup table 적용 후 profile에서는 의미 있는 개선이 확인�
 - Gumbel policy target이 지나치게 hard한 문제는 temperature와 target scale 분리 실험으로 진단됐다.
 - 하지만 가장 최근 aggregate 실험에서는 target scale/temperature보다 exact-state aggregate replay가 더 확실한 strength 개선을 보였다.
 - 현재 실전 방향은 pure Gumbel search/target을 유지하면서 count-aware aggregate replay를 채택하는 쪽이다.
-- 다음 성능 개선 후보는 Runpod select detail profile로 select 내부 병목을 확정한 뒤 scheduler index API나
-  `GameState::clone/apply` 최적화를 검토하는 것이다.
+- 다음 성능 개선 후보는 Runpod apply profile로 `GameState::apply()` 내부 병목을 확정한 뒤 trusted apply나
+  group/liberty helper 최적화를 검토하는 것이다.
 
 ## 11. 남은 과제
 
@@ -286,7 +293,7 @@ action lookup table 적용 후 profile에서는 의미 있는 개선이 확인�
 3. aggregate-only 설정을 full Runpod config에서 더 긴 학습과 arena로 검증한다.
 4. arena가 약해지면 target sharpen ablation을 다시 비교한다.
 5. value variance가 명확한 병목이라는 근거가 쌓일 때만 Completed-Q value blending을 별도 ablation으로 진행한다.
-6. Runpod select detail profile로 select 내부 병목을 확정하고 후속 최적화를 진행한다.
+6. Runpod apply profile로 `GameState::apply()` 내부 병목을 확정하고 후속 최적화를 진행한다.
 7. README와 설정 파일은 실험 결론이 바뀔 때마다 현재 기본 경로와 legacy/fallback 경로를 명확히 구분해 갱신한다.
 
 ## 12. 참고한 문서

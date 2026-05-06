@@ -1,4 +1,12 @@
-use std::collections::VecDeque;
+use std::{
+    collections::VecDeque,
+    env,
+    sync::{
+        OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 use crate::game::{
     Action, BOARD_CELLS, BOARD_SIZE, CASTLES_PER_PLAYER, Cell, GameEndReason, GameOutcome,
@@ -7,13 +15,42 @@ use crate::game::{
 
 impl GameState {
     pub fn apply(&mut self, action: Action) -> Result<Option<GameOutcome>, InvalidAction> {
-        if self.terminal {
+        let profile = game_apply_profile();
+        if profile.enabled {
+            let mut trace = GameApplyTrace::default();
+            let total_start = Instant::now();
+            let result = self.apply_traced(action, Some(&mut trace));
+            trace.total_elapsed += total_start.elapsed();
+            profile.record(trace, &result);
+            return result;
+        }
+
+        self.apply_traced(action, None)
+    }
+
+    fn apply_traced(
+        &mut self,
+        action: Action,
+        mut trace: Option<&mut GameApplyTrace>,
+    ) -> Result<Option<GameOutcome>, InvalidAction> {
+        let terminal_start = trace.as_ref().map(|_| Instant::now());
+        let terminal = self.terminal;
+        if let (Some(trace), Some(start)) = (trace.as_deref_mut(), terminal_start) {
+            trace.terminal_check_elapsed += start.elapsed();
+        }
+        if terminal {
             return Err(InvalidAction::GameAlreadyEnded);
         }
 
+        if let Some(trace) = trace.as_deref_mut() {
+            match action {
+                Action::Place { .. } => trace.place_calls = trace.place_calls.saturating_add(1),
+                Action::Pass => trace.pass_calls = trace.pass_calls.saturating_add(1),
+            }
+        }
         match action {
-            Action::Place { row, col } => self.apply_place(row, col),
-            Action::Pass => self.apply_pass(),
+            Action::Place { row, col } => self.apply_place(row, col, trace),
+            Action::Pass => self.apply_pass(trace),
         }
     }
 
@@ -44,56 +81,121 @@ impl GameState {
         &mut self,
         row: usize,
         col: usize,
+        mut trace: Option<&mut GameApplyTrace>,
     ) -> Result<Option<GameOutcome>, InvalidAction> {
         // 착수 가능 여부는 rule-spec.md 7장/22장의 순서대로 보드 변경 전에 검사한다.
+        let validate_start = trace.as_ref().map(|_| Instant::now());
         if row >= BOARD_SIZE || col >= BOARD_SIZE {
+            if let (Some(trace), Some(start)) = (trace.as_deref_mut(), validate_start) {
+                trace.place_validate_elapsed += start.elapsed();
+            }
             return Err(InvalidAction::OutOfRange);
         }
         if self.current_player.used_count(self) >= CASTLES_PER_PLAYER {
+            if let (Some(trace), Some(start)) = (trace.as_deref_mut(), validate_start) {
+                trace.place_validate_elapsed += start.elapsed();
+            }
             return Err(InvalidAction::NoCastlesRemaining);
         }
 
         let index = row * BOARD_SIZE + col;
         if self.board[index] != Cell::Empty {
+            if let (Some(trace), Some(start)) = (trace.as_deref_mut(), validate_start) {
+                trace.place_validate_elapsed += start.elapsed();
+            }
             return Err(InvalidAction::OccupiedCell);
+        }
+        if let (Some(trace), Some(start)) = (trace.as_deref_mut(), validate_start) {
+            trace.place_validate_elapsed += start.elapsed();
         }
 
         let player = self.current_player;
+        let territory_start = trace.as_ref().map(|_| Instant::now());
         if self.is_territory_of(index, player.other()) {
+            if let (Some(trace), Some(start)) = (trace.as_deref_mut(), territory_start) {
+                trace.territory_check_elapsed += start.elapsed();
+            }
             return Err(InvalidAction::OpponentTerritory);
         }
+        if let (Some(trace), Some(start)) = (trace.as_deref_mut(), territory_start) {
+            trace.territory_check_elapsed += start.elapsed();
+        }
 
+        let mutate_start = trace.as_ref().map(|_| Instant::now());
         self.board[index] = player.cell();
         self.increment_current_player_used();
         self.previous_pass = false;
+        if let (Some(trace), Some(start)) = (trace.as_deref_mut(), mutate_start) {
+            trace.place_mutate_elapsed += start.elapsed();
+        }
 
         // 파괴 판정 순서가 승패를 결정한다. 상대 그룹 파괴가 자살수 판정보다 우선한다.
+        let opponent_destroyed_start = trace.as_ref().map(|_| Instant::now());
         if self.has_destroyed_group(player.other().cell()) {
-            return Ok(Some(
-                self.finish(GameEndReason::OpponentCastleDestroyed, player),
-            ));
+            if let (Some(trace), Some(start)) = (trace.as_deref_mut(), opponent_destroyed_start) {
+                trace.opponent_destroyed_elapsed += start.elapsed();
+            }
+            let finish_start = trace.as_ref().map(|_| Instant::now());
+            let outcome = self.finish(GameEndReason::OpponentCastleDestroyed, player);
+            if let (Some(trace), Some(start)) = (trace.as_deref_mut(), finish_start) {
+                trace.finish_elapsed += start.elapsed();
+            }
+            return Ok(Some(outcome));
+        }
+        if let (Some(trace), Some(start)) = (trace.as_deref_mut(), opponent_destroyed_start) {
+            trace.opponent_destroyed_elapsed += start.elapsed();
         }
 
+        let own_destroyed_start = trace.as_ref().map(|_| Instant::now());
         if self.group_at_is_destroyed(index) {
-            return Ok(Some(
-                self.finish(GameEndReason::OwnCastleDestroyed, player.other()),
-            ));
+            if let (Some(trace), Some(start)) = (trace.as_deref_mut(), own_destroyed_start) {
+                trace.own_destroyed_elapsed += start.elapsed();
+            }
+            let finish_start = trace.as_ref().map(|_| Instant::now());
+            let outcome = self.finish(GameEndReason::OwnCastleDestroyed, player.other());
+            if let (Some(trace), Some(start)) = (trace.as_deref_mut(), finish_start) {
+                trace.finish_elapsed += start.elapsed();
+            }
+            return Ok(Some(outcome));
+        }
+        if let (Some(trace), Some(start)) = (trace.as_deref_mut(), own_destroyed_start) {
+            trace.own_destroyed_elapsed += start.elapsed();
         }
 
+        let switch_start = trace.as_ref().map(|_| Instant::now());
         self.current_player = player.other();
+        if let (Some(trace), Some(start)) = (trace.as_deref_mut(), switch_start) {
+            trace.switch_turn_elapsed += start.elapsed();
+        }
         Ok(None)
     }
 
-    fn apply_pass(&mut self) -> Result<Option<GameOutcome>, InvalidAction> {
+    fn apply_pass(
+        &mut self,
+        mut trace: Option<&mut GameApplyTrace>,
+    ) -> Result<Option<GameOutcome>, InvalidAction> {
         if self.previous_pass {
             // 두 번째 연속 패스에서만 영토 점수를 계산한다.
+            let pass_score_start = trace.as_ref().map(|_| Instant::now());
             let winner = self.score_winner_after_consecutive_passes();
+            if let (Some(trace), Some(start)) = (trace.as_deref_mut(), pass_score_start) {
+                trace.pass_score_elapsed += start.elapsed();
+            }
+            let finish_start = trace.as_ref().map(|_| Instant::now());
             self.previous_pass = true;
-            return Ok(Some(self.finish(GameEndReason::ConsecutivePasses, winner)));
+            let outcome = self.finish(GameEndReason::ConsecutivePasses, winner);
+            if let (Some(trace), Some(start)) = (trace.as_deref_mut(), finish_start) {
+                trace.finish_elapsed += start.elapsed();
+            }
+            return Ok(Some(outcome));
         }
 
+        let switch_start = trace.as_ref().map(|_| Instant::now());
         self.previous_pass = true;
         self.current_player = self.current_player.other();
+        if let (Some(trace), Some(start)) = (trace.as_deref_mut(), switch_start) {
+            trace.switch_turn_elapsed += start.elapsed();
+        }
         Ok(None)
     }
 
@@ -193,6 +295,177 @@ pub(crate) fn neighbors(index: usize) -> impl Iterator<Item = usize> {
     }
 
     neighbors.into_iter().flatten()
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct GameApplyTrace {
+    total_elapsed: Duration,
+    terminal_check_elapsed: Duration,
+    place_validate_elapsed: Duration,
+    territory_check_elapsed: Duration,
+    place_mutate_elapsed: Duration,
+    opponent_destroyed_elapsed: Duration,
+    own_destroyed_elapsed: Duration,
+    pass_score_elapsed: Duration,
+    finish_elapsed: Duration,
+    switch_turn_elapsed: Duration,
+    place_calls: u64,
+    pass_calls: u64,
+}
+
+struct GameApplyProfile {
+    enabled: bool,
+    interval: u64,
+    window_calls: AtomicU64,
+    place_calls: AtomicU64,
+    pass_calls: AtomicU64,
+    errors: AtomicU64,
+    terminal_results: AtomicU64,
+    total_ns: AtomicU64,
+    terminal_check_ns: AtomicU64,
+    place_validate_ns: AtomicU64,
+    territory_check_ns: AtomicU64,
+    place_mutate_ns: AtomicU64,
+    opponent_destroyed_ns: AtomicU64,
+    own_destroyed_ns: AtomicU64,
+    pass_score_ns: AtomicU64,
+    finish_ns: AtomicU64,
+    switch_turn_ns: AtomicU64,
+}
+
+impl GameApplyProfile {
+    fn new() -> Self {
+        Self {
+            enabled: env_flag("GKA_GAME_APPLY_PROFILE"),
+            interval: env::var("GKA_GAME_APPLY_PROFILE_INTERVAL")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(10_000),
+            window_calls: AtomicU64::new(0),
+            place_calls: AtomicU64::new(0),
+            pass_calls: AtomicU64::new(0),
+            errors: AtomicU64::new(0),
+            terminal_results: AtomicU64::new(0),
+            total_ns: AtomicU64::new(0),
+            terminal_check_ns: AtomicU64::new(0),
+            place_validate_ns: AtomicU64::new(0),
+            territory_check_ns: AtomicU64::new(0),
+            place_mutate_ns: AtomicU64::new(0),
+            opponent_destroyed_ns: AtomicU64::new(0),
+            own_destroyed_ns: AtomicU64::new(0),
+            pass_score_ns: AtomicU64::new(0),
+            finish_ns: AtomicU64::new(0),
+            switch_turn_ns: AtomicU64::new(0),
+        }
+    }
+
+    fn record(&self, trace: GameApplyTrace, result: &Result<Option<GameOutcome>, InvalidAction>) {
+        if !self.enabled {
+            return;
+        }
+
+        self.place_calls
+            .fetch_add(trace.place_calls, Ordering::Relaxed);
+        self.pass_calls
+            .fetch_add(trace.pass_calls, Ordering::Relaxed);
+        if result.is_err() {
+            self.errors.fetch_add(1, Ordering::Relaxed);
+        }
+        if matches!(result, Ok(Some(_))) {
+            self.terminal_results.fetch_add(1, Ordering::Relaxed);
+        }
+        self.total_ns
+            .fetch_add(duration_ns(trace.total_elapsed), Ordering::Relaxed);
+        self.terminal_check_ns
+            .fetch_add(duration_ns(trace.terminal_check_elapsed), Ordering::Relaxed);
+        self.place_validate_ns
+            .fetch_add(duration_ns(trace.place_validate_elapsed), Ordering::Relaxed);
+        self.territory_check_ns.fetch_add(
+            duration_ns(trace.territory_check_elapsed),
+            Ordering::Relaxed,
+        );
+        self.place_mutate_ns
+            .fetch_add(duration_ns(trace.place_mutate_elapsed), Ordering::Relaxed);
+        self.opponent_destroyed_ns.fetch_add(
+            duration_ns(trace.opponent_destroyed_elapsed),
+            Ordering::Relaxed,
+        );
+        self.own_destroyed_ns
+            .fetch_add(duration_ns(trace.own_destroyed_elapsed), Ordering::Relaxed);
+        self.pass_score_ns
+            .fetch_add(duration_ns(trace.pass_score_elapsed), Ordering::Relaxed);
+        self.finish_ns
+            .fetch_add(duration_ns(trace.finish_elapsed), Ordering::Relaxed);
+        self.switch_turn_ns
+            .fetch_add(duration_ns(trace.switch_turn_elapsed), Ordering::Relaxed);
+
+        let calls = self.window_calls.fetch_add(1, Ordering::Relaxed) + 1;
+        if calls >= self.interval
+            && self
+                .window_calls
+                .compare_exchange(calls, 0, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        {
+            self.print_and_reset(calls);
+        }
+    }
+
+    fn print_and_reset(&self, calls: u64) {
+        let place_calls = self.place_calls.swap(0, Ordering::Relaxed);
+        let pass_calls = self.pass_calls.swap(0, Ordering::Relaxed);
+        let errors = self.errors.swap(0, Ordering::Relaxed);
+        let terminal_results = self.terminal_results.swap(0, Ordering::Relaxed);
+        let total_ns = self.total_ns.swap(0, Ordering::Relaxed);
+        let terminal_check_ns = self.terminal_check_ns.swap(0, Ordering::Relaxed);
+        let place_validate_ns = self.place_validate_ns.swap(0, Ordering::Relaxed);
+        let territory_check_ns = self.territory_check_ns.swap(0, Ordering::Relaxed);
+        let place_mutate_ns = self.place_mutate_ns.swap(0, Ordering::Relaxed);
+        let opponent_destroyed_ns = self.opponent_destroyed_ns.swap(0, Ordering::Relaxed);
+        let own_destroyed_ns = self.own_destroyed_ns.swap(0, Ordering::Relaxed);
+        let pass_score_ns = self.pass_score_ns.swap(0, Ordering::Relaxed);
+        let finish_ns = self.finish_ns.swap(0, Ordering::Relaxed);
+        let switch_turn_ns = self.switch_turn_ns.swap(0, Ordering::Relaxed);
+
+        eprintln!(
+            "[gka-game-apply-profile] calls={} place={} pass={} errors={} terminal={} total={:.3}s terminal_check={:.3}s place_validate={:.3}s territory_check={:.3}s place_mutate={:.3}s opponent_destroyed={:.3}s own_destroyed={:.3}s pass_score={:.3}s finish={:.3}s switch_turn={:.3}s",
+            calls,
+            place_calls,
+            pass_calls,
+            errors,
+            terminal_results,
+            ns_seconds(total_ns),
+            ns_seconds(terminal_check_ns),
+            ns_seconds(place_validate_ns),
+            ns_seconds(territory_check_ns),
+            ns_seconds(place_mutate_ns),
+            ns_seconds(opponent_destroyed_ns),
+            ns_seconds(own_destroyed_ns),
+            ns_seconds(pass_score_ns),
+            ns_seconds(finish_ns),
+            ns_seconds(switch_turn_ns),
+        );
+    }
+}
+
+fn game_apply_profile() -> &'static GameApplyProfile {
+    static PROFILE: OnceLock<GameApplyProfile> = OnceLock::new();
+    PROFILE.get_or_init(GameApplyProfile::new)
+}
+
+fn duration_ns(duration: Duration) -> u64 {
+    duration.as_nanos().min(u128::from(u64::MAX)) as u64
+}
+
+fn ns_seconds(nanoseconds: u64) -> f64 {
+    nanoseconds as f64 / 1_000_000_000.0
+}
+
+fn env_flag(name: &str) -> bool {
+    !matches!(
+        env::var(name).as_deref(),
+        Err(_) | Ok("") | Ok("0") | Ok("false") | Ok("False") | Ok("no") | Ok("No")
+    )
 }
 
 #[cfg(test)]
