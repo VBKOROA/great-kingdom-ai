@@ -1,6 +1,6 @@
 {
   "games": 400,
-  "batch_size": 32,
+  "batch_size": 256,
   "seed_start": 2000000,
   "max_turns": 180,
   "gumbel_simulations": 96,
@@ -11,7 +11,7 @@
   "policy_target_c_scale": 1.0,
   "policy_target_temperature": 1.0,
   "gumbel_seed": 800000,
-  "leaf_batch_size": 64,
+  "leaf_batch_size": 128,
   "device": "cuda",
   "promotion_threshold": 0.55
 }
