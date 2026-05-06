@@ -10,6 +10,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, NoReturn
 
+import numpy as np
+
 from great_kingdom_ai.evaluate import (
     ArenaConfig,
     load_arena_config,
@@ -18,6 +20,7 @@ from great_kingdom_ai.evaluate import (
     run_arena,
     save_arena_report,
 )
+from great_kingdom_ai.online_aggregate_replay import OnlineAggregateReplayBuffer
 from great_kingdom_ai.onnx_export import export_checkpoint_to_onnx
 from great_kingdom_ai.pipeline import PipelinePrinter
 from great_kingdom_ai.replay_aggregate import (
@@ -182,6 +185,7 @@ def run_rust_onnx_pipeline(
             onnx_path=onnx_path,
             artifact_root=artifact_root,
             replay_path=paths["replay_path"],
+            aggregated_replay_path=paths["aggregated_replay_path"],
             game_log_path=paths["game_log_path"],
             seed_cursor=seed_cursor,
             runner=runner,
@@ -285,7 +289,7 @@ def run_rust_onnx_pipeline(
 
     return RustOnnxPipelineSummary(
         iterations=summaries,
-        replay_samples=len(ReplayBuffer.load(paths["replay_path"])),
+        replay_samples=_final_replay_sample_count(paths, pipeline_config),
         best_checkpoint=paths["best_checkpoint"],
         replay_path=paths["replay_path"],
     )
@@ -413,6 +417,7 @@ def _generate_and_import_self_play(
     onnx_path: Path,
     artifact_root: Path,
     replay_path: Path,
+    aggregated_replay_path: Path,
     game_log_path: Path,
     seed_cursor: int,
     runner: Callable[[RustOnnxSelfPlayConfig], RustSelfPlayRunSummary],
@@ -475,6 +480,11 @@ def _generate_and_import_self_play(
             replay_path=replay_path,
             replay_capacity=pipeline_config.replay_capacity,
             game_log_path=game_log_path,
+            aggregate_replay_path=(
+                aggregated_replay_path if pipeline_config.aggregate_replay else None
+            ),
+            aggregate_replay_weight_mode=pipeline_config.aggregate_replay_weight_mode,
+            aggregate_replay_weight_cap=pipeline_config.aggregate_replay_weight_cap,
         )
         imported_games += replay_import.imported_games
         imported_samples += replay_import.imported_samples
@@ -558,6 +568,15 @@ def _prepare_training_replay(
     if not aggregate_replay:
         return ReplayBuffer.load(paths["replay_path"])
 
+    if paths["aggregated_replay_path"].exists():
+        printer.step("loading online aggregate replay for training")
+        _print_aggregate_replay_metrics(
+            paths["aggregated_replay_path"],
+            aggregate_replay_weight_mode,
+            printer,
+        )
+        return ReplayBuffer.load(paths["aggregated_replay_path"])
+
     printer.step("aggregating duplicate replay states for training")
     features, policies, values, root_policy_logits, capacity = load_replay(paths["replay_path"])
     aggregated = aggregate_duplicate_replay(
@@ -576,6 +595,51 @@ def _prepare_training_replay(
     printer.metric("aggregate max count", int(aggregated.counts.max(initial=0)))
     printer.metric("aggregate max weight", f"{aggregated.sample_weights.max(initial=1.0):.3f}")
     return ReplayBuffer.load(paths["aggregated_replay_path"])
+
+
+def _print_aggregate_replay_metrics(
+    replay_path: Path,
+    weight_mode: str,
+    printer: PipelinePrinter,
+) -> None:
+    with np.load(replay_path) as data:
+        features = np.asarray(data["features"], dtype=np.float32)
+        counts = (
+            np.asarray(data["counts"], dtype=np.int64)
+            if "counts" in data
+            else np.ones((features.shape[0],), dtype=np.int64)
+        )
+        sample_weights = (
+            np.asarray(data["sample_weights"], dtype=np.float32)
+            if "sample_weights" in data
+            else np.ones((features.shape[0],), dtype=np.float32)
+        )
+        raw_sample_count = (
+            int(data["raw_sample_count"])
+            if "raw_sample_count" in data
+            else int(counts.sum())
+        )
+    printer.metric("raw replay samples", raw_sample_count)
+    printer.metric("aggregated samples", features.shape[0])
+    printer.metric("aggregate weight mode", weight_mode)
+    printer.metric("aggregate max count", int(counts.max(initial=0)))
+    printer.metric("aggregate max weight", f"{sample_weights.max(initial=1.0):.3f}")
+
+
+def _final_replay_sample_count(
+    paths: dict[str, Path],
+    config: RustOnnxPipelineConfig,
+) -> int:
+    if config.aggregate_replay and paths["aggregated_replay_path"].exists():
+        return len(
+            OnlineAggregateReplayBuffer.load(
+                paths["aggregated_replay_path"],
+                capacity=config.replay_capacity,
+                sample_weight_mode=config.aggregate_replay_weight_mode,
+                sample_weight_cap=config.aggregate_replay_weight_cap,
+            )
+        )
+    return len(ReplayBuffer.load(paths["replay_path"]))
 
 
 def _arena_config_for_pipeline(

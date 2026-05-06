@@ -64,6 +64,42 @@ def test_import_rust_self_play_artifacts_extends_replay_and_logs(tmp_path: Path)
     assert '"seed": 10' in (tmp_path / "replay" / "game_logs.json").read_text()
 
 
+def test_import_rust_self_play_artifacts_updates_online_aggregate_replay(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "artifact"
+    first = make_sample(0)
+    second = ReplaySample(
+        features=first.features,
+        policy=np.eye(1, ACTION_SPACE, 1, dtype=np.float32)[0],
+        value=-1.0,
+        root_policy_logits=first.root_policy_logits,
+    )
+    write_rust_self_play_artifacts(
+        output_dir=artifact_dir,
+        samples=[first, second],
+        logs=[make_log(10)],
+        manifest={"format_version": 1},
+    )
+
+    import_rust_self_play_artifacts(
+        artifact_dir=artifact_dir,
+        replay_path=tmp_path / "replay" / "replay.npz",
+        replay_capacity=8,
+        aggregate_replay_path=tmp_path / "replay" / "replay-aggregated.npz",
+        aggregate_replay_weight_mode="log_count",
+        aggregate_replay_weight_cap=None,
+    )
+
+    aggregate = ReplayBuffer.load(tmp_path / "replay" / "replay-aggregated.npz")
+    sample = aggregate.sample(1, random.Random(0))[0]
+    assert len(aggregate) == 1
+    assert np.isclose(sample.policy[0], 0.5)
+    assert np.isclose(sample.policy[1], 0.5)
+    assert np.isclose(sample.value, 0.0)
+    assert np.isclose(sample.sample_weight, np.log1p(2.0))
+
+
 def test_import_legacy_pipeline_data_copies_replay_logs_and_checkpoints(
     tmp_path: Path,
 ) -> None:

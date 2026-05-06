@@ -172,7 +172,7 @@ Rust ONNX pipeline이 동작한 뒤, 학습 품질 문제가 나타났다. 핵�
 6. aggregate replay store를 Runpod에서 검증한다.
 7. 마지막으로 Completed-Q value blending을 ablation한다.
 
-문서 기준으로 weight-only bootstrap, target-vs-prior diagnostics, offline count-aware aggregate 관련 구현은 완료된 상태다. 온라인 replay store 전환과 Completed-Q value blending은 아직 후속 단계로 남아 있다.
+문서 기준으로 weight-only bootstrap, target-vs-prior diagnostics, count-aware aggregate replay 구현은 완료된 상태다. Completed-Q value blending은 아직 후속 단계로 남아 있다.
 
 ## 8. Aggregate replay 실험 결과
 
@@ -209,7 +209,22 @@ Runpod 실전 학습 config는 pure Gumbel search/target 설정을 유지하면�
 
 현재 문서 기준 최종 실험 결론은 `pure Gumbel < aggregate-only Gumbel`이다.
 
-## 9. 현재 성능 병목: Gumbel select hot path
+## 9. Online aggregate replay store 전환
+
+offline aggregate는 학습 직전에 누적 raw replay 전체를 다시 읽고 feature digest 기준으로 그룹화한다. replay가 커질수록 매 iteration마다 같은 raw sample을 반복 처리하므로, self-play/import 이후 학습 전 대기 시간이 커질 수 있다.
+
+이를 줄이기 위해 `OnlineAggregateReplayBuffer`를 추가했다. Rust ONNX self-play artifact를 import할 때 raw `replay.npz`는 기존처럼 보존하고, 동시에 `replay-aggregated.npz`를 incremental aggregate store로 갱신한다. 같은 exact-state가 들어오면 policy/value/root logits 누적합과 count만 업데이트하고, 새 unique state만 새 row로 추가한다. sample weight는 기존 실전값인 `log_count + cap=null` 같은 count-aware mode를 그대로 사용한다.
+
+pipeline 동작은 다음과 같다.
+
+- `aggregate_replay=true`이면 artifact import 단계에서 online aggregate replay를 갱신한다.
+- 학습 직전에는 이미 존재하는 `replay-aggregated.npz`를 바로 읽는다.
+- online aggregate 파일이 없는 기존 work dir에서는 raw replay 전체를 한 번 offline aggregate하는 fallback을 유지한다.
+- raw `replay.npz`는 진단, 호환성, fallback을 위해 계속 저장한다.
+
+이 전환으로 aggregate 비용은 매 iteration raw replay 전체 `N`개를 다시 처리하는 방식에서, 새로 import된 self-play sample과 aggregate 파일 load/save 중심으로 이동했다. 따라서 replay가 커질수록 offline aggregate 대비 병목이 줄어드는 구조다. 다음 확인 포인트는 Runpod 실전 pipeline에서 iteration별 import, aggregate load/save, train-start latency를 따로 기록해 실제 wall time 감소를 검증하는 것이다.
+
+## 10. 현재 성능 병목: Gumbel select hot path
 
 학습 품질 개선과 별개로, Runpod profile에서는 Gumbel search의 최대 성능 병목이 neural eval이 아니라 select 단계로 드러났다.
 
@@ -288,7 +303,7 @@ trusted apply 적용 후에는 steady-state select가 거의 사라졌고, 남�
 
 기대 효과는 select 시간을 20~50% 줄여 전체 wall time을 약 8~20% 개선하는 것이다.
 
-## 10. 현재 프로젝트 상태 요약
+## 11. 현재 프로젝트 상태 요약
 
 문서 전체를 종합하면 현재 프로젝트는 다음 상태에 있다.
 
@@ -299,15 +314,15 @@ trusted apply 적용 후에는 steady-state select가 거의 사라졌고, 남�
 - Arena는 `batch_size` 기반 batched 실행 경로가 추가됐다.
 - Gumbel policy target이 지나치게 hard한 문제는 temperature와 target scale 분리 실험으로 진단됐다.
 - 하지만 가장 최근 aggregate 실험에서는 target scale/temperature보다 exact-state aggregate replay가 더 확실한 strength 개선을 보였다.
-- 현재 실전 방향은 pure Gumbel search/target을 유지하면서 count-aware aggregate replay를 채택하는 쪽이다.
+- 현재 실전 방향은 pure Gumbel search/target을 유지하면서 online count-aware aggregate replay를 채택하는 쪽이다.
 - 다음 성능 개선 후보는 ONNX evaluator detail profile로 `eval_call` spike 원인을 확인하고, backup detail
   profile로 steady-state backup 병목을 분리하는 것이다.
 
-## 11. 남은 과제
+## 12. 남은 과제
 
 문서 기준으로 남은 과제는 다음이다.
 
-1. aggregate replay를 offline artifact 수준에서 충분히 검증한 뒤 online replay store 형태로 정식화한다.
+1. online aggregate replay store를 Runpod 실전 pipeline에서 검증하고 iteration별 wall time을 기록한다.
 2. target-vs-prior diagnostics를 계속 사용해 search-improved target과 root prior 복사를 구분한다.
 3. aggregate-only 설정을 full Runpod config에서 더 긴 학습과 arena로 검증한다.
 4. arena가 약해지면 target sharpen ablation을 다시 비교한다.

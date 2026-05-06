@@ -111,6 +111,13 @@ def test_rust_onnx_pipeline_dispatches_runner_and_imports_replay(
     monkeypatch.setattr(pipeline_module, "save_checkpoint", fake_save_checkpoint)
     monkeypatch.setattr(pipeline_module, "export_checkpoint_to_onnx", fake_export)
     monkeypatch.setattr(pipeline_module, "train_from_replay", fake_train_from_replay)
+    monkeypatch.setattr(
+        pipeline_module,
+        "aggregate_duplicate_replay",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("offline aggregate should not run when online aggregate exists")
+        ),
+    )
 
     summary = run_rust_onnx_pipeline(
         pipeline_config=RustOnnxPipelineConfig(

@@ -13,6 +13,7 @@ import numpy as np
 from safetensors.numpy import load_file, save_file
 
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
+from great_kingdom_ai.online_aggregate_replay import OnlineAggregateReplayBuffer
 from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
 from great_kingdom_ai.self_play import GameLog
 
@@ -88,6 +89,9 @@ def import_rust_self_play_artifacts(
     replay_path: str | Path,
     replay_capacity: int,
     game_log_path: str | Path | None = None,
+    aggregate_replay_path: str | Path | None = None,
+    aggregate_replay_weight_mode: str = "sqrt_count",
+    aggregate_replay_weight_cap: float | None = 16.0,
 ) -> RustReplayImportSummary:
     source = Path(artifact_dir)
     tensors = load_file(source / "samples.safetensors")
@@ -98,6 +102,15 @@ def import_rust_self_play_artifacts(
     )
     replay.extend(samples)
     replay.save(replay_file)
+    if aggregate_replay_path is not None:
+        _extend_online_aggregate_replay(
+            aggregate_replay_path=Path(aggregate_replay_path),
+            raw_replay_path=replay_file,
+            replay_capacity=replay_capacity,
+            samples=samples,
+            sample_weight_mode=aggregate_replay_weight_mode,
+            sample_weight_cap=aggregate_replay_weight_cap,
+        )
 
     game_dicts = _read_jsonl_dicts(source / "games.jsonl")
     if game_log_path is not None:
@@ -264,6 +277,71 @@ def _load_replay_with_capacity(path: Path, capacity: int) -> ReplayBuffer:
     if len(replay) != min(len(source), capacity):
         raise ValueError("legacy replay import produced an inconsistent sample count")
     return replay
+
+
+def _extend_online_aggregate_replay(
+    *,
+    aggregate_replay_path: Path,
+    raw_replay_path: Path,
+    replay_capacity: int,
+    samples: list[ReplaySample],
+    sample_weight_mode: str,
+    sample_weight_cap: float | None,
+) -> None:
+    if aggregate_replay_path.exists():
+        replay = OnlineAggregateReplayBuffer.load(
+            aggregate_replay_path,
+            capacity=replay_capacity,
+            sample_weight_mode=sample_weight_mode,
+            sample_weight_cap=sample_weight_cap,
+        )
+        replay.extend(samples)
+    else:
+        replay = OnlineAggregateReplayBuffer(
+            replay_capacity,
+            sample_weight_mode=sample_weight_mode,
+            sample_weight_cap=sample_weight_cap,
+        )
+        _extend_online_aggregate_from_file(
+            replay,
+            raw_replay_path,
+        )
+    replay.save(aggregate_replay_path)
+
+
+def _extend_online_aggregate_from_file(
+    replay: OnlineAggregateReplayBuffer,
+    raw_replay_path: Path,
+) -> None:
+    with np.load(raw_replay_path) as data:
+        features = np.asarray(data["features"], dtype=np.float32)
+        policies = np.asarray(data["policies"], dtype=np.float32)
+        values = np.asarray(data["values"], dtype=np.float32)
+        root_policy_logits = (
+            np.asarray(data["root_policy_logits"], dtype=np.float32)
+            if "root_policy_logits" in data
+            else None
+        )
+        sample_weights = (
+            np.asarray(data["sample_weights"], dtype=np.float32)
+            if "sample_weights" in data
+            else np.ones(values.shape, dtype=np.float32)
+        )
+    for index in range(features.shape[0]):
+        replay.push(
+            ReplaySample(
+                features=features[index],
+                policy=policies[index],
+                value=float(values[index]),
+                root_policy_logits=(
+                    root_policy_logits[index]
+                    if root_policy_logits is not None
+                    and np.isfinite(root_policy_logits[index]).all()
+                    else None
+                ),
+                sample_weight=float(sample_weights[index]),
+            )
+        )
 
 
 def _read_json_list(path: Path) -> list[dict[str, Any]]:
