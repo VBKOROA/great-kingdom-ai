@@ -240,11 +240,20 @@ Runpod 실전 학습 config는 pure Gumbel search/target 설정을 유지하면�
 `transformed_q`, `logits`, `InnerPolicyEntry` 임시 `Vec` 생성을 제거했다. 선택 수식과 tie-break는 기존
 reference selector와 동일하게 유지해야 하므로 parity test를 추가했다.
 
+변경 후 Runpod profile에서는 같은 `active_games=32` 조건에서 전체 wave 시간이 대략 38% 줄었고,
+`select` 시간도 약 39% 감소했다. 다만 합산 비중은 여전히 `select`가 약 41%로 가장 컸고, `eval`과
+`backup`이 각각 약 26%, 25% 수준으로 뒤를 이었다. 따라서 다음 1순위는 backup보다 위험이 낮은
+`GumbelNode::edge_index_for_action()` action lookup table 최적화다.
+
+후속 작업으로 `GumbelNode`에 action lookup table을 추가해 `edge_index_for_action()`의 선형 검색을
+O(1) 조회로 교체했다. node 생성 시 `[u16; ACTION_SPACE]` 테이블을 채우고, search hot path는 기존 API를
+그대로 호출하므로 선택 의미는 바꾸지 않는다.
+
 남은 우선순위는 다음이다.
 
-1. Runpod profile에서 select 감소를 확인한다.
-2. 효과가 확인되면 action lookup table과 scheduler index API를 추가한다.
-3. 그래도 select가 크면 `GameState::clone/apply` 비용을 별도 최적화한다.
+1. scheduler index API로 `next_action()` 이후 `reserve_visit(action)` 재검색을 줄인다.
+2. 그래도 backup 비중이 크면 backup 경로를 별도 최적화한다.
+3. Runpod profile로 action lookup table 적용 후 select 감소를 확인한다.
 
 기대 효과는 select 시간을 20~50% 줄여 전체 wall time을 약 8~20% 개선하는 것이다.
 
@@ -260,8 +269,8 @@ reference selector와 동일하게 유지해야 하므로 parity test를 추가�
 - Gumbel policy target이 지나치게 hard한 문제는 temperature와 target scale 분리 실험으로 진단됐다.
 - 하지만 가장 최근 aggregate 실험에서는 target scale/temperature보다 exact-state aggregate replay가 더 확실한 strength 개선을 보였다.
 - 현재 실전 방향은 pure Gumbel search/target을 유지하면서 count-aware aggregate replay를 채택하는 쪽이다.
-- 다음 성능 개선 후보는 Runpod profile로 Gumbel select hot path allocation 제거 효과를 확인한 뒤,
-  action lookup table과 scheduler index API를 검토하는 것이다.
+- 다음 성능 개선 후보는 Runpod profile로 action lookup table 적용 효과를 확인한 뒤 scheduler index API를
+  검토하는 것이다.
 
 ## 11. 남은 과제
 
@@ -272,7 +281,7 @@ reference selector와 동일하게 유지해야 하므로 parity test를 추가�
 3. aggregate-only 설정을 full Runpod config에서 더 긴 학습과 arena로 검증한다.
 4. arena가 약해지면 target sharpen ablation을 다시 비교한다.
 5. value variance가 명확한 병목이라는 근거가 쌓일 때만 Completed-Q value blending을 별도 ablation으로 진행한다.
-6. Runpod profile로 allocation-free inner selection 효과를 확인하고 후속 select 최적화를 진행한다.
+6. Runpod profile로 action lookup table 적용 효과를 확인하고 후속 select 최적화를 진행한다.
 7. README와 설정 파일은 실험 결론이 바뀔 때마다 현재 기본 경로와 legacy/fallback 경로를 명확히 구분해 갱신한다.
 
 ## 12. 참고한 문서

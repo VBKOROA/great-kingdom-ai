@@ -4,6 +4,8 @@ use crate::game::{ACTION_SPACE, Action, GameState, Player};
 
 use super::{sampling::RootCandidate, selection::InnerEdgeStats};
 
+const MISSING_EDGE_INDEX: u16 = u16::MAX;
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct GumbelEdge {
     pub(crate) action: Action,
@@ -62,6 +64,7 @@ pub(crate) struct GumbelNode {
     pub(crate) visit_count: u32,
     pub(crate) node_value: f32,
     pub(crate) edges: Vec<GumbelEdge>,
+    edge_index_by_action: [u16; ACTION_SPACE],
 }
 
 impl GumbelNode {
@@ -80,12 +83,7 @@ impl GumbelNode {
             })
             .collect();
 
-        Self {
-            to_play: state.current_player_value(),
-            visit_count: 0,
-            node_value,
-            edges,
-        }
+        Self::new(state.current_player_value(), node_value, edges)
     }
 
     #[must_use]
@@ -116,12 +114,7 @@ impl GumbelNode {
             })
             .collect();
 
-        Self {
-            to_play: state.current_player_value(),
-            visit_count: 0,
-            node_value,
-            edges,
-        }
+        Self::new(state.current_player_value(), node_value, edges)
     }
 
     #[must_use]
@@ -138,19 +131,16 @@ impl GumbelNode {
             .map(|action| GumbelEdge::new(action, uniform_log_prior, None))
             .collect();
 
-        Self {
-            to_play: state.current_player_value(),
-            visit_count: 0,
-            node_value,
-            edges,
-        }
+        Self::new(state.current_player_value(), node_value, edges)
     }
 
     #[must_use]
     pub(crate) fn edge_index_for_action(&self, action_index: usize) -> Option<usize> {
-        self.edges
-            .iter()
-            .position(|edge| edge.action.to_index() == action_index)
+        self.edge_index_by_action
+            .get(action_index)
+            .copied()
+            .filter(|index| *index != MISSING_EDGE_INDEX)
+            .map(usize::from)
     }
 
     #[must_use]
@@ -161,6 +151,26 @@ impl GumbelNode {
         }
         counts
     }
+
+    fn new(to_play: Player, node_value: f32, edges: Vec<GumbelEdge>) -> Self {
+        let edge_index_by_action = build_edge_index_by_action(&edges);
+        Self {
+            to_play,
+            visit_count: 0,
+            node_value,
+            edges,
+            edge_index_by_action,
+        }
+    }
+}
+
+fn build_edge_index_by_action(edges: &[GumbelEdge]) -> [u16; ACTION_SPACE] {
+    let mut edge_index_by_action = [MISSING_EDGE_INDEX; ACTION_SPACE];
+    for (edge_index, edge) in edges.iter().enumerate() {
+        edge_index_by_action[edge.action.to_index()] =
+            u16::try_from(edge_index).expect("Gumbel edge index must fit in u16");
+    }
+    edge_index_by_action
 }
 
 #[cfg(test)]
@@ -179,6 +189,22 @@ mod tests {
         assert_eq!(node.edges.len(), state.legal_actions().len());
         assert!(node.edge_index_for_action(40).is_none());
         assert!(node.edges.iter().all(|edge| edge.gumbel.is_none()));
+    }
+
+    #[test]
+    fn node_uses_action_lookup_table_for_edge_indexes() {
+        let state = GameState::new();
+        let log_priors = [0.0; ACTION_SPACE];
+        let legal_actions = [10, 2, 81];
+
+        let node =
+            GumbelNode::from_log_priors_for_actions(&state, &legal_actions, &log_priors, 0.0);
+
+        assert_eq!(node.edge_index_for_action(10), Some(0));
+        assert_eq!(node.edge_index_for_action(2), Some(1));
+        assert_eq!(node.edge_index_for_action(81), Some(2));
+        assert_eq!(node.edge_index_for_action(0), None);
+        assert_eq!(node.edge_index_for_action(ACTION_SPACE), None);
     }
 
     #[test]
