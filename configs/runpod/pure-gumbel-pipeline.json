@@ -7,8 +7,8 @@
   "max_self_play_games": 1600,
   "seed_start": 1000000,
   "onnx_device": "cuda",
-  "onnx_max_batch_size": 512,
-  "rust_self_play_batch_size": 32,
+  "onnx_max_batch_size": 8192,
+  "rust_self_play_batch_size": 128,
   "skip_arena": false,
   "promote": true,
   "resume": true,
@@ -31,6 +31,6 @@
     "playout_cap_full_search_fraction": 1.0,
     "playout_cap_full_simulations": 96,
     "playout_cap_fast_simulations": 16,
-    "leaf_batch_size": 64
+    "leaf_batch_size": 128
   }
 }
