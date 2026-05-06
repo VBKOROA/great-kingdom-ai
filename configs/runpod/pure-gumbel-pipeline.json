@@ -1,7 +1,7 @@
 {
   "work_dir": "data/runpod/pure-gumbel",
   "iterations": 10,
-  "replay_capacity": 250000,
+  "replay_capacity": 500000,
   "self_play_games": 1600,
   "min_replay_samples": 32000,
   "max_self_play_games": 1600,
