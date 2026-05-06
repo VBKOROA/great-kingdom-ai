@@ -194,13 +194,13 @@ Rust ONNX pipeline이 동작한 뒤, 학습 품질 문제가 나타났다. 핵�
 - 보류: policy target scale 분리
 - 보류: policy target temperature 완화
 
-Runpod 실전 학습 config는 pure Gumbel search/target 설정을 유지하면서 aggregate replay만 켜는 방향으로 조정됐다.
+Runpod 실전 학습 config는 pure Gumbel search/target 설정을 유지하면서 aggregate replay만 켜는 방향으로 조정됐다. 이후 `log_count + cap=null` 추가 ablation도 pure 대비 247승 / 400게임, 승률 61.75%를 기록했으므로, 임의 cap이 없는 `log_count` weighting을 실전값으로 채택했다.
 
 ```json
 {
   "aggregate_replay": true,
-  "aggregate_replay_weight_mode": "sqrt_count",
-  "aggregate_replay_weight_cap": 8.0,
+  "aggregate_replay_weight_mode": "log_count",
+  "aggregate_replay_weight_cap": null,
   "policy_target_temperature": 1.0,
   "policy_target_c_visit": 50.0,
   "policy_target_c_scale": 1.0

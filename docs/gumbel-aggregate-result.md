@@ -95,6 +95,37 @@ pure wins:           295 / 800 = 36.875%
 두 seed window 모두 aggregate-only가 60% 이상을 기록했으므로, 현재 기준에서는 aggregate replay를
 채택할 근거가 충분하다.
 
+## Log-count uncapped 추가 결과
+
+`sqrt_count + cap=8.0`의 임의 cap을 제거할 수 있는지 보기 위해 `log_count + cap=null` 설정을 추가로
+측정했다.
+
+```text
+report: data/ablation/gumbel/20260506-021837/reports/log-count-vs-pure-arena.json
+games: 400
+candidate: log-count aggregate
+best: pure
+```
+
+결과:
+
+```text
+log-count aggregate wins: 247 / 400 = 61.75%
+pure wins:                153 / 400 = 38.25%
+average_game_length:      20.7475
+promoted: true
+```
+
+색깔별:
+
+```text
+log-count blue:   113 / 200 = 56.5%
+log-count orange: 134 / 200 = 67.0%
+```
+
+`log_count + cap=null`도 400-game arena에서 pure 대비 60% 이상을 기록했다. 따라서 실전 config에서는
+임의 cap 하이퍼파라미터가 없는 `log_count`를 채택한다.
+
 ## 이전 modified 묶음 결과와 구분
 
 이전에 측정한 `modified` 묶음은 다음 변경을 함께 포함했다.
@@ -111,6 +142,7 @@ policy_target_temperature > 1.0
 
 ```text
 채택: aggregate replay
+채택: log_count + cap=null weight
 보류: policy target scale 분리
 보류: policy target temperature 완화
 ```
@@ -118,7 +150,7 @@ policy_target_temperature > 1.0
 ## 실전 config 반영
 
 Runpod 실전 학습 config는 pure Gumbel search/target 설정을 유지하면서 aggregate replay만 켜는 방향으로
-반영했다.
+반영했다. Weighting은 추가 cap 하이퍼파라미터가 없는 `log_count`를 사용한다.
 
 ```text
 configs/runpod/pure-gumbel-pipeline.json
@@ -129,8 +161,8 @@ configs/runpod/pure-gumbel-pipeline.json
 ```json
 {
   "aggregate_replay": true,
-  "aggregate_replay_weight_mode": "sqrt_count",
-  "aggregate_replay_weight_cap": 8.0
+  "aggregate_replay_weight_mode": "log_count",
+  "aggregate_replay_weight_cap": null
 }
 ```
 
@@ -143,4 +175,3 @@ Gumbel target은 여전히 pure 설정이다.
   "policy_target_c_scale": 1.0
 }
 ```
-

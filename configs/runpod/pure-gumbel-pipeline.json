@@ -13,8 +13,8 @@
   "promote": true,
   "resume": true,
   "aggregate_replay": true,
-  "aggregate_replay_weight_mode": "sqrt_count",
-  "aggregate_replay_weight_cap": 8.0,
+  "aggregate_replay_weight_mode": "log_count",
+  "aggregate_replay_weight_cap": null,
   "self_play": {
     "max_turns": 180,
     "gumbel_simulations": 96,
