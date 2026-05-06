@@ -1,4 +1,4 @@
-use std::{fmt, path::Path};
+use std::{fmt, path::Path, time::Instant};
 
 use ort::{
     execution_providers,
@@ -13,6 +13,10 @@ use pyo3::{
 use crate::{
     eval_request::EvalRequest,
     game::{ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS},
+};
+
+use super::profile::{
+    OnnxEvalProfile, OnnxEvalProfileContext, OnnxEvalProfileLog, OnnxEvalTiming, elapsed_since,
 };
 
 const FEATURE_INPUT: &str = "features";
@@ -51,6 +55,8 @@ pub struct NetworkOutput {
 pub struct OnnxEvaluator {
     session: Session,
     config: OnnxEvaluatorConfig,
+    profile: OnnxEvalProfile,
+    profile_context: Option<OnnxEvalProfileContext>,
 }
 
 #[derive(Debug)]
@@ -136,18 +142,41 @@ impl OnnxEvaluator {
 
         let session = builder.commit_from_file(path)?;
         validate_session_contract(&session)?;
-        Ok(Self { session, config })
+        Ok(Self {
+            session,
+            config,
+            profile: OnnxEvalProfile::new(),
+            profile_context: None,
+        })
     }
 
     pub fn evaluate_request(&mut self, request: &EvalRequest) -> Result<NetworkOutput, OnnxError> {
+        let profile_call = self.profile.next_call();
+        let profile_context = self.profile_context.take();
+        let total_start = profile_call.map(|_| Instant::now());
         if request.is_empty() {
+            self.profile.log(OnnxEvalProfileLog {
+                call: profile_call,
+                context: profile_context,
+                request_len: 0,
+                max_batch_size: self.config.max_batch_size,
+                chunk_batches: Vec::new(),
+                timing: OnnxEvalTiming::default(),
+                total_elapsed: elapsed_since(total_start),
+                device: self.config.device,
+            });
             return Ok(NetworkOutput {
                 policy_logits: Vec::new(),
                 values: Vec::new(),
             });
         }
 
+        let feature_ref_start = profile_call.map(|_| Instant::now());
         let features = request.feature_values_ref();
+        let mut timing = OnnxEvalTiming {
+            feature_ref_elapsed: elapsed_since(feature_ref_start),
+            ..OnnxEvalTiming::default()
+        };
         let expected = request.len() * FEATURE_VALUES_PER_POSITION;
         if features.len() != expected {
             return Err(OnnxError::InvalidRequest(format!(
@@ -159,12 +188,29 @@ impl OnnxEvaluator {
 
         let mut policy_logits = Vec::with_capacity(request.len());
         let mut values = Vec::with_capacity(request.len());
+        let mut chunk_batches = Vec::new();
         for chunk in features.chunks(self.config.max_batch_size * FEATURE_VALUES_PER_POSITION) {
             let chunk_batch = chunk.len() / FEATURE_VALUES_PER_POSITION;
-            let output = self.evaluate_feature_chunk(chunk, chunk_batch)?;
+            if profile_call.is_some() {
+                chunk_batches.push(chunk_batch);
+            }
+            let (output, chunk_timing) =
+                self.evaluate_feature_chunk(chunk, chunk_batch, profile_call.is_some())?;
+            timing += chunk_timing;
             policy_logits.extend(output.policy_logits);
             values.extend(output.values);
         }
+
+        self.profile.log(OnnxEvalProfileLog {
+            call: profile_call,
+            context: profile_context,
+            request_len: request.len(),
+            max_batch_size: self.config.max_batch_size,
+            chunk_batches,
+            timing,
+            total_elapsed: elapsed_since(total_start),
+            device: self.config.device,
+        });
 
         Ok(NetworkOutput {
             policy_logits,
@@ -172,21 +218,60 @@ impl OnnxEvaluator {
         })
     }
 
+    pub(crate) fn set_gumbel_root_profile_context(&mut self, active_games: usize) {
+        self.profile_context = Some(OnnxEvalProfileContext {
+            source: "gumbel_root",
+            wave: None,
+            active_games: Some(active_games),
+            leaves: Some(active_games),
+        });
+    }
+
+    pub(crate) fn set_gumbel_leaf_profile_context(
+        &mut self,
+        wave: u64,
+        active_games: usize,
+        leaves: usize,
+    ) {
+        self.profile_context = Some(OnnxEvalProfileContext {
+            source: "gumbel_leaf",
+            wave: Some(wave),
+            active_games: Some(active_games),
+            leaves: Some(leaves),
+        });
+    }
+
     fn evaluate_feature_chunk(
         &mut self,
         features: &[f32],
         batch_size: usize,
-    ) -> Result<NetworkOutput, OnnxError> {
+        profile_enabled: bool,
+    ) -> Result<(NetworkOutput, OnnxEvalTiming), OnnxError> {
+        let tensor_start = profile_enabled.then(Instant::now);
         let input = Tensor::from_array((
             [batch_size, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE],
             features.to_vec().into_boxed_slice(),
         ))?;
+        let tensor_build_elapsed = elapsed_since(tensor_start);
 
+        let session_start = profile_enabled.then(Instant::now);
         let outputs = self.session.run(ort::inputs![FEATURE_INPUT => input])?;
+        let session_run_elapsed = elapsed_since(session_start);
+
+        let output_parse_start = profile_enabled.then(Instant::now);
         let (_, policy_values) = outputs[POLICY_OUTPUT].try_extract_tensor::<f32>()?;
         let (_, value_values) = outputs[VALUE_OUTPUT].try_extract_tensor::<f32>()?;
 
-        parse_network_output(policy_values, value_values, batch_size)
+        let output = parse_network_output(policy_values, value_values, batch_size)?;
+        Ok((
+            output,
+            OnnxEvalTiming {
+                tensor_build_elapsed,
+                session_run_elapsed,
+                output_parse_elapsed: elapsed_since(output_parse_start),
+                ..OnnxEvalTiming::default()
+            },
+        ))
     }
 }
 

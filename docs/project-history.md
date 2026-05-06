@@ -269,9 +269,12 @@ apply profile에서는 비용 대부분이 착수 전 `territory_check`에 집�
 
 trusted apply 적용 후에는 steady-state select가 거의 사라졌고, 남은 wall time은 대체로 backup과
 `eval_call` spike가 지배한다. 특히 일부 wave에서 `eval_call`이 0.012~0.013초로 튀며 total time을
-끌어올린다. 이 원인은 바깥의 `eval_call` 타이머만으로는 구분할 수 없으므로 ONNX evaluator 내부 계측이
-필요하다. 다음 계측 후보는 `request_len`, `max_batch_size`, `chunk_count`, `chunk_batch_size`,
-`tensor_build_time`, `session_run_time`, `output_parse_time`, `total_eval_time`, `device`다.
+끌어올린다. 이 원인은 바깥의 `eval_call` 타이머만으로는 구분할 수 없으므로 ONNX evaluator 내부 계측을
+추가했다. `GKA_ONNX_EVAL_PROFILE=1`을 켜면 ONNX evaluator가 호출마다 `request_len`, `max_batch_size`,
+`chunk_count`, `chunk_batches`, `tensor_build`, `session_run`, `output_parse`, `total_eval`, `device`를
+출력한다. Gumbel ONNX self-play 경로에서는 root/leaf 구분, leaf `wave`, `active_games`, `leaves`도 함께
+출력하므로 기존 `[gka-gumbel-profile] eval_call` spike와 같은 wave를 직접 대조할 수 있다. 출력 주기는
+`GKA_ONNX_EVAL_PROFILE_INTERVAL`로 조정한다.
 
 해석 기준은 다음이다. `session_run_time`만 튀면 ORT/CUDA provider, allocator, GPU scheduling 문제일
 가능성이 크다. `tensor_build_time`이 크면 현재 `features.to_vec().into_boxed_slice()` 복사와 버퍼 재사용을
@@ -279,7 +282,7 @@ trusted apply 적용 후에는 steady-state select가 거의 사라졌고, 남�
 
 남은 우선순위는 다음이다.
 
-1. ONNX evaluator detail profile로 `eval_call` spike 원인을 확인한다.
+1. ONNX evaluator detail profile을 Runpod에서 수집해 `eval_call` spike 원인을 확인한다.
 2. backup detail profile로 steady-state backup 내부 병목을 분리한다.
 3. 계측 결과에 따라 ORT/CUDA, tensor copy, backup path 중 다음 최적화 대상을 선택한다.
 
@@ -309,7 +312,7 @@ trusted apply 적용 후에는 steady-state select가 거의 사라졌고, 남�
 3. aggregate-only 설정을 full Runpod config에서 더 긴 학습과 arena로 검증한다.
 4. arena가 약해지면 target sharpen ablation을 다시 비교한다.
 5. value variance가 명확한 병목이라는 근거가 쌓일 때만 Completed-Q value blending을 별도 ablation으로 진행한다.
-6. ONNX evaluator detail profile과 backup detail profile로 남은 self-play 병목을 분리한다.
+6. ONNX evaluator detail profile을 Runpod에서 확인하고, backup detail profile로 남은 self-play 병목을 분리한다.
 7. README와 설정 파일은 실험 결론이 바뀔 때마다 현재 기본 경로와 legacy/fallback 경로를 명확히 구분해 갱신한다.
 
 ## 12. 참고한 문서

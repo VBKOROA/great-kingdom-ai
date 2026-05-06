@@ -175,6 +175,7 @@ impl GumbelSelfPlayBatch {
             return Err(PyValueError::new_err("leaf_batch_size must be positive"));
         }
         let active_request = self.active_eval_request_features();
+        evaluator.set_gumbel_root_profile_context(active_request.len());
         let root_output = evaluator
             .evaluate_request(&active_request)
             .map_err(|err| PyValueError::new_err(err.to_string()))?;
@@ -204,6 +205,7 @@ impl GumbelSelfPlayBatch {
             return Err(PyValueError::new_err("leaf_batch_size must be positive"));
         }
         let active_request = self.active_eval_request_features();
+        evaluator.set_gumbel_root_profile_context(active_request.len());
         let root_output = evaluator
             .evaluate_request(&active_request)
             .map_err(|err| PyValueError::new_err(err.to_string()))?;
@@ -640,6 +642,7 @@ impl GumbelSelfPlayBatch {
             };
             let request_elapsed = request_start.elapsed();
             let eval_start = Instant::now();
+            evaluator.set_batch_profile_context(wave, active_indexes.len(), pending.len());
             let eval = evaluator.evaluate(request)?;
             let eval_elapsed = eval_start.elapsed();
             let parse_start = Instant::now();

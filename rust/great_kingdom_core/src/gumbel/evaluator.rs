@@ -12,6 +12,8 @@ pub(crate) trait GumbelEvaluator {
         true
     }
 
+    fn set_batch_profile_context(&mut self, _wave: u64, _active_games: usize, _leaves: usize) {}
+
     fn evaluate(&mut self, request: EvalRequest) -> PyResult<GumbelEvalBatch>;
 }
 
@@ -49,6 +51,11 @@ impl<'a> OnnxGumbelEvaluator<'a> {
 impl GumbelEvaluator for OnnxGumbelEvaluator<'_> {
     fn needs_legal_masks(&self) -> bool {
         false
+    }
+
+    fn set_batch_profile_context(&mut self, wave: u64, active_games: usize, leaves: usize) {
+        self.evaluator
+            .set_gumbel_leaf_profile_context(wave, active_games, leaves);
     }
 
     fn evaluate(&mut self, request: EvalRequest) -> PyResult<GumbelEvalBatch> {
