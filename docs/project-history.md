@@ -224,6 +224,29 @@ pipeline 동작은 다음과 같다.
 
 이 전환으로 aggregate 비용은 매 iteration raw replay 전체 `N`개를 다시 처리하는 방식에서, 새로 import된 self-play sample과 aggregate 파일 load/save 중심으로 이동했다. 따라서 replay가 커질수록 offline aggregate 대비 병목이 줄어드는 구조다. 다음 확인 포인트는 Runpod 실전 pipeline에서 iteration별 import, aggregate load/save, train-start latency를 따로 기록해 실제 wall time 감소를 검증하는 것이다.
 
+이후 Runpod RTX 3090 실전 관찰에서는 OOM은 없었고, CPU 사용률은 대략 30~40%, GPU 사용률은 20~40% 수준으로
+나타났다. 이는 VRAM 한계보다는 GPU에 충분히 큰 추론 batch를 지속적으로 공급하지 못하거나, self-play/import
+사이에 CPU/디스크 작업이 끼어드는 상황으로 해석됐다.
+
+이에 따라 2026-05-06 Runpod pure Gumbel config를 throughput 실험용으로 조정했다.
+
+- `self_play_games`: `1000 -> 1600`
+- `min_replay_samples`: `20000 -> 32000`
+- `onnx_max_batch_size`: `8192 -> 16384`
+- `rust_self_play_batch_size`: `1000 -> 1600`
+- train `batch_size`: `512 -> 1024`
+
+적용 후에는 GPU 사용률이 약 40%까지 올라갔지만, `importing Rust self-play artifacts into replay` 단계가
+새 병목 후보로 관찰됐다. 코드 확인 결과 import 단계는 `samples.safetensors`를 `ReplaySample` 객체 리스트로
+풀고, 기존 raw replay와 online aggregate replay를 매번 `.npz`로 저장한다. 특히 `np.savez_compressed`가
+replay 전체를 재압축하므로 CPU 시간을 크게 쓸 수 있다.
+
+이를 줄이기 위해 replay 저장 API에 `compressed` 옵션을 추가하고, Rust ONNX artifact import 경로에서는 raw
+`replay.npz`와 `replay-aggregated.npz`를 uncompressed `.npz`로 저장하도록 바꿨다. 기존 기본 저장은
+compressed로 유지해서 다른 경로의 동작은 바꾸지 않았다. 이 변경은 import 단계의 CPU 압축 비용을 줄이는 대신
+replay 파일 크기를 키우는 tradeoff를 갖는다. 다음 확인 포인트는 Runpod에서 import 단계 wall time이 줄었는지,
+그리고 디스크 사용량 증가가 운영상 허용 가능한지 확인하는 것이다.
+
 ## 10. 현재 성능 병목: Gumbel select hot path
 
 학습 품질 개선과 별개로, Runpod profile에서는 Gumbel search의 최대 성능 병목이 neural eval이 아니라 select 단계로 드러났다.
@@ -315,6 +338,8 @@ trusted apply 적용 후에는 steady-state select가 거의 사라졌고, 남�
 - Gumbel policy target이 지나치게 hard한 문제는 temperature와 target scale 분리 실험으로 진단됐다.
 - 하지만 가장 최근 aggregate 실험에서는 target scale/temperature보다 exact-state aggregate replay가 더 확실한 strength 개선을 보였다.
 - 현재 실전 방향은 pure Gumbel search/target을 유지하면서 online count-aware aggregate replay를 채택하는 쪽이다.
+- Runpod pure Gumbel config는 OOM이 없는 관찰을 바탕으로 self-play/ONNX/train batch를 더 공격적으로 키운 상태다.
+- Rust ONNX artifact import는 replay `.npz` 재압축 비용을 줄이기 위해 import 경로에서 uncompressed 저장을 사용한다.
 - 다음 성능 개선 후보는 ONNX evaluator detail profile로 `eval_call` spike 원인을 확인하고, backup detail
   profile로 steady-state backup 병목을 분리하는 것이다.
 
@@ -322,15 +347,16 @@ trusted apply 적용 후에는 steady-state select가 거의 사라졌고, 남�
 
 문서 기준으로 남은 과제는 다음이다.
 
-1. online aggregate replay store를 Runpod 실전 pipeline에서 검증하고 iteration별 wall time을 기록한다.
-2. target-vs-prior diagnostics를 계속 사용해 search-improved target과 root prior 복사를 구분한다.
-3. aggregate-only 설정을 full Runpod config에서 더 긴 학습과 arena로 검증한다.
-4. arena가 약해지면 target sharpen ablation을 다시 비교한다.
-5. value variance가 명확한 병목이라는 근거가 쌓일 때만 Completed-Q value blending을 별도 ablation으로 진행한다.
-6. ONNX evaluator detail profile을 Runpod에서 확인하고, backup detail profile로 남은 self-play 병목을 분리한다.
-7. README와 설정 파일은 실험 결론이 바뀔 때마다 현재 기본 경로와 legacy/fallback 경로를 명확히 구분해 갱신한다.
+1. Runpod에서 조정된 `onnx_max_batch_size`, `rust_self_play_batch_size`, train `batch_size`의 wall time과 GPU 사용률을 기록한다.
+2. uncompressed replay 저장 후 import 단계 wall time과 디스크 사용량을 비교한다.
+3. target-vs-prior diagnostics를 계속 사용해 search-improved target과 root prior 복사를 구분한다.
+4. aggregate-only 설정을 full Runpod config에서 더 긴 학습과 arena로 검증한다.
+5. arena가 약해지면 target sharpen ablation을 다시 비교한다.
+6. value variance가 명확한 병목이라는 근거가 쌓일 때만 Completed-Q value blending을 별도 ablation으로 진행한다.
+7. ONNX evaluator detail profile을 Runpod에서 확인하고, backup detail profile로 남은 self-play 병목을 분리한다.
+8. README와 설정 파일은 실험 결론이 바뀔 때마다 현재 기본 경로와 legacy/fallback 경로를 명확히 구분해 갱신한다.
 
-## 12. 참고한 문서
+## 13. 참고한 문서
 
 - `docs/rule-spec.md`
 - `docs/manual-cli-test-cases.md`
