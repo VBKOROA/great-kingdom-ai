@@ -206,7 +206,7 @@ configure_cuda_library_path
 
 echo "Building Python extension with maturin features: $RUNPOD_RUST_FEATURES"
 cd "$RUST_CRATE_DIR"
-python -m maturin develop --features "$RUNPOD_RUST_FEATURES"
+python -m maturin develop --release --features "$RUNPOD_RUST_FEATURES"
 
 PY_LIBDIR="$(python - <<'PY'
 import sysconfig
