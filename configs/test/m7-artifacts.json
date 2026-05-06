@@ -1,5 +1,0 @@
-{
-  "checkpoint_dir": "data/runpod/checkpoints",
-  "log_dir": "data/runpod/logs",
-  "replay_dir": "data/runpod/replay"
-}

@@ -1,7 +1,0 @@
-{
-  "device": "cuda",
-  "batch_size": 8,
-  "presets": ["small", "medium"],
-  "repeat": 2,
-  "require_cuda": true
-}
