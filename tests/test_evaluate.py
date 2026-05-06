@@ -507,6 +507,42 @@ def test_create_core_arena_batch_requires_rust_batch_backend(
         )
 
 
+def test_core_search_constructors_receive_policy_target_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_search_kwargs: dict[str, Any] = {}
+    seen_batch_kwargs: dict[str, Any] = {}
+
+    class FakeCore:
+        class GumbelSearch:
+            def __init__(self, **kwargs: Any) -> None:
+                seen_search_kwargs.update(kwargs)
+
+        class GumbelArenaBatch:
+            def __init__(self, **kwargs: Any) -> None:
+                seen_batch_kwargs.update(kwargs)
+
+    monkeypatch.setitem(sys.modules, "great_kingdom_core", FakeCore)
+    config = ArenaConfig(
+        games=1,
+        gumbel_c_visit=31.0,
+        gumbel_c_scale=0.75,
+        policy_target_c_visit=31.0,
+        policy_target_c_scale=0.75,
+        policy_target_temperature=1.0,
+    )
+
+    evaluate_module.create_core_search_engine(config, seed_offset=3)
+    create_core_arena_batch(config, game_count=1, seed_start=0)
+
+    assert seen_search_kwargs["policy_target_c_visit"] == 31.0
+    assert seen_search_kwargs["policy_target_c_scale"] == 0.75
+    assert seen_search_kwargs["policy_target_temperature"] == 1.0
+    assert seen_batch_kwargs["policy_target_c_visit"] == 31.0
+    assert seen_batch_kwargs["policy_target_c_scale"] == 0.75
+    assert seen_batch_kwargs["policy_target_temperature"] == 1.0
+
+
 def test_run_arena_batched_splits_root_rows_by_candidate_player(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

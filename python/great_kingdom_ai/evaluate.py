@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import shutil
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
@@ -81,6 +82,9 @@ class ArenaConfig:
     gumbel_max_considered_actions: int = 16
     gumbel_c_visit: float = 50.0
     gumbel_c_scale: float = 1.0
+    policy_target_c_visit: float = 5.0
+    policy_target_c_scale: float = 0.25
+    policy_target_temperature: float = 1.0
     gumbel_seed: int = 0
     leaf_batch_size: int = 8
     device: str = "cpu"
@@ -551,8 +555,9 @@ def create_core_search_engine(
             c_visit=config.gumbel_c_visit,
             c_scale=config.gumbel_c_scale,
             seed=config.gumbel_seed + seed_offset,
-            policy_target_c_visit=5.0,
-            policy_target_c_scale=0.25,
+            policy_target_temperature=config.policy_target_temperature,
+            policy_target_c_visit=config.policy_target_c_visit,
+            policy_target_c_scale=config.policy_target_c_scale,
         ),
     )
 
@@ -587,8 +592,9 @@ def create_core_arena_batch(
             c_visit=config.gumbel_c_visit,
             c_scale=config.gumbel_c_scale,
             seed=config.gumbel_seed,
-            policy_target_c_visit=5.0,
-            policy_target_c_scale=0.25,
+            policy_target_temperature=config.policy_target_temperature,
+            policy_target_c_visit=config.policy_target_c_visit,
+            policy_target_c_scale=config.policy_target_c_scale,
         ),
     )
 
@@ -640,6 +646,15 @@ def _validate_arena_config(config: ArenaConfig) -> None:
         raise ValueError("gumbel_c_visit must be positive")
     if config.gumbel_c_scale <= 0.0:
         raise ValueError("gumbel_c_scale must be positive")
+    if not math.isfinite(config.policy_target_c_visit) or config.policy_target_c_visit <= 0.0:
+        raise ValueError("policy_target_c_visit must be finite and positive")
+    if not math.isfinite(config.policy_target_c_scale) or config.policy_target_c_scale <= 0.0:
+        raise ValueError("policy_target_c_scale must be finite and positive")
+    if (
+        not math.isfinite(config.policy_target_temperature)
+        or config.policy_target_temperature <= 0.0
+    ):
+        raise ValueError("policy_target_temperature must be finite and positive")
     if config.leaf_batch_size <= 0:
         raise ValueError("leaf_batch_size must be positive")
 
