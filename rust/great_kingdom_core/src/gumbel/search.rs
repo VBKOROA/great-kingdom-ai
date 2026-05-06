@@ -1,3 +1,8 @@
+use std::{
+    ops::AddAssign,
+    time::{Duration, Instant},
+};
+
 use pyo3::{buffer::PyBuffer, exceptions::PyValueError, prelude::*};
 
 use super::{
@@ -643,8 +648,22 @@ impl GumbelSearch {
         root_action: usize,
         state: &mut GameState,
     ) -> PendingGumbelSimulation {
-        let Some(root_edge_index) = self.nodes[root_index].edge_index_for_action(root_action)
-        else {
+        self.select_eval_leaf_traced(root_index, root_action, state, None)
+    }
+
+    pub(crate) fn select_eval_leaf_traced(
+        &self,
+        root_index: usize,
+        root_action: usize,
+        state: &mut GameState,
+        mut trace: Option<&mut GumbelSelectTrace>,
+    ) -> PendingGumbelSimulation {
+        let root_lookup_start = trace.as_ref().map(|_| Instant::now());
+        let root_edge_index = self.nodes[root_index].edge_index_for_action(root_action);
+        if let (Some(trace), Some(start)) = (trace.as_deref_mut(), root_lookup_start) {
+            trace.root_lookup_elapsed += start.elapsed();
+        }
+        let Some(root_edge_index) = root_edge_index else {
             return PendingGumbelSimulation::BlockedPending;
         };
         let mut node_index = root_index;
@@ -652,12 +671,23 @@ impl GumbelSearch {
         let mut path = Vec::new();
 
         loop {
+            if let Some(trace) = trace.as_deref_mut() {
+                trace.steps = trace.steps.saturating_add(1);
+            }
             let parent_player = self.nodes[node_index].to_play;
             let action = self.nodes[node_index].edges[edge_index].action;
+            let apply_start = trace.as_ref().map(|_| Instant::now());
             let outcome = state
                 .apply(action)
                 .expect("Gumbel search selected an action from legal_action_indexes");
+            if let (Some(trace), Some(start)) = (trace.as_deref_mut(), apply_start) {
+                trace.apply_elapsed += start.elapsed();
+            }
+            let path_push_start = trace.as_ref().map(|_| Instant::now());
             path.push((node_index, edge_index));
+            if let (Some(trace), Some(start)) = (trace.as_deref_mut(), path_push_start) {
+                trace.path_push_elapsed += start.elapsed();
+            }
 
             if let Some(outcome) = outcome {
                 return PendingGumbelSimulation::Terminal {
@@ -668,6 +698,7 @@ impl GumbelSearch {
 
             if let Some(child_index) = self.nodes[node_index].edges[edge_index].child {
                 node_index = child_index;
+                let inner_select_start = trace.as_ref().map(|_| Instant::now());
                 let Some(action_index) = select_inner_action_index(
                     &self.nodes[node_index],
                     self.config.c_visit,
@@ -675,9 +706,15 @@ impl GumbelSearch {
                 ) else {
                     return PendingGumbelSimulation::BlockedPending;
                 };
-                let Some(next_edge_index) =
-                    self.nodes[node_index].edge_index_for_action(action_index)
-                else {
+                if let (Some(trace), Some(start)) = (trace.as_deref_mut(), inner_select_start) {
+                    trace.inner_select_elapsed += start.elapsed();
+                }
+                let edge_lookup_start = trace.as_ref().map(|_| Instant::now());
+                let next_edge_index = self.nodes[node_index].edge_index_for_action(action_index);
+                if let (Some(trace), Some(start)) = (trace.as_deref_mut(), edge_lookup_start) {
+                    trace.edge_lookup_elapsed += start.elapsed();
+                }
+                let Some(next_edge_index) = next_edge_index else {
                     return PendingGumbelSimulation::BlockedPending;
                 };
                 edge_index = next_edge_index;
@@ -688,11 +725,39 @@ impl GumbelSearch {
                 return PendingGumbelSimulation::BlockedPending;
             }
 
+            let leaf_clone_start = trace.as_ref().map(|_| Instant::now());
+            let leaf_state = state.clone();
+            if let (Some(trace), Some(start)) = (trace.as_deref_mut(), leaf_clone_start) {
+                trace.leaf_clone_elapsed += start.elapsed();
+            }
             return PendingGumbelSimulation::NeedsEvaluation {
                 path,
-                state: state.clone(),
+                state: leaf_state,
             };
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct GumbelSelectTrace {
+    pub(crate) steps: u64,
+    pub(crate) root_lookup_elapsed: Duration,
+    pub(crate) apply_elapsed: Duration,
+    pub(crate) path_push_elapsed: Duration,
+    pub(crate) inner_select_elapsed: Duration,
+    pub(crate) edge_lookup_elapsed: Duration,
+    pub(crate) leaf_clone_elapsed: Duration,
+}
+
+impl AddAssign for GumbelSelectTrace {
+    fn add_assign(&mut self, rhs: Self) {
+        self.steps = self.steps.saturating_add(rhs.steps);
+        self.root_lookup_elapsed += rhs.root_lookup_elapsed;
+        self.apply_elapsed += rhs.apply_elapsed;
+        self.path_push_elapsed += rhs.path_push_elapsed;
+        self.inner_select_elapsed += rhs.inner_select_elapsed;
+        self.edge_lookup_elapsed += rhs.edge_lookup_elapsed;
+        self.leaf_clone_elapsed += rhs.leaf_clone_elapsed;
     }
 }
 

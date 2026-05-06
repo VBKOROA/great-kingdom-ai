@@ -1,6 +1,11 @@
 use pyo3::{exceptions::PyValueError, prelude::*};
 use rayon::prelude::*;
-use std::{env, time::Instant};
+use std::{
+    env,
+    iter::Sum,
+    ops::AddAssign,
+    time::{Duration, Instant},
+};
 
 use super::{
     config::GumbelConfig,
@@ -10,8 +15,8 @@ use super::{
     result::GumbelResult,
     sampling::sample_root_candidates,
     search::{
-        GumbelSearch, PendingGumbelSimulation, backup_path, reserve_path, root_ranking_scores,
-        unreserve_path,
+        GumbelSearch, GumbelSelectTrace, PendingGumbelSimulation, backup_path, reserve_path,
+        root_ranking_scores, unreserve_path,
     },
     sequential_halving::RootSequentialHalving,
 };
@@ -475,7 +480,8 @@ impl GumbelSelfPlayBatch {
             evaluator.check_signals()?;
             wave += 1;
             let select_start = Instant::now();
-            let pending_by_game: Vec<Vec<_>> = self
+            let select_detail = profile.select_detail_enabled();
+            let selected_by_game: Vec<SelectGameSelection> = self
                 .states
                 .par_iter()
                 .zip(self.searches.par_iter_mut())
@@ -486,34 +492,74 @@ impl GumbelSelfPlayBatch {
                 .map(
                     |(game_index, ((((state, search), comp), root_index), scheduler))| {
                         let Some(root_index) = *root_index else {
-                            return Vec::new();
+                            return SelectGameSelection::default();
                         };
                         let Some(scheduler) = scheduler.as_mut() else {
-                            return Vec::new();
+                            return SelectGameSelection::default();
                         };
                         let batch_target = (search.config.simulations - *comp)
                             .min(leaf_batch_size as u32)
                             as usize;
                         let mut local_pending = Vec::with_capacity(batch_target);
+                        let mut detail = SelectWaveDetail::default();
                         for _ in 0..batch_target {
                             if *comp + local_pending.len() as u32 >= search.config.simulations {
                                 break;
                             }
-                            let Some(root_action) = scheduler.next_action() else {
+                            if select_detail {
+                                detail.simulations = detail.simulations.saturating_add(1);
+                            }
+                            let scheduler_next_start = select_detail.then(Instant::now);
+                            let root_action = scheduler.next_action();
+                            if let Some(start) = scheduler_next_start {
+                                detail.scheduler_next_elapsed += start.elapsed();
+                            }
+                            let Some(root_action) = root_action else {
                                 break;
                             };
+                            let state_clone_start = select_detail.then(Instant::now);
                             let mut simulation_state = state.clone();
-                            match search.select_eval_leaf(
-                                root_index,
-                                root_action,
-                                &mut simulation_state,
-                            ) {
+                            if let Some(start) = state_clone_start {
+                                detail.state_clone_elapsed += start.elapsed();
+                            }
+                            let mut trace = GumbelSelectTrace::default();
+                            let search_start = select_detail.then(Instant::now);
+                            let selected = if select_detail {
+                                search.select_eval_leaf_traced(
+                                    root_index,
+                                    root_action,
+                                    &mut simulation_state,
+                                    Some(&mut trace),
+                                )
+                            } else {
+                                search.select_eval_leaf(
+                                    root_index,
+                                    root_action,
+                                    &mut simulation_state,
+                                )
+                            };
+                            if let Some(start) = search_start {
+                                detail.search_elapsed += start.elapsed();
+                                detail.search_trace += trace;
+                            }
+                            match selected {
                                 PendingGumbelSimulation::NeedsEvaluation {
                                     path,
                                     state: leaf_state,
                                 } => {
+                                    if select_detail {
+                                        detail.pending = detail.pending.saturating_add(1);
+                                    }
+                                    let reserve_path_start = select_detail.then(Instant::now);
                                     reserve_path(&mut search.nodes, &path);
+                                    if let Some(start) = reserve_path_start {
+                                        detail.reserve_path_elapsed += start.elapsed();
+                                    }
+                                    let scheduler_reserve_start = select_detail.then(Instant::now);
                                     scheduler.reserve_visit(root_action);
+                                    if let Some(start) = scheduler_reserve_start {
+                                        detail.scheduler_reserve_elapsed += start.elapsed();
+                                    }
                                     local_pending.push(PendingBatchLeaf {
                                         game_index,
                                         path,
@@ -521,28 +567,64 @@ impl GumbelSelfPlayBatch {
                                     });
                                 }
                                 PendingGumbelSimulation::Terminal { path, value } => {
+                                    if select_detail {
+                                        detail.terminal = detail.terminal.saturating_add(1);
+                                    }
+                                    let terminal_backup_start = select_detail.then(Instant::now);
                                     backup_path(&mut search.nodes, &path, value, false);
+                                    if let Some(start) = terminal_backup_start {
+                                        detail.terminal_backup_elapsed += start.elapsed();
+                                    }
+                                    let scheduler_reserve_start = select_detail.then(Instant::now);
                                     scheduler.reserve_visit(root_action);
+                                    if let Some(start) = scheduler_reserve_start {
+                                        detail.scheduler_reserve_elapsed += start.elapsed();
+                                    }
+                                    let complete_reserved_start = select_detail.then(Instant::now);
                                     scheduler.complete_reserved_visits(&root_ranking_scores(
                                         &search.nodes[root_index],
                                         search.config.c_visit,
                                         search.config.c_scale,
                                     ));
+                                    if let Some(start) = complete_reserved_start {
+                                        detail.complete_reserved_elapsed += start.elapsed();
+                                    }
                                     *comp += 1;
                                 }
-                                PendingGumbelSimulation::BlockedPending => break,
+                                PendingGumbelSimulation::BlockedPending => {
+                                    if select_detail {
+                                        detail.blocked = detail.blocked.saturating_add(1);
+                                    }
+                                    break;
+                                }
                             }
                         }
-                        local_pending
+                        SelectGameSelection {
+                            pending: local_pending,
+                            detail,
+                        }
                     },
                 )
                 .collect();
             let select_elapsed = select_start.elapsed();
+            let select_detail = selected_by_game
+                .iter()
+                .map(|selection| selection.detail)
+                .sum::<SelectWaveDetail>();
             let flatten_start = Instant::now();
-            let pending = pending_by_game.into_iter().flatten().collect::<Vec<_>>();
+            let pending = selected_by_game
+                .into_iter()
+                .flat_map(|selection| selection.pending)
+                .collect::<Vec<_>>();
             let flatten_elapsed = flatten_start.elapsed();
             if pending.is_empty() {
-                profile.empty_wave(wave, active_indexes.len(), select_elapsed, flatten_elapsed);
+                profile.empty_wave(
+                    wave,
+                    active_indexes.len(),
+                    select_elapsed,
+                    flatten_elapsed,
+                    select_detail,
+                );
                 continue;
             }
 
@@ -631,6 +713,7 @@ impl GumbelSelfPlayBatch {
                 eval_elapsed,
                 parse_elapsed,
                 backup_elapsed: backup_start.elapsed(),
+                select_detail,
             });
         }
 
@@ -681,6 +764,55 @@ struct PendingBatchLeaf {
     state: GameState,
 }
 
+#[derive(Default)]
+struct SelectGameSelection {
+    pending: Vec<PendingBatchLeaf>,
+    detail: SelectWaveDetail,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct SelectWaveDetail {
+    simulations: u64,
+    pending: u64,
+    terminal: u64,
+    blocked: u64,
+    scheduler_next_elapsed: Duration,
+    state_clone_elapsed: Duration,
+    search_elapsed: Duration,
+    reserve_path_elapsed: Duration,
+    scheduler_reserve_elapsed: Duration,
+    terminal_backup_elapsed: Duration,
+    complete_reserved_elapsed: Duration,
+    search_trace: GumbelSelectTrace,
+}
+
+impl AddAssign for SelectWaveDetail {
+    fn add_assign(&mut self, rhs: Self) {
+        self.simulations = self.simulations.saturating_add(rhs.simulations);
+        self.pending = self.pending.saturating_add(rhs.pending);
+        self.terminal = self.terminal.saturating_add(rhs.terminal);
+        self.blocked = self.blocked.saturating_add(rhs.blocked);
+        self.scheduler_next_elapsed += rhs.scheduler_next_elapsed;
+        self.state_clone_elapsed += rhs.state_clone_elapsed;
+        self.search_elapsed += rhs.search_elapsed;
+        self.reserve_path_elapsed += rhs.reserve_path_elapsed;
+        self.scheduler_reserve_elapsed += rhs.scheduler_reserve_elapsed;
+        self.terminal_backup_elapsed += rhs.terminal_backup_elapsed;
+        self.complete_reserved_elapsed += rhs.complete_reserved_elapsed;
+        self.search_trace += rhs.search_trace;
+    }
+}
+
+impl Sum for SelectWaveDetail {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        let mut total = Self::default();
+        for detail in iter {
+            total += detail;
+        }
+        total
+    }
+}
+
 #[derive(Clone, Debug)]
 struct PendingGameEvaluation {
     path: Vec<(usize, usize)>,
@@ -692,6 +824,7 @@ struct PendingGameEvaluation {
 #[derive(Clone, Copy)]
 struct GumbelBatchProfile {
     enabled: bool,
+    select_detail_enabled: bool,
     interval: u64,
     name: &'static str,
 }
@@ -706,12 +839,14 @@ struct GumbelBatchWaveProfile {
     eval_elapsed: std::time::Duration,
     parse_elapsed: std::time::Duration,
     backup_elapsed: std::time::Duration,
+    select_detail: SelectWaveDetail,
 }
 
 impl GumbelBatchProfile {
     fn new(name: &'static str) -> Self {
         Self {
             enabled: env_flag("GKA_GUMBEL_PROFILE"),
+            select_detail_enabled: env_flag("GKA_GUMBEL_SELECT_DETAIL"),
             interval: env::var("GKA_GUMBEL_PROFILE_INTERVAL")
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
@@ -719,6 +854,10 @@ impl GumbelBatchProfile {
                 .unwrap_or(1),
             name,
         }
+    }
+
+    const fn select_detail_enabled(&self) -> bool {
+        self.enabled && self.select_detail_enabled
     }
 
     fn root(&self, active_games: usize, elapsed: std::time::Duration) {
@@ -740,6 +879,7 @@ impl GumbelBatchProfile {
         active_games: usize,
         select_elapsed: std::time::Duration,
         flatten_elapsed: std::time::Duration,
+        select_detail: SelectWaveDetail,
     ) {
         if !self.enabled || wave % self.interval != 0 {
             return;
@@ -752,6 +892,7 @@ impl GumbelBatchProfile {
             select_elapsed.as_secs_f64(),
             flatten_elapsed.as_secs_f64(),
         );
+        self.select_detail(wave, active_games, 0, select_detail);
     }
 
     fn wave(&self, profile: GumbelBatchWaveProfile) {
@@ -777,6 +918,49 @@ impl GumbelBatchProfile {
             profile.parse_elapsed.as_secs_f64(),
             profile.backup_elapsed.as_secs_f64(),
             total.as_secs_f64(),
+        );
+        self.select_detail(
+            profile.wave,
+            profile.active_games,
+            profile.leaves,
+            profile.select_detail,
+        );
+    }
+
+    fn select_detail(
+        &self,
+        wave: u64,
+        active_games: usize,
+        leaves: usize,
+        detail: SelectWaveDetail,
+    ) {
+        if !self.select_detail_enabled() {
+            return;
+        }
+        eprintln!(
+            "[gka-gumbel-select] fn={} wave={} active_games={} leaves={} sims={} pending={} terminal={} blocked={} scheduler_next={:.3}s state_clone={:.3}s search={:.3}s root_lookup={:.3}s apply={:.3}s path_push={:.3}s inner_select={:.3}s edge_lookup={:.3}s leaf_clone={:.3}s reserve_path={:.3}s scheduler_reserve={:.3}s terminal_backup={:.3}s complete_reserved={:.3}s search_steps={}",
+            self.name,
+            wave,
+            active_games,
+            leaves,
+            detail.simulations,
+            detail.pending,
+            detail.terminal,
+            detail.blocked,
+            detail.scheduler_next_elapsed.as_secs_f64(),
+            detail.state_clone_elapsed.as_secs_f64(),
+            detail.search_elapsed.as_secs_f64(),
+            detail.search_trace.root_lookup_elapsed.as_secs_f64(),
+            detail.search_trace.apply_elapsed.as_secs_f64(),
+            detail.search_trace.path_push_elapsed.as_secs_f64(),
+            detail.search_trace.inner_select_elapsed.as_secs_f64(),
+            detail.search_trace.edge_lookup_elapsed.as_secs_f64(),
+            detail.search_trace.leaf_clone_elapsed.as_secs_f64(),
+            detail.reserve_path_elapsed.as_secs_f64(),
+            detail.scheduler_reserve_elapsed.as_secs_f64(),
+            detail.terminal_backup_elapsed.as_secs_f64(),
+            detail.complete_reserved_elapsed.as_secs_f64(),
+            detail.search_trace.steps,
         );
     }
 }

@@ -249,11 +249,16 @@ reference selector와 동일하게 유지해야 하므로 parity test를 추가�
 O(1) 조회로 교체했다. node 생성 시 `[u16; ACTION_SPACE]` 테이블을 채우고, search hot path는 기존 API를
 그대로 호출하므로 선택 의미는 바꾸지 않는다.
 
+action lookup table 적용 후 profile에서는 의미 있는 개선이 확인되지 않았다. 다음 판단을 위해
+`GKA_GUMBEL_SELECT_DETAIL=1` 플래그를 추가했고, 기존 `GKA_GUMBEL_PROFILE=1`과 함께 켜면 wave별로
+`scheduler_next`, `state_clone`, `search`, `apply`, `inner_select`, `edge_lookup`, `leaf_clone`,
+`reserve_path`, `scheduler_reserve`, `terminal_backup`, `complete_reserved` 세부 시간이 출력된다.
+
 남은 우선순위는 다음이다.
 
-1. scheduler index API로 `next_action()` 이후 `reserve_visit(action)` 재검색을 줄인다.
-2. 그래도 backup 비중이 크면 backup 경로를 별도 최적화한다.
-3. Runpod profile로 action lookup table 적용 후 select 감소를 확인한다.
+1. Runpod select detail profile로 `GameState::clone/apply`, scheduler, path/reserve 중 실제 병목을 확정한다.
+2. 병목이 scheduler 재검색이면 scheduler index API로 `next_action()` 이후 `reserve_visit(action)` 재검색을 줄인다.
+3. 그래도 backup 비중이 크면 backup 경로를 별도 최적화한다.
 
 기대 효과는 select 시간을 20~50% 줄여 전체 wall time을 약 8~20% 개선하는 것이다.
 
@@ -269,8 +274,8 @@ O(1) 조회로 교체했다. node 생성 시 `[u16; ACTION_SPACE]` 테이블을 
 - Gumbel policy target이 지나치게 hard한 문제는 temperature와 target scale 분리 실험으로 진단됐다.
 - 하지만 가장 최근 aggregate 실험에서는 target scale/temperature보다 exact-state aggregate replay가 더 확실한 strength 개선을 보였다.
 - 현재 실전 방향은 pure Gumbel search/target을 유지하면서 count-aware aggregate replay를 채택하는 쪽이다.
-- 다음 성능 개선 후보는 Runpod profile로 action lookup table 적용 효과를 확인한 뒤 scheduler index API를
-  검토하는 것이다.
+- 다음 성능 개선 후보는 Runpod select detail profile로 select 내부 병목을 확정한 뒤 scheduler index API나
+  `GameState::clone/apply` 최적화를 검토하는 것이다.
 
 ## 11. 남은 과제
 
@@ -281,7 +286,7 @@ O(1) 조회로 교체했다. node 생성 시 `[u16; ACTION_SPACE]` 테이블을 
 3. aggregate-only 설정을 full Runpod config에서 더 긴 학습과 arena로 검증한다.
 4. arena가 약해지면 target sharpen ablation을 다시 비교한다.
 5. value variance가 명확한 병목이라는 근거가 쌓일 때만 Completed-Q value blending을 별도 ablation으로 진행한다.
-6. Runpod profile로 action lookup table 적용 효과를 확인하고 후속 select 최적화를 진행한다.
+6. Runpod select detail profile로 select 내부 병목을 확정하고 후속 최적화를 진행한다.
 7. README와 설정 파일은 실험 결론이 바뀔 때마다 현재 기본 경로와 legacy/fallback 경로를 명확히 구분해 갱신한다.
 
 ## 12. 참고한 문서
