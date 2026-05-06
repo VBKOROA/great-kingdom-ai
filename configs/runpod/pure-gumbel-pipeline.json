@@ -12,9 +12,9 @@
   "skip_arena": false,
   "promote": true,
   "resume": true,
-  "aggregate_replay": false,
-  "aggregate_replay_weight_mode": "none",
-  "aggregate_replay_weight_cap": null,
+  "aggregate_replay": true,
+  "aggregate_replay_weight_mode": "sqrt_count",
+  "aggregate_replay_weight_cap": 8.0,
   "self_play": {
     "max_turns": 180,
     "gumbel_simulations": 96,

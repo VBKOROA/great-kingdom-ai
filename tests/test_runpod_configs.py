@@ -15,7 +15,9 @@ def test_runpod_pure_gumbel_configs_are_loadable_and_pure() -> None:
     arena = load_arena_config(Path("configs/runpod/pure-gumbel-arena.json"))
 
     assert pipeline.onnx_device == "cuda"
-    assert pipeline.aggregate_replay is False
+    assert pipeline.aggregate_replay is True
+    assert pipeline.aggregate_replay_weight_mode == "sqrt_count"
+    assert pipeline.aggregate_replay_weight_cap == 8.0
     assert pipeline.self_play.policy_target_c_visit == pipeline.self_play.gumbel_c_visit
     assert pipeline.self_play.policy_target_c_scale == pipeline.self_play.gumbel_c_scale
     assert pipeline.self_play.policy_target_temperature == 1.0
