@@ -54,6 +54,20 @@ impl GameState {
         }
     }
 
+    pub(crate) fn apply_trusted_search_action(
+        &mut self,
+        action: Action,
+    ) -> Result<Option<GameOutcome>, InvalidAction> {
+        if self.terminal {
+            return Err(InvalidAction::GameAlreadyEnded);
+        }
+
+        match action {
+            Action::Place { row, col } => self.apply_trusted_search_place(row, col),
+            Action::Pass => self.apply_pass(None),
+        }
+    }
+
     #[must_use]
     pub fn legal_action_indexes(&self) -> Vec<usize> {
         if self.terminal {
@@ -167,6 +181,56 @@ impl GameState {
         if let (Some(trace), Some(start)) = (trace.as_deref_mut(), switch_start) {
             trace.switch_turn_elapsed += start.elapsed();
         }
+        Ok(None)
+    }
+
+    fn apply_trusted_search_place(
+        &mut self,
+        row: usize,
+        col: usize,
+    ) -> Result<Option<GameOutcome>, InvalidAction> {
+        if row >= BOARD_SIZE || col >= BOARD_SIZE {
+            return Err(InvalidAction::OutOfRange);
+        }
+        if self.current_player.used_count(self) >= CASTLES_PER_PLAYER {
+            return Err(InvalidAction::NoCastlesRemaining);
+        }
+
+        let index = row * BOARD_SIZE + col;
+        if self.board[index] != Cell::Empty {
+            return Err(InvalidAction::OccupiedCell);
+        }
+        debug_assert!(
+            !self.is_territory_of(index, self.current_player.other()),
+            "trusted search action must not place inside opponent territory",
+        );
+
+        self.apply_unchecked_place(index)
+    }
+
+    fn apply_unchecked_place(
+        &mut self,
+        index: usize,
+    ) -> Result<Option<GameOutcome>, InvalidAction> {
+        let player = self.current_player;
+        self.board[index] = player.cell();
+        self.increment_current_player_used();
+        self.previous_pass = false;
+
+        // 파괴 판정 순서가 승패를 결정한다. 상대 그룹 파괴가 자살수 판정보다 우선한다.
+        if self.has_destroyed_group(player.other().cell()) {
+            return Ok(Some(
+                self.finish(GameEndReason::OpponentCastleDestroyed, player),
+            ));
+        }
+
+        if self.group_at_is_destroyed(index) {
+            return Ok(Some(
+                self.finish(GameEndReason::OwnCastleDestroyed, player.other()),
+            ));
+        }
+
+        self.current_player = player.other();
         Ok(None)
     }
 
@@ -478,6 +542,27 @@ mod tests {
         row * BOARD_SIZE + col
     }
 
+    fn assert_state_eq(left: &GameState, right: &GameState) {
+        assert_eq!(left.board, right.board);
+        assert_eq!(left.current_player, right.current_player);
+        assert_eq!(left.blue_used, right.blue_used);
+        assert_eq!(left.orange_used, right.orange_used);
+        assert_eq!(left.previous_pass, right.previous_pass);
+        assert_eq!(left.terminal, right.terminal);
+        assert_eq!(left.outcome, right.outcome);
+    }
+
+    fn assert_trusted_apply_matches_regular_apply(state: GameState, action: Action) {
+        let mut regular = state.clone();
+        let mut trusted = state;
+
+        let regular_outcome = regular.apply(action);
+        let trusted_outcome = trusted.apply_trusted_search_action(action);
+
+        assert_eq!(trusted_outcome, regular_outcome);
+        assert_state_eq(&trusted, &regular);
+    }
+
     #[test]
     fn new_state_has_80_place_actions_and_pass() {
         let state = GameState::new();
@@ -546,6 +631,40 @@ mod tests {
         assert_eq!(state.board[0], Cell::Orange);
         assert_eq!(state.current_player, Player::Blue);
         assert!(!state.previous_pass);
+    }
+
+    #[test]
+    fn trusted_search_apply_matches_regular_apply_for_legal_actions() {
+        assert_trusted_apply_matches_regular_apply(
+            GameState::new(),
+            Action::Place { row: 0, col: 0 },
+        );
+        assert_trusted_apply_matches_regular_apply(GameState::new(), Action::Pass);
+
+        let mut board = [Cell::Empty; BOARD_CELLS];
+        board[CENTER_INDEX] = Cell::Neutral;
+        board[index(1, 1)] = Cell::Orange;
+        board[index(0, 1)] = Cell::Blue;
+        board[index(1, 0)] = Cell::Blue;
+        board[index(1, 2)] = Cell::Blue;
+        assert_trusted_apply_matches_regular_apply(
+            state_with_board(board, Player::Blue),
+            Action::Place { row: 2, col: 1 },
+        );
+
+        let mut board = [Cell::Empty; BOARD_CELLS];
+        board[CENTER_INDEX] = Cell::Neutral;
+        board[index(0, 1)] = Cell::Orange;
+        board[index(1, 0)] = Cell::Orange;
+        board[index(1, 2)] = Cell::Blue;
+        board[index(0, 2)] = Cell::Orange;
+        board[index(1, 3)] = Cell::Orange;
+        board[index(2, 2)] = Cell::Orange;
+        board[index(2, 1)] = Cell::Orange;
+        assert_trusted_apply_matches_regular_apply(
+            state_with_board(board, Player::Blue),
+            Action::Place { row: 1, col: 1 },
+        );
     }
 
     #[test]

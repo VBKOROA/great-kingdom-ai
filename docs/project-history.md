@@ -261,11 +261,17 @@ select detail profile에서는 `GameState::apply()`가 search 내부 시간의 �
 `own_destroyed`, `pass_score`, `finish`, `switch_turn` 시간을 분리한다. 출력 주기는
 `GKA_GAME_APPLY_PROFILE_INTERVAL`로 조정한다.
 
+apply profile에서는 비용 대부분이 착수 전 `territory_check`에 집중됐다. Gumbel search edge는 이미
+`legal_action_indexes()` 기반으로 생성되므로, public `apply()`는 그대로 두고 search simulation에서만
+`apply_trusted_search_action()`을 사용하도록 바꿨다. 이 trusted 경로는 terminal/범위/점유/기물 수 검사는
+유지하지만 opponent territory 검사는 debug assertion으로만 남긴다. 착수 후 파괴 판정과 턴 전환은 기존
+규칙과 동일하게 실행하며, regular apply와 결과가 같은지 parity test를 추가했다.
+
 남은 우선순위는 다음이다.
 
-1. Runpod apply profile로 territory/group destruction/pass scoring 중 실제 apply 병목을 확정한다.
-2. 병목이 검증/영토 체크면 search 전용 trusted apply 가능성을 검토한다.
-3. 병목이 group/liberty 탐색이면 해당 규칙 helper를 별도 최적화한다.
+1. Runpod select/apply profile로 trusted apply 적용 후 `apply`와 `select` 감소를 확인한다.
+2. 그래도 apply가 크면 group/liberty 탐색 helper를 별도 최적화한다.
+3. backup 비중이 커지면 backup 경로를 다음 최적화 대상으로 잡는다.
 
 기대 효과는 select 시간을 20~50% 줄여 전체 wall time을 약 8~20% 개선하는 것이다.
 
@@ -281,8 +287,8 @@ select detail profile에서는 `GameState::apply()`가 search 내부 시간의 �
 - Gumbel policy target이 지나치게 hard한 문제는 temperature와 target scale 분리 실험으로 진단됐다.
 - 하지만 가장 최근 aggregate 실험에서는 target scale/temperature보다 exact-state aggregate replay가 더 확실한 strength 개선을 보였다.
 - 현재 실전 방향은 pure Gumbel search/target을 유지하면서 count-aware aggregate replay를 채택하는 쪽이다.
-- 다음 성능 개선 후보는 Runpod apply profile로 `GameState::apply()` 내부 병목을 확정한 뒤 trusted apply나
-  group/liberty helper 최적화를 검토하는 것이다.
+- 다음 성능 개선 후보는 Runpod profile로 trusted search apply 적용 효과를 확인한 뒤 group/liberty helper나
+  backup 경로 최적화를 검토하는 것이다.
 
 ## 11. 남은 과제
 
@@ -293,7 +299,7 @@ select detail profile에서는 `GameState::apply()`가 search 내부 시간의 �
 3. aggregate-only 설정을 full Runpod config에서 더 긴 학습과 arena로 검증한다.
 4. arena가 약해지면 target sharpen ablation을 다시 비교한다.
 5. value variance가 명확한 병목이라는 근거가 쌓일 때만 Completed-Q value blending을 별도 ablation으로 진행한다.
-6. Runpod apply profile로 `GameState::apply()` 내부 병목을 확정하고 후속 최적화를 진행한다.
+6. Runpod profile로 trusted search apply 적용 효과를 확인하고 후속 최적화를 진행한다.
 7. README와 설정 파일은 실험 결론이 바뀔 때마다 현재 기본 경로와 legacy/fallback 경로를 명확히 구분해 갱신한다.
 
 ## 12. 참고한 문서

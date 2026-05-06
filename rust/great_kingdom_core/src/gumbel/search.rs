@@ -607,7 +607,7 @@ impl GumbelSearch {
             let parent_player = self.nodes[node_index].to_play;
             let action = self.nodes[node_index].edges[edge_index].action;
             let outcome = state
-                .apply(action)
+                .apply_trusted_search_action(action)
                 .expect("Gumbel search selected an action from legal_action_indexes");
             path.push((node_index, edge_index));
 
@@ -678,7 +678,7 @@ impl GumbelSearch {
             let action = self.nodes[node_index].edges[edge_index].action;
             let apply_start = trace.as_ref().map(|_| Instant::now());
             let outcome = state
-                .apply(action)
+                .apply_trusted_search_action(action)
                 .expect("Gumbel search selected an action from legal_action_indexes");
             if let (Some(trace), Some(start)) = (trace.as_deref_mut(), apply_start) {
                 trace.apply_elapsed += start.elapsed();
