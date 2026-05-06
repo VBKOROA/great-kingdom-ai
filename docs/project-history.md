@@ -267,11 +267,21 @@ apply profile에서는 비용 대부분이 착수 전 `territory_check`에 집�
 유지하지만 opponent territory 검사는 debug assertion으로만 남긴다. 착수 후 파괴 판정과 턴 전환은 기존
 규칙과 동일하게 실행하며, regular apply와 결과가 같은지 parity test를 추가했다.
 
+trusted apply 적용 후에는 steady-state select가 거의 사라졌고, 남은 wall time은 대체로 backup과
+`eval_call` spike가 지배한다. 특히 일부 wave에서 `eval_call`이 0.012~0.013초로 튀며 total time을
+끌어올린다. 이 원인은 바깥의 `eval_call` 타이머만으로는 구분할 수 없으므로 ONNX evaluator 내부 계측이
+필요하다. 다음 계측 후보는 `request_len`, `max_batch_size`, `chunk_count`, `chunk_batch_size`,
+`tensor_build_time`, `session_run_time`, `output_parse_time`, `total_eval_time`, `device`다.
+
+해석 기준은 다음이다. `session_run_time`만 튀면 ORT/CUDA provider, allocator, GPU scheduling 문제일
+가능성이 크다. `tensor_build_time`이 크면 현재 `features.to_vec().into_boxed_slice()` 복사와 버퍼 재사용을
+검토한다. `chunk_count > 1`이면 `onnx_max_batch_size`가 작다는 뜻이므로 config 조정이 우선이다.
+
 남은 우선순위는 다음이다.
 
-1. Runpod select/apply profile로 trusted apply 적용 후 `apply`와 `select` 감소를 확인한다.
-2. 그래도 apply가 크면 group/liberty 탐색 helper를 별도 최적화한다.
-3. backup 비중이 커지면 backup 경로를 다음 최적화 대상으로 잡는다.
+1. ONNX evaluator detail profile로 `eval_call` spike 원인을 확인한다.
+2. backup detail profile로 steady-state backup 내부 병목을 분리한다.
+3. 계측 결과에 따라 ORT/CUDA, tensor copy, backup path 중 다음 최적화 대상을 선택한다.
 
 기대 효과는 select 시간을 20~50% 줄여 전체 wall time을 약 8~20% 개선하는 것이다.
 
@@ -287,8 +297,8 @@ apply profile에서는 비용 대부분이 착수 전 `territory_check`에 집�
 - Gumbel policy target이 지나치게 hard한 문제는 temperature와 target scale 분리 실험으로 진단됐다.
 - 하지만 가장 최근 aggregate 실험에서는 target scale/temperature보다 exact-state aggregate replay가 더 확실한 strength 개선을 보였다.
 - 현재 실전 방향은 pure Gumbel search/target을 유지하면서 count-aware aggregate replay를 채택하는 쪽이다.
-- 다음 성능 개선 후보는 Runpod profile로 trusted search apply 적용 효과를 확인한 뒤 group/liberty helper나
-  backup 경로 최적화를 검토하는 것이다.
+- 다음 성능 개선 후보는 ONNX evaluator detail profile로 `eval_call` spike 원인을 확인하고, backup detail
+  profile로 steady-state backup 병목을 분리하는 것이다.
 
 ## 11. 남은 과제
 
@@ -299,7 +309,7 @@ apply profile에서는 비용 대부분이 착수 전 `territory_check`에 집�
 3. aggregate-only 설정을 full Runpod config에서 더 긴 학습과 arena로 검증한다.
 4. arena가 약해지면 target sharpen ablation을 다시 비교한다.
 5. value variance가 명확한 병목이라는 근거가 쌓일 때만 Completed-Q value blending을 별도 ablation으로 진행한다.
-6. Runpod profile로 trusted search apply 적용 효과를 확인하고 후속 최적화를 진행한다.
+6. ONNX evaluator detail profile과 backup detail profile로 남은 self-play 병목을 분리한다.
 7. README와 설정 파일은 실험 결론이 바뀔 때마다 현재 기본 경로와 legacy/fallback 경로를 명확히 구분해 갱신한다.
 
 ## 12. 참고한 문서
