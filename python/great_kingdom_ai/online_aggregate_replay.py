@@ -91,7 +91,7 @@ class OnlineAggregateReplayBuffer:
         indexes = rng.sample(range(len(entries)), batch_size)
         return [self._sample_from_entry(entries[index]) for index in indexes]
 
-    def save(self, path: str | Path) -> None:
+    def save(self, path: str | Path, *, compressed: bool = True) -> None:
         destination = Path(path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         entries = list(self._entries.values())
@@ -131,7 +131,8 @@ class OnlineAggregateReplayBuffer:
         if root_policy_logits is not None:
             payload["root_policy_logits"] = root_policy_logits
             payload["root_policy_counts"] = root_policy_counts
-        np.savez_compressed(destination, **cast(dict[str, Any], payload))
+        save = np.savez_compressed if compressed else np.savez
+        save(destination, **cast(dict[str, Any], payload))
 
     @classmethod
     def load(

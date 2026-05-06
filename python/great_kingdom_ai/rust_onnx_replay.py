@@ -101,7 +101,7 @@ def import_rust_self_play_artifacts(
         ReplayBuffer.load(replay_file) if replay_file.exists() else ReplayBuffer(replay_capacity)
     )
     replay.extend(samples)
-    replay.save(replay_file)
+    replay.save(replay_file, compressed=False)
     if aggregate_replay_path is not None:
         _extend_online_aggregate_replay(
             aggregate_replay_path=Path(aggregate_replay_path),
@@ -306,7 +306,7 @@ def _extend_online_aggregate_replay(
             replay,
             raw_replay_path,
         )
-    replay.save(aggregate_replay_path)
+    replay.save(aggregate_replay_path, compressed=False)
 
 
 def _extend_online_aggregate_from_file(

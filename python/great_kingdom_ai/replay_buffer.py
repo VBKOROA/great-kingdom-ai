@@ -56,7 +56,7 @@ class ReplayBuffer:
         samples = list(self._samples)
         return [samples[index] for index in indexes]
 
-    def save(self, path: str | Path) -> None:
+    def save(self, path: str | Path, *, compressed: bool = True) -> None:
         destination = Path(path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         samples = list(self._samples)
@@ -84,7 +84,8 @@ class ReplayBuffer:
         root_policy_logits = _root_policy_logits_array(samples)
         if root_policy_logits is not None:
             payload["root_policy_logits"] = root_policy_logits
-        np.savez_compressed(destination, **cast(dict[str, Any], payload))
+        save = np.savez_compressed if compressed else np.savez
+        save(destination, **cast(dict[str, Any], payload))
 
     @classmethod
     def load(cls, path: str | Path) -> ReplayBuffer:
