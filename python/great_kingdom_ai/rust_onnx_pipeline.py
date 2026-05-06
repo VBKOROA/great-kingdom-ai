@@ -590,7 +590,6 @@ def _prepare_training_replay(
         sample_weight_cap=aggregate_replay_weight_cap,
     )
     save_replay(paths["aggregated_replay_path"], aggregated)
-    printer.metric("raw replay samples", features.shape[0])
     printer.metric("aggregated samples", aggregated.features.shape[0])
     printer.metric("aggregate weight mode", aggregate_replay_weight_mode)
     printer.metric("aggregate max count", int(aggregated.counts.max(initial=0)))
@@ -615,12 +614,6 @@ def _print_aggregate_replay_metrics(
             if "sample_weights" in data
             else np.ones((features.shape[0],), dtype=np.float32)
         )
-        raw_sample_count = (
-            int(data["raw_sample_count"])
-            if "raw_sample_count" in data
-            else int(counts.sum())
-        )
-    printer.metric("raw replay samples", raw_sample_count)
     printer.metric("aggregated samples", features.shape[0])
     printer.metric("aggregate weight mode", weight_mode)
     printer.metric("aggregate max count", int(counts.max(initial=0)))
