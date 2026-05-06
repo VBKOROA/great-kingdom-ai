@@ -232,14 +232,19 @@ Runpod 실전 학습 config는 pure Gumbel search/target 설정을 유지하면�
 
 추천 개선안은 selection hot path를 allocation-free에 가깝게 바꾸는 것이다.
 
-우선순위는 다음이다.
+2026-05-06에는 1차 최적화로 `select_inner_action_index()` hot path를 기존 reference selector에서
+분리했다. 기존 `inner_improved_policy()` / `select_inner_action()`는 테스트와 의미 검증용 reference로
+유지하고, search 내부 node 선택 경로만 heap allocation 없는 다중 pass 계산으로 교체했다.
 
-1. select 세부 계측을 추가한다.
-2. `select_inner_action_index()`의 allocation-free 버전을 만들고 기존 함수와 parity test를 작성한다.
-3. search hot path만 새 함수로 교체한다.
-4. Runpod profile에서 select 감소를 확인한다.
-5. 효과가 확인되면 action lookup table과 scheduler index API를 추가한다.
-6. 그래도 select가 크면 `GameState::clone/apply` 비용을 별도 최적화한다.
+이 변경으로 내부 node 선택 시 매번 생성되던 `InnerEdgeStats`, `prior_probs`, `completed_q`,
+`transformed_q`, `logits`, `InnerPolicyEntry` 임시 `Vec` 생성을 제거했다. 선택 수식과 tie-break는 기존
+reference selector와 동일하게 유지해야 하므로 parity test를 추가했다.
+
+남은 우선순위는 다음이다.
+
+1. Runpod profile에서 select 감소를 확인한다.
+2. 효과가 확인되면 action lookup table과 scheduler index API를 추가한다.
+3. 그래도 select가 크면 `GameState::clone/apply` 비용을 별도 최적화한다.
 
 기대 효과는 select 시간을 20~50% 줄여 전체 wall time을 약 8~20% 개선하는 것이다.
 
@@ -255,7 +260,8 @@ Runpod 실전 학습 config는 pure Gumbel search/target 설정을 유지하면�
 - Gumbel policy target이 지나치게 hard한 문제는 temperature와 target scale 분리 실험으로 진단됐다.
 - 하지만 가장 최근 aggregate 실험에서는 target scale/temperature보다 exact-state aggregate replay가 더 확실한 strength 개선을 보였다.
 - 현재 실전 방향은 pure Gumbel search/target을 유지하면서 count-aware aggregate replay를 채택하는 쪽이다.
-- 다음 성능 개선 후보는 Gumbel select hot path allocation 제거다.
+- 다음 성능 개선 후보는 Runpod profile로 Gumbel select hot path allocation 제거 효과를 확인한 뒤,
+  action lookup table과 scheduler index API를 검토하는 것이다.
 
 ## 11. 남은 과제
 
@@ -266,7 +272,7 @@ Runpod 실전 학습 config는 pure Gumbel search/target 설정을 유지하면�
 3. aggregate-only 설정을 full Runpod config에서 더 긴 학습과 arena로 검증한다.
 4. arena가 약해지면 target sharpen ablation을 다시 비교한다.
 5. value variance가 명확한 병목이라는 근거가 쌓일 때만 Completed-Q value blending을 별도 ablation으로 진행한다.
-6. Gumbel select hot path 세부 계측과 allocation-free selection 최적화를 진행한다.
+6. Runpod profile로 allocation-free inner selection 효과를 확인하고 후속 select 최적화를 진행한다.
 7. README와 설정 파일은 실험 결론이 바뀔 때마다 현재 기본 경로와 legacy/fallback 경로를 명확히 구분해 갱신한다.
 
 ## 12. 참고한 문서

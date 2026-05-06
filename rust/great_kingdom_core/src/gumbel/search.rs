@@ -9,7 +9,6 @@ use super::{
     },
     result::GumbelResult,
     sampling::{RootCandidate, sample_root_candidates},
-    selection::select_inner_action,
     sequential_halving::RootSequentialHalving,
 };
 use crate::{
@@ -747,13 +746,114 @@ pub(crate) enum PendingGumbelSimulation {
     BlockedPending,
 }
 
+const INNER_Q_RANGE_EPSILON: f32 = 1.0e-6;
+const INNER_PRIOR_PROB_EPSILON: f32 = 1.0e-8;
+
 fn select_inner_action_index(node: &GumbelNode, c_visit: f32, c_scale: f32) -> Option<usize> {
-    let edges = node
+    if node.edges.is_empty() {
+        return None;
+    }
+
+    let max_log_prior = node
         .edges
         .iter()
-        .map(|edge| edge.inner_stats())
-        .collect::<Vec<_>>();
-    select_inner_action(&edges, node.node_value, c_visit, c_scale)
+        .map(|edge| edge.log_prior)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let sum_exp_prior = node
+        .edges
+        .iter()
+        .map(|edge| (edge.log_prior - max_log_prior).exp())
+        .sum::<f32>();
+    let total_visits = node.edges.iter().map(|edge| edge.visit_count).sum::<u32>();
+    let max_visit_count = node
+        .edges
+        .iter()
+        .map(|edge| edge.visit_count)
+        .max()
+        .unwrap_or(0) as f32;
+
+    let mut visited_prior_sum = 0.0;
+    let mut visited_weighted_q = 0.0;
+    if total_visits > 0 {
+        for edge in &node.edges {
+            if edge.visit_count == 0 {
+                continue;
+            }
+            let prior_prob = ((edge.log_prior - max_log_prior).exp() / sum_exp_prior)
+                .max(INNER_PRIOR_PROB_EPSILON);
+            visited_prior_sum += prior_prob;
+            visited_weighted_q += prior_prob * edge.value_sum / edge.visit_count as f32;
+        }
+    }
+
+    let mixed_value = if total_visits == 0 || visited_prior_sum <= 0.0 {
+        node.node_value
+    } else {
+        let weighted_q = visited_weighted_q / visited_prior_sum;
+        (node.node_value + total_visits as f32 * weighted_q) / (total_visits as f32 + 1.0)
+    };
+
+    let mut q_min = f32::INFINITY;
+    let mut q_max = f32::NEG_INFINITY;
+    for edge in &node.edges {
+        let completed_q = if edge.visit_count > 0 {
+            edge.value_sum / edge.visit_count as f32
+        } else {
+            mixed_value
+        };
+        q_min = q_min.min(completed_q);
+        q_max = q_max.max(completed_q);
+    }
+    let q_range = (q_max - q_min).max(INNER_Q_RANGE_EPSILON);
+    let visit_scale = (c_visit + max_visit_count) * c_scale;
+
+    let mut max_logit = f32::NEG_INFINITY;
+    for edge in &node.edges {
+        let completed_q = if edge.visit_count > 0 {
+            edge.value_sum / edge.visit_count as f32
+        } else {
+            mixed_value
+        };
+        let q_bonus = visit_scale * ((completed_q - q_min) / q_range);
+        max_logit = max_logit.max(edge.log_prior + q_bonus);
+    }
+
+    let sum_exp_logit = node
+        .edges
+        .iter()
+        .map(|edge| {
+            let completed_q = if edge.visit_count > 0 {
+                edge.value_sum / edge.visit_count as f32
+            } else {
+                mixed_value
+            };
+            let q_bonus = visit_scale * ((completed_q - q_min) / q_range);
+            (edge.log_prior + q_bonus - max_logit).exp()
+        })
+        .sum::<f32>();
+
+    let total_visits_f32 = total_visits as f32;
+    let mut best: Option<(usize, f32)> = None;
+    for edge in &node.edges {
+        let completed_q = if edge.visit_count > 0 {
+            edge.value_sum / edge.visit_count as f32
+        } else {
+            mixed_value
+        };
+        let q_bonus = visit_scale * ((completed_q - q_min) / q_range);
+        let probability = (edge.log_prior + q_bonus - max_logit).exp() / sum_exp_logit;
+        let score = probability - edge.visit_count as f32 / (1.0 + total_visits_f32);
+        let action = edge.action.to_index();
+        let replace = best.is_none_or(|(best_action, best_score)| {
+            score.total_cmp(&best_score).is_gt()
+                || (score.total_cmp(&best_score).is_eq() && action < best_action)
+        });
+        if replace {
+            best = Some((action, score));
+        }
+    }
+
+    best.map(|(action, _)| action)
 }
 
 pub(crate) fn root_ranking_scores(
@@ -880,10 +980,10 @@ fn parse_gumbel_policy_row(row: Vec<f32>, row_index: usize) -> PyResult<[f32; AC
 
 #[cfg(test)]
 mod tests {
-    use super::{GumbelEvalBatch, GumbelSearch, backup_path};
+    use super::{GumbelEvalBatch, GumbelSearch, backup_path, select_inner_action_index};
     use crate::{
         game::{ACTION_SPACE, CENTER_INDEX, Cell, GameState, Player, state_with_board},
-        gumbel::{config::GumbelConfig, node::GumbelNode},
+        gumbel::{config::GumbelConfig, node::GumbelNode, selection::select_inner_action},
     };
 
     fn index(row: usize, col: usize) -> usize {
@@ -954,6 +1054,54 @@ mod tests {
         assert_eq!(nodes[2].edges[0].mean_q(), Some(-0.75));
         assert_eq!(nodes[1].edges[0].mean_q(), Some(0.75));
         assert_eq!(nodes[0].edges[0].mean_q(), Some(-0.75));
+    }
+
+    #[test]
+    fn fast_inner_selector_matches_reference_selection() {
+        let state = GameState::new();
+        let mut log_priors = [-4.0; ACTION_SPACE];
+        let legal_actions = [0, 1, 2, 10, 81];
+        for (offset, action) in legal_actions.iter().copied().enumerate() {
+            log_priors[action] = -0.25 * offset as f32;
+        }
+        let mut node =
+            GumbelNode::from_log_priors_for_actions(&state, &legal_actions, &log_priors, 0.35);
+
+        let cases = [
+            [(0, 0.0), (0, 0.0), (0, 0.0), (0, 0.0), (0, 0.0)],
+            [(3, 1.5), (0, 0.0), (2, -1.0), (1, 0.25), (0, 0.0)],
+            [(10, 6.0), (1, -0.5), (0, 0.0), (4, 1.0), (2, -0.25)],
+        ];
+
+        for case in cases {
+            for (edge, (visit_count, value_sum)) in node.edges.iter_mut().zip(case) {
+                edge.visit_count = visit_count;
+                edge.value_sum = value_sum;
+            }
+            let reference_edges = node
+                .edges
+                .iter()
+                .map(|edge| edge.inner_stats())
+                .collect::<Vec<_>>();
+
+            assert_eq!(
+                select_inner_action_index(&node, 50.0, 1.0),
+                select_inner_action(&reference_edges, node.node_value, 50.0, 1.0),
+            );
+            assert_eq!(
+                select_inner_action_index(&node, 1.5, 0.25),
+                select_inner_action(&reference_edges, node.node_value, 1.5, 0.25),
+            );
+        }
+
+        let tie_actions = [10, 2];
+        let tie_node = GumbelNode::from_log_priors_for_actions(
+            &state,
+            &tie_actions,
+            &[0.0; ACTION_SPACE],
+            0.0,
+        );
+        assert_eq!(select_inner_action_index(&tie_node, 50.0, 1.0), Some(2));
     }
 
     #[test]
