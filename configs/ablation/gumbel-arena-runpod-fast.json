@@ -1,5 +1,5 @@
 {
-  "games": 100,
+  "games": 400,
   "batch_size": 20,
   "seed_start": 90000,
   "max_turns": 180,

@@ -35,6 +35,7 @@ def test_ablation_configs_express_pure_and_modified_gumbel() -> None:
     assert modified.self_play.policy_target_temperature > 1.0
 
     arena = module.load_arena_config(module.DEFAULT_ARENA_CONFIG)
+    assert arena.games == 400
     assert arena.policy_target_c_visit == arena.gumbel_c_visit
     assert arena.policy_target_c_scale == arena.gumbel_c_scale
     assert arena.policy_target_temperature == 1.0
