@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.replay_aggregate import (
+    _sample_weights_from_counts,
     aggregate_duplicate_replay,
     load_replay,
     save_replay,
@@ -93,6 +94,17 @@ def test_aggregate_duplicate_replay_supports_count_weight_modes() -> None:
 
     assert replay.sample_weights[0] == pytest.approx(np.log1p(2.0))
     assert replay.sample_weights[1] == pytest.approx(np.log1p(1.0))
+
+
+def test_log_count_weight_with_null_cap_is_uncapped() -> None:
+    weights = _sample_weights_from_counts(
+        np.asarray([20_000_000], dtype=np.int64),
+        mode="log_count",
+        cap=None,
+    )
+
+    assert weights[0] == pytest.approx(np.log1p(20_000_000.0))
+    assert weights[0] > 16.0
 
 
 def test_aggregate_duplicate_replay_rejects_shape_mismatch() -> None:

@@ -32,7 +32,7 @@ from great_kingdom_ai.train import (
 )
 
 DEFAULT_PURE_PIPELINE_CONFIG = Path("configs/ablation/gumbel-pure-pipeline.json")
-DEFAULT_MODIFIED_PIPELINE_CONFIG = Path("configs/ablation/gumbel-aggregate-pipeline.json")
+DEFAULT_MODIFIED_PIPELINE_CONFIG = Path("configs/ablation/gumbel-log-count-pipeline.json")
 DEFAULT_TRAIN_CONFIG = Path("configs/ablation/gumbel-train-runpod-fast.json")
 DEFAULT_ARENA_CONFIG = Path("configs/ablation/gumbel-arena-runpod-fast.json")
 DEFAULT_RUN_ROOT = Path("data/ablation/gumbel")
@@ -80,7 +80,7 @@ def run_gumbel_ablation(
     )
     modified_config = _variant_pipeline_config(
         modified_pipeline_config,
-        run_dir / "aggregate",
+        run_dir / _modified_variant_slug(modified_pipeline_config),
         min_replay_samples=train_config.batch_size,
     )
 
@@ -93,7 +93,8 @@ def run_gumbel_ablation(
         printer=printer,
     )
 
-    printer.title("Aggregate-only Gumbel")
+    modified_label = _modified_variant_label(modified_pipeline_config)
+    printer.title(f"{modified_label} Gumbel")
     _install_initial_checkpoint(initial_checkpoint, modified_config)
     modified_summary = run_rust_onnx_pipeline(
         pipeline_config=modified_config,
@@ -104,9 +105,10 @@ def run_gumbel_ablation(
 
     pure_candidate = _last_candidate_checkpoint(pure_summary, "pure")
     modified_candidate = _last_candidate_checkpoint(modified_summary, "modified")
-    report_path = run_dir / "reports" / "aggregate-vs-pure-arena.json"
+    modified_slug = _modified_variant_slug(modified_pipeline_config)
+    report_path = run_dir / "reports" / f"{modified_slug}-vs-pure-arena.json"
 
-    printer.title("Aggregate-only vs Pure Arena")
+    printer.title(f"{modified_label} vs Pure Arena")
     report = run_arena(
         candidate_model=load_model_from_checkpoint(modified_candidate, device=arena_config.device),
         best_model=load_model_from_checkpoint(pure_candidate, device=arena_config.device),
@@ -115,7 +117,7 @@ def run_gumbel_ablation(
             "arena games",
             current,
             target,
-            detail=f"winner={game.winner}, aggregate_player={game.candidate_player}",
+            detail=f"winner={game.winner}, modified_player={game.candidate_player}",
         ),
     )
     save_arena_report(report, report_path)
@@ -133,7 +135,7 @@ def run_gumbel_ablation(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run a quick pure-vs-aggregate-only Gumbel training ablation and arena."
+        description="Run a quick pure-vs-modified Gumbel training ablation and arena."
     )
     parser.add_argument("--pure-pipeline-config", type=Path, default=DEFAULT_PURE_PIPELINE_CONFIG)
     parser.add_argument(
@@ -142,7 +144,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="modified_pipeline_config",
         type=Path,
         default=DEFAULT_MODIFIED_PIPELINE_CONFIG,
-        metavar="AGGREGATE_PIPELINE_CONFIG",
+        metavar="MODIFIED_PIPELINE_CONFIG",
     )
     parser.add_argument("--train-config", type=Path, default=DEFAULT_TRAIN_CONFIG)
     parser.add_argument("--arena-config", type=Path, default=DEFAULT_ARENA_CONFIG)
@@ -281,6 +283,26 @@ def _last_candidate_checkpoint(summary: RustOnnxPipelineSummary, label: str) -> 
     if not summary.iterations:
         raise ValueError(f"{label} pipeline did not run any iterations")
     return summary.iterations[-1].candidate_checkpoint
+
+
+def _modified_variant_slug(config: RustOnnxPipelineConfig) -> str:
+    if not config.aggregate_replay:
+        return "modified"
+    mode = config.aggregate_replay_weight_mode
+    if mode == "log_count" and config.aggregate_replay_weight_cap is None:
+        return "log-count"
+    if mode == "sqrt_count" and config.aggregate_replay_weight_cap == 8.0:
+        return "aggregate"
+    return mode.replace("_", "-")
+
+
+def _modified_variant_label(config: RustOnnxPipelineConfig) -> str:
+    slug = _modified_variant_slug(config)
+    if slug == "log-count":
+        return "Log-count aggregate"
+    if slug == "aggregate":
+        return "Aggregate-only"
+    return slug.replace("-", " ").title()
 
 
 def _default_run_dir() -> Path:
