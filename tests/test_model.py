@@ -15,7 +15,7 @@ torch = importlib.import_module("torch") if _torch_spec is not None else None
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS  # noqa: E402
 
 
-@pytest.mark.parametrize("preset", ["small", "medium"])
+@pytest.mark.parametrize("preset", ["small", "medium", "medium_plus", "strong"])
 def test_model_presets_return_policy_logits_and_value_scalar(preset: str) -> None:
     from great_kingdom_ai.model import create_model
 
@@ -49,6 +49,38 @@ def test_policy_head_splits_board_locations_and_pass_logit() -> None:
     assert pass_logits.shape == (3, 1)
     assert torch.equal(policy_logits[:, :81], board_logits)
     assert torch.equal(policy_logits[:, 81:], pass_logits)
+
+
+def test_medium_plus_increases_capacity_and_policy_head_width() -> None:
+    from great_kingdom_ai.model import create_model
+
+    medium = create_model("medium")
+    medium_plus = create_model("medium_plus")
+
+    assert medium_plus.config.channels == 96
+    assert medium_plus.config.residual_blocks == 6
+    assert medium_plus.config.policy_channels == 16
+    assert sum(p.numel() for p in medium_plus.parameters()) > sum(
+        p.numel() for p in medium.parameters()
+    )
+
+
+def test_strong_preset_uses_spatial_value_head_and_policy_context() -> None:
+    from great_kingdom_ai.model import create_model
+
+    strong = create_model("strong")
+
+    assert strong.config.channels == 128
+    assert strong.config.residual_blocks == 10
+    assert strong.config.policy_channels == 32
+    assert strong.config.policy_kernel_size == 3
+    assert strong.config.spatial_value_head is True
+    assert any(
+        isinstance(module, torch.nn.Linear)
+        and module.in_features == strong.config.channels * BOARD_SIZE * BOARD_SIZE
+        for module in strong.value_head
+    )
+    assert not any(isinstance(module, torch.nn.AdaptiveAvgPool2d) for module in strong.value_head)
 
 
 def test_value_head_uses_global_pooling_without_flattening_board_cells() -> None:

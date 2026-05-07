@@ -16,11 +16,28 @@ class ModelConfig:
     channels: int = 64
     residual_blocks: int = 4
     value_hidden: int = 64
+    policy_channels: int = 2
+    policy_kernel_size: int = 1
+    spatial_value_head: bool = False
 
 
 MODEL_PRESETS: dict[str, ModelConfig] = {
     "small": ModelConfig(channels=32, residual_blocks=2, value_hidden=64),
     "medium": ModelConfig(channels=64, residual_blocks=4, value_hidden=128),
+    "medium_plus": ModelConfig(
+        channels=96,
+        residual_blocks=6,
+        value_hidden=192,
+        policy_channels=16,
+    ),
+    "strong": ModelConfig(
+        channels=128,
+        residual_blocks=10,
+        value_hidden=256,
+        policy_channels=32,
+        policy_kernel_size=3,
+        spatial_value_head=True,
+    ),
     "large": ModelConfig(channels=128, residual_blocks=8, value_hidden=256),
 }
 
@@ -54,24 +71,39 @@ class PolicyValueNetwork(nn.Module):
             *[ResidualBlock(config.channels) for _ in range(config.residual_blocks)]
         )
         self.policy_spatial = nn.Sequential(
-            nn.Conv2d(config.channels, 2, kernel_size=1, bias=False),
-            nn.BatchNorm2d(2),
+            nn.Conv2d(
+                config.channels,
+                config.policy_channels,
+                kernel_size=config.policy_kernel_size,
+                padding=config.policy_kernel_size // 2,
+                bias=False,
+            ),
+            nn.BatchNorm2d(config.policy_channels),
             nn.ReLU(inplace=True),
-            nn.Conv2d(2, 1, kernel_size=1),
+            nn.Conv2d(config.policy_channels, 1, kernel_size=1),
         )
         self.policy_pass = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
             nn.Linear(config.channels, 1),
         )
-        self.value_head = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-            nn.Linear(config.channels, config.value_hidden),
-            nn.ReLU(inplace=True),
-            nn.Linear(config.value_hidden, 1),
-            nn.Tanh(),
-        )
+        if config.spatial_value_head:
+            self.value_head = nn.Sequential(
+                nn.Flatten(),
+                nn.Linear(config.channels * BOARD_SIZE * BOARD_SIZE, config.value_hidden),
+                nn.ReLU(inplace=True),
+                nn.Linear(config.value_hidden, 1),
+                nn.Tanh(),
+            )
+        else:
+            self.value_head = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Flatten(),
+                nn.Linear(config.channels, config.value_hidden),
+                nn.ReLU(inplace=True),
+                nn.Linear(config.value_hidden, 1),
+                nn.Tanh(),
+            )
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         if not torch.jit.is_tracing():

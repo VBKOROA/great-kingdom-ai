@@ -137,7 +137,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--steps", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--learning-rate", type=float, default=None)
-    parser.add_argument("--model-preset", choices=["small", "medium", "large"], default=None)
+    parser.add_argument(
+        "--model-preset",
+        choices=["small", "medium", "medium_plus", "strong", "large"],
+        default=None,
+    )
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument(

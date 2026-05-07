@@ -65,6 +65,7 @@ class RustOnnxPipelineConfig:
     rust_self_play_batch_size: int = 2
     skip_arena: bool = True
     promote: bool = True
+    always_promote: bool = False
     resume: bool = True
     aggregate_replay: bool = True
     aggregate_replay_weight_mode: str = "sqrt_count"
@@ -172,7 +173,7 @@ def run_rust_onnx_pipeline(
         first_iteration,
         last_iteration + 1,
     ):
-        phase_total = 5 if pipeline_config.skip_arena else 6
+        phase_total = 5 if not _should_run_arena(pipeline_config) else 6
         printer.title(f"Rust ONNX Iteration {iteration}/{last_iteration}")
         onnx_path = paths["onnx_checkpoint_dir"] / f"best-{iteration:06d}.onnx"
         printer.step(f"exporting best checkpoint -> {onnx_path}")
@@ -228,7 +229,7 @@ def run_rust_onnx_pipeline(
 
         candidate_win_rate: float | None = None
         promoted = False
-        if not pipeline_config.skip_arena:
+        if _should_run_arena(pipeline_config):
             report_path = paths["arena_dir"] / f"arena-{iteration:06d}.json"
             printer.step(f"arena evaluation -> {report_path}")
             arena_search_config = _arena_config_for_pipeline(
@@ -268,6 +269,13 @@ def run_rust_onnx_pipeline(
             )
             printer.metric("promoted", promoted)
             printer.progress("iteration", 5, phase_total, detail="arena complete")
+        elif pipeline_config.always_promote:
+            promoted = _promote_candidate_unconditionally(
+                candidate_checkpoint=candidate_checkpoint,
+                best_checkpoint=paths["best_checkpoint"],
+            )
+            printer.metric("promoted", promoted)
+            printer.progress("iteration", 5, phase_total, detail="always promoted")
         else:
             printer.progress("iteration", 5, phase_total, detail="arena skipped")
 
@@ -299,6 +307,8 @@ def load_rust_onnx_pipeline_config(path: str | Path) -> RustOnnxPipelineConfig:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError("Rust ONNX pipeline config must be a JSON object")
+    if "always-promote" in data:
+        data["always_promote"] = data.pop("always-promote")
     if "work_dir" in data:
         data["work_dir"] = Path(data["work_dir"])
     if data.get("legacy_import_dir") is not None:
@@ -346,6 +356,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-replay-samples", type=int, default=None)
     parser.add_argument("--max-self-play-games", type=int, default=None)
     parser.add_argument("--skip-arena", action="store_true")
+    parser.add_argument("--always-promote", action="store_true")
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -366,6 +377,7 @@ def main() -> NoReturn:
         "min_replay_samples": args.min_replay_samples,
         "max_self_play_games": args.max_self_play_games,
         "skip_arena": True if args.skip_arena else None,
+        "always_promote": True if args.always_promote else None,
     }.items():
         if value is not None:
             data[key] = value
@@ -405,7 +417,9 @@ def _paths(config: RustOnnxPipelineConfig) -> dict[str, Path]:
 
 def _ensure_dirs(config: RustOnnxPipelineConfig) -> None:
     for name, path in _paths(config).items():
-        if name == "self_play_dir":
+        if name == "self_play_dir" or (
+            name == "arena_dir" and not _should_run_arena(config)
+        ):
             continue
         if path.suffix:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -573,6 +587,20 @@ def _validate_config(config: RustOnnxPipelineConfig) -> None:
         raise ValueError("onnx_max_batch_size must be positive")
     if config.rust_self_play_batch_size <= 0:
         raise ValueError("rust_self_play_batch_size must be positive")
+def _should_run_arena(config: RustOnnxPipelineConfig) -> bool:
+    return not config.skip_arena and not config.always_promote
+
+
+def _promote_candidate_unconditionally(
+    *,
+    candidate_checkpoint: str | Path,
+    best_checkpoint: str | Path,
+) -> bool:
+    source = Path(candidate_checkpoint)
+    destination = Path(best_checkpoint)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+    return True
 
 
 def _prepare_training_replay(

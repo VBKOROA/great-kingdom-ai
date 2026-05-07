@@ -425,7 +425,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", choices=["cpu", "cuda"], default=None)
     parser.add_argument("--steps", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
-    parser.add_argument("--model-preset", choices=["small", "medium", "large"], default=None)
+    parser.add_argument(
+        "--model-preset",
+        choices=["small", "medium", "medium_plus", "strong", "large"],
+        default=None,
+    )
     parser.add_argument(
         "--log-every",
         type=int,

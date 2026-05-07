@@ -70,6 +70,7 @@ class PipelineConfig:
     playout_cap_full_search_fraction: float = 0.25
     playout_cap_fast_simulations: int = 16
     promote: bool = True
+    always_promote: bool = False
     skip_arena: bool = False
     resume: bool = True
 
@@ -361,7 +362,7 @@ def run_pipeline(
         report: ArenaReport | None = None
         promoted = False
         arena_report_path: Path | None = None
-        if not pipeline_config.skip_arena:
+        if _should_run_arena(pipeline_config):
             arena_report_path = _iteration_arena_report_path(paths, iteration)
             printer.step(f"arena evaluation -> {arena_report_path}")
             candidate_model = load_model_from_checkpoint(
@@ -405,6 +406,13 @@ def run_pipeline(
             )
             printer.metric("win rate", f"{report.summary.candidate_win_rate:.3f}")
             printer.metric("promoted", promoted)
+        elif pipeline_config.always_promote:
+            promoted = _promote_candidate_unconditionally(
+                candidate_checkpoint=candidate_checkpoint,
+                best_checkpoint=paths.best_checkpoint,
+            )
+            printer.metric("promoted", promoted)
+            printer.step("arena skipped by always_promote")
 
         iteration_summary = PipelineIterationSummary(
             iteration=iteration,
@@ -622,6 +630,22 @@ def _arena_config_for_pipeline(
     return ArenaConfig(**data)
 
 
+def _should_run_arena(config: PipelineConfig) -> bool:
+    return not config.skip_arena and not config.always_promote
+
+
+def _promote_candidate_unconditionally(
+    *,
+    candidate_checkpoint: str | Path,
+    best_checkpoint: str | Path,
+) -> bool:
+    source = Path(candidate_checkpoint)
+    destination = Path(best_checkpoint)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+    return True
+
+
 def _pcr_summary(config: PipelineConfig) -> str:
     if not config.playout_cap_randomization:
         return "off"
@@ -649,6 +673,8 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
         data = json.load(file)
     if not isinstance(data, dict):
         raise ValueError("pipeline config must be a JSON object")
+    if "always-promote" in data:
+        data["always_promote"] = data.pop("always-promote")
     _require_policy_target_scale(data, "pipeline config")
     if "work_dir" in data:
         data["work_dir"] = Path(data["work_dir"])
@@ -672,7 +698,7 @@ def _pipeline_paths(config: PipelineConfig) -> PipelineArtifacts:
         candidate_checkpoint=config.work_dir / "checkpoints" / "candidate.pt",
         best_checkpoint=config.work_dir / "checkpoints" / "best.pt",
         arena_report_path=None
-        if config.skip_arena
+        if not _should_run_arena(config)
         else config.work_dir / "reports" / "arena-report.json",
         metrics_path=config.work_dir / "reports" / "metrics.jsonl",
     )
@@ -683,7 +709,7 @@ def _ensure_pipeline_dirs(config: PipelineConfig) -> None:
     (config.work_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
     (config.work_dir / "checkpoints" / "candidates").mkdir(parents=True, exist_ok=True)
     (config.work_dir / "reports").mkdir(parents=True, exist_ok=True)
-    if not config.skip_arena:
+    if _should_run_arena(config):
         (config.work_dir / "reports" / "arena").mkdir(parents=True, exist_ok=True)
 
 
@@ -726,8 +752,6 @@ def _validate_pipeline_config(config: PipelineConfig) -> None:
         raise ValueError("playout_cap_full_search_fraction must be in (0, 1]")
     if config.playout_cap_fast_simulations <= 0:
         raise ValueError("playout_cap_fast_simulations must be positive")
-
-
 def _load_or_create_replay(path: Path, config: PipelineConfig) -> ReplayBuffer:
     if config.resume and path.exists():
         return ReplayBuffer.load(path)
@@ -843,6 +867,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="stop after candidate training",
     )
+    run_group.add_argument(
+        "--always-promote",
+        action="store_true",
+        help="skip arena and always replace best checkpoint with the candidate",
+    )
     run_group.add_argument("--json", action="store_true", help="print only machine-readable JSON")
 
     self_play_group = parser.add_argument_group("self-play")
@@ -957,6 +986,7 @@ def _configs_from_args(
         "playout_cap_full_search_fraction": args.playout_cap_full_search_fraction,
         "playout_cap_fast_simulations": args.playout_cap_fast_simulations,
         "promote": False if args.no_promote else None,
+        "always_promote": True if args.always_promote else None,
         "skip_arena": True if args.skip_arena else None,
         "resume": False if args.fresh else None,
     }.items():

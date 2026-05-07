@@ -338,6 +338,83 @@ def test_run_pipeline_saves_artifacts_and_promotes_candidate(
     assert arena_seed_starts == [0, 1]
 
 
+def test_run_pipeline_always_promote_skips_arena(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def fake_create_train_state(config: TrainingConfig) -> object:
+        del config
+        return object()
+
+    def fake_save_checkpoint(state: object, path: str | Path) -> Path:
+        del state
+        destination = Path(path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("best", encoding="utf-8")
+        return destination
+
+    def fake_train_from_replay(
+        replay: Any,
+        config: TrainingConfig,
+        *,
+        checkpoint_path: str | Path,
+        resume_path: str | Path | None,
+        bootstrap_weights_path: str | Path | None = None,
+        log_every: int,
+        progress_callback: Any = None,
+    ) -> FakeTrainSummary:
+        del replay, config, resume_path, bootstrap_weights_path, log_every, progress_callback
+        destination = Path(checkpoint_path)
+        destination.write_text("candidate", encoding="utf-8")
+        return FakeTrainSummary(
+            start_step=0,
+            end_step=1,
+            checkpoint_path=destination,
+            losses=[],
+        )
+
+    monkeypatch.setattr(pipeline_module, "create_train_state", fake_create_train_state)
+    monkeypatch.setattr(pipeline_module, "save_checkpoint", fake_save_checkpoint)
+    monkeypatch.setattr(pipeline_module, "train_from_replay", fake_train_from_replay)
+    monkeypatch.setattr(
+        pipeline_module,
+        "load_model_from_checkpoint",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("arena models should not load")
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "run_arena",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("arena should not run")
+        ),
+    )
+
+    summary = run_pipeline(
+        pipeline_config=make_pipeline_config(
+            work_dir=tmp_path,
+            iterations=1,
+            self_play_games=1,
+            min_replay_samples=1,
+            replay_capacity=8,
+            skip_arena=False,
+            promote=False,
+            always_promote=True,
+        ),
+        train_config=TrainingConfig(batch_size=1, steps=1, device="cpu"),
+        arena_config=ArenaConfig(games=1, device="cpu"),
+        printer=PipelinePrinter(enabled=False),
+        self_play_runner=fake_self_play_runner,
+    )
+
+    assert summary.promoted is True
+    assert summary.candidate_win_rate is None
+    assert summary.artifacts.best_checkpoint.read_text(encoding="utf-8") == "candidate"
+    assert summary.artifacts.arena_report_path is None
+    assert not (tmp_path / "reports" / "arena").exists()
+
+
 def test_run_pipeline_resume_continues_iteration_and_arena_seed_windows(
     tmp_path: Path,
     monkeypatch,
@@ -448,7 +525,7 @@ def test_load_pipeline_config_parses_work_dir(tmp_path: Path) -> None:
     path = tmp_path / "pipeline.json"
     path.write_text(
         (
-            '{"work_dir": "data/x", "self_play_games": 3, '
+            '{"work_dir": "data/x", "self_play_games": 3, "always-promote": true, '
             '"policy_target_c_visit": 5.0, "policy_target_c_scale": 0.25}'
         ),
         encoding="utf-8",
@@ -458,6 +535,7 @@ def test_load_pipeline_config_parses_work_dir(tmp_path: Path) -> None:
 
     assert config.work_dir == Path("data/x")
     assert config.self_play_games == 3
+    assert config.always_promote is True
 
 
 def test_load_pipeline_config_requires_policy_target_scale(tmp_path: Path) -> None:
