@@ -14,3 +14,4 @@ target/
 AGENTS.md
 data/self_play/
 data/ablation/
+*.pt
