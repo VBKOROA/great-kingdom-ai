@@ -328,8 +328,9 @@ def create_lr_scheduler(
 ) -> LRScheduler:
     """Create the configured learning-rate scheduler.
 
-    ``step`` preserves the original training behavior. ``warmup_cosine`` ramps the
-    learning rate up for ``lr_warmup_steps`` then decays it to ``lr_min_factor``.
+    ``step`` preserves the original training behavior. ``constant_with_warmup``
+    ramps the learning rate up for ``lr_warmup_steps`` then keeps it constant.
+    ``warmup_cosine`` ramps up then decays it to ``lr_min_factor``.
     """
     if config.lr_schedule == "step":
         if config.lr_decay_steps <= 0:
@@ -341,10 +342,20 @@ def create_lr_scheduler(
             step_size=config.lr_decay_steps,
             gamma=config.lr_decay_gamma,
         )
-    if config.lr_schedule != "warmup_cosine":
-        raise ValueError("lr_schedule must be one of: step, warmup_cosine")
+    if config.lr_schedule not in {"constant_with_warmup", "warmup_cosine"}:
+        raise ValueError(
+            "lr_schedule must be one of: step, constant_with_warmup, warmup_cosine"
+        )
     if config.lr_warmup_steps < 0:
         raise ValueError("lr_warmup_steps must be non-negative")
+    if config.lr_schedule == "constant_with_warmup":
+        def lr_factor(step_index: int) -> float:
+            if config.lr_warmup_steps > 0 and step_index < config.lr_warmup_steps:
+                return (step_index + 1) / config.lr_warmup_steps
+            return 1.0
+
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_factor)
+
     if not math.isfinite(config.lr_min_factor) or not 0.0 <= config.lr_min_factor <= 1.0:
         raise ValueError("lr_min_factor must be in [0, 1]")
 

@@ -164,6 +164,35 @@ def test_warmup_cosine_scheduler_changes_learning_rate(tmp_path) -> None:
     assert loaded.optimizer.param_groups[0]["lr"] == pytest.approx(0.1)
 
 
+def test_constant_with_warmup_scheduler_keeps_learning_rate_after_warmup(tmp_path) -> None:
+    config = TrainingConfig(
+        batch_size=2,
+        steps=4,
+        learning_rate=1.0,
+        lr_schedule="constant_with_warmup",
+        lr_warmup_steps=2,
+        seed=3,
+    )
+    state = create_train_state(config)
+    batch = samples_to_batch(make_replay().sample(2, random.Random(3)))
+
+    assert state.optimizer.param_groups[0]["lr"] == pytest.approx(0.5)
+
+    for _ in range(config.steps):
+        train_step(state, batch, config)
+
+    assert state.optimizer.param_groups[0]["lr"] == pytest.approx(1.0)
+    checkpoint = save_checkpoint(state, tmp_path / "constant-with-warmup.pt")
+    loaded = load_checkpoint(
+        checkpoint,
+        lr_schedule=config.lr_schedule,
+        lr_warmup_steps=config.lr_warmup_steps,
+        steps=config.steps,
+    )
+
+    assert loaded.optimizer.param_groups[0]["lr"] == pytest.approx(1.0)
+
+
 def test_amp_is_disabled_without_cuda_device() -> None:
     state = create_train_state(TrainingConfig(batch_size=2, amp=True, device="cpu"))
 

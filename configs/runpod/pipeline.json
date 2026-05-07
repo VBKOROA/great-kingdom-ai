@@ -15,7 +15,7 @@
   "promote": true,
   "always_promote": true,
   "resume": true,
-  "train_checkpoint_mode": "bootstrap",
+  "train_checkpoint_mode": "resume",
   "aggregate_replay": true,
   "aggregate_replay_weight_mode": "log_count",
   "aggregate_replay_weight_cap": null,
