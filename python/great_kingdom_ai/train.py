@@ -8,7 +8,7 @@ import random
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NoReturn, cast
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast
 
 import numpy as np
 
@@ -87,6 +87,12 @@ class TrainSummary:
     end_step: int
     checkpoint_path: Path | None
     losses: list[dict[str, float]]
+
+
+class ReplayDataset(Protocol):
+    def __len__(self) -> int: ...
+
+    def sample(self, batch_size: int, rng: random.Random) -> list[ReplaySample]: ...
 
 
 def samples_to_batch(
@@ -280,7 +286,7 @@ def load_checkpoint_weights(
 
 
 def train_from_replay(
-    replay: ReplayBuffer,
+    replay: ReplayDataset,
     config: TrainingConfig,
     *,
     checkpoint_path: str | Path | None = None,
@@ -540,6 +546,7 @@ __all__ = [
     "TrainSummary",
     "TrainingBatch",
     "TrainingConfig",
+    "ReplayDataset",
     "compute_losses",
     "create_train_state",
     "load_checkpoint",

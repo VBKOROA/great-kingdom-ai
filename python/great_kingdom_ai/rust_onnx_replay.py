@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
@@ -63,8 +64,8 @@ class LegacyImportSummary:
 def import_rust_self_play_samples(
     *,
     artifact_dir: str | Path,
-    samples: list[ReplaySample],
-    logs: list[GameLog],
+    samples: Sequence[ReplaySample],
+    logs: Sequence[GameLog],
     replay_path: str | Path,
     replay_capacity: int,
     game_log_path: str | Path | None = None,
@@ -72,6 +73,7 @@ def import_rust_self_play_samples(
     aggregate_replay_weight_mode: str = "sqrt_count",
     aggregate_replay_weight_cap: float | None = 16.0,
     materialize_raw_replay: bool = True,
+    aggregate_replay: OnlineAggregateReplayBuffer | None = None,
 ) -> RustReplayImportSummary:
     if not materialize_raw_replay and aggregate_replay_path is None:
         raise ValueError("materialize_raw_replay=False requires aggregate_replay_path")
@@ -97,6 +99,7 @@ def import_rust_self_play_samples(
             sample_weight_mode=aggregate_replay_weight_mode,
             sample_weight_cap=aggregate_replay_weight_cap,
             raw_replay_includes_samples=materialize_raw_replay,
+            aggregate_replay=aggregate_replay,
         )
         if not materialize_raw_replay:
             replay_samples = aggregate_samples
@@ -219,12 +222,16 @@ def _extend_online_aggregate_replay(
     aggregate_replay_path: Path,
     raw_replay_path: Path,
     replay_capacity: int,
-    samples: list[ReplaySample],
+    samples: Sequence[ReplaySample],
     sample_weight_mode: str,
     sample_weight_cap: float | None,
     raw_replay_includes_samples: bool,
+    aggregate_replay: OnlineAggregateReplayBuffer | None = None,
 ) -> int:
-    if aggregate_replay_path.exists():
+    if aggregate_replay is not None:
+        replay = aggregate_replay
+        replay.extend(samples)
+    elif aggregate_replay_path.exists():
         replay = OnlineAggregateReplayBuffer.load(
             aggregate_replay_path,
             capacity=replay_capacity,

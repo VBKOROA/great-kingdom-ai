@@ -31,6 +31,7 @@ from great_kingdom_ai.replay_aggregate import (
 from great_kingdom_ai.replay_buffer import ReplayBuffer
 from great_kingdom_ai.rust_onnx_replay import (
     RustReplayImportSummary,
+    _extend_online_aggregate_from_file,
     import_legacy_pipeline_data,
     import_rust_self_play_samples,
 )
@@ -41,6 +42,7 @@ from great_kingdom_ai.rust_onnx_self_play import (
 )
 from great_kingdom_ai.self_play import SelfPlayConfig
 from great_kingdom_ai.train import (
+    ReplayDataset,
     TrainingConfig,
     create_train_state,
     load_training_config,
@@ -148,6 +150,7 @@ def run_rust_onnx_pipeline(
 
     completed_iterations = _load_completed_iteration_count(paths["metrics_path"], pipeline_config)
     seed_cursor = _initial_seed_cursor(pipeline_config)
+    aggregate_replay_buffer = _load_initial_aggregate_replay_buffer(paths, pipeline_config)
     summaries: list[RustOnnxPipelineIterationSummary] = []
     first_iteration = completed_iterations + 1
     last_iteration = completed_iterations + pipeline_config.iterations
@@ -189,6 +192,7 @@ def run_rust_onnx_pipeline(
             aggregated_replay_path=paths["aggregated_replay_path"],
             game_log_path=paths["game_log_path"],
             seed_cursor=seed_cursor,
+            aggregate_replay_buffer=aggregate_replay_buffer,
             runner=runner,
             printer=printer,
         )
@@ -203,6 +207,7 @@ def run_rust_onnx_pipeline(
             aggregate_replay=pipeline_config.aggregate_replay,
             aggregate_replay_weight_mode=pipeline_config.aggregate_replay_weight_mode,
             aggregate_replay_weight_cap=pipeline_config.aggregate_replay_weight_cap,
+            aggregate_replay_buffer=aggregate_replay_buffer,
             printer=printer,
         )
         candidate_checkpoint = paths["candidate_dir"] / f"candidate-{iteration:06d}.pt"
@@ -436,6 +441,7 @@ def _generate_and_import_self_play(
     aggregated_replay_path: Path,
     game_log_path: Path,
     seed_cursor: int,
+    aggregate_replay_buffer: OnlineAggregateReplayBuffer | None,
     runner: Callable[[RustOnnxSelfPlayConfig], RustSelfPlayRunSummary],
     printer: PipelinePrinter,
 ) -> tuple[RustSelfPlayRunSummary, RustReplayImportSummary, int]:
@@ -491,8 +497,8 @@ def _generate_and_import_self_play(
         )
 
         printer.step("adding Rust self-play samples to replay")
-        batch_samples = list(self_play_summary.replay_samples)
-        game_logs = list(self_play_summary.game_logs)
+        batch_samples = self_play_summary.replay_samples
+        game_logs = self_play_summary.game_logs
         if len(batch_samples) != self_play_summary.samples:
             raise RuntimeError(
                 "Rust ONNX self-play runner returned samples="
@@ -518,6 +524,7 @@ def _generate_and_import_self_play(
             aggregate_replay_weight_mode=pipeline_config.aggregate_replay_weight_mode,
             aggregate_replay_weight_cap=pipeline_config.aggregate_replay_weight_cap,
             materialize_raw_replay=not pipeline_config.aggregate_replay,
+            aggregate_replay=aggregate_replay_buffer,
         )
         imported_games += replay_import.imported_games
         imported_samples += replay_import.imported_samples
@@ -587,6 +594,31 @@ def _validate_config(config: RustOnnxPipelineConfig) -> None:
         raise ValueError("onnx_max_batch_size must be positive")
     if config.rust_self_play_batch_size <= 0:
         raise ValueError("rust_self_play_batch_size must be positive")
+
+
+def _load_initial_aggregate_replay_buffer(
+    paths: dict[str, Path],
+    config: RustOnnxPipelineConfig,
+) -> OnlineAggregateReplayBuffer | None:
+    if not config.aggregate_replay:
+        return None
+    if paths["aggregated_replay_path"].exists():
+        return OnlineAggregateReplayBuffer.load(
+            paths["aggregated_replay_path"],
+            capacity=config.replay_capacity,
+            sample_weight_mode=config.aggregate_replay_weight_mode,
+            sample_weight_cap=config.aggregate_replay_weight_cap,
+        )
+    replay = OnlineAggregateReplayBuffer(
+        config.replay_capacity,
+        sample_weight_mode=config.aggregate_replay_weight_mode,
+        sample_weight_cap=config.aggregate_replay_weight_cap,
+    )
+    if paths["replay_path"].exists():
+        _extend_online_aggregate_from_file(replay, paths["replay_path"])
+    return replay
+
+
 def _should_run_arena(config: RustOnnxPipelineConfig) -> bool:
     return not config.skip_arena and not config.always_promote
 
@@ -610,10 +642,17 @@ def _prepare_training_replay(
     aggregate_replay: bool,
     aggregate_replay_weight_mode: str,
     aggregate_replay_weight_cap: float | None,
+    aggregate_replay_buffer: OnlineAggregateReplayBuffer | None,
     printer: PipelinePrinter,
-) -> ReplayBuffer:
+) -> ReplayDataset:
     if not aggregate_replay:
         return ReplayBuffer.load(paths["replay_path"])
+
+    if aggregate_replay_buffer is not None:
+        printer.step("using in-memory online aggregate replay for training")
+        printer.metric("aggregated samples", len(aggregate_replay_buffer))
+        printer.metric("aggregate weight mode", aggregate_replay_weight_mode)
+        return aggregate_replay_buffer
 
     if paths["aggregated_replay_path"].exists():
         printer.step("loading online aggregate replay for training")
