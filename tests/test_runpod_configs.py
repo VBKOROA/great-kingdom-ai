@@ -20,8 +20,8 @@ def test_runpod_pure_gumbel_configs_are_loadable_and_pure() -> None:
     assert pipeline.aggregate_replay_weight_cap is None
     assert pipeline.skip_arena is True
     assert pipeline.always_promote is True
-    assert pipeline.self_play_games == 2400
-    assert pipeline.min_replay_samples == 48000
+    assert pipeline.self_play_games == 2000
+    assert pipeline.min_replay_samples == 40000
     assert pipeline.self_play.gumbel_simulations == 32
     assert pipeline.self_play.playout_cap_full_simulations == 32
     assert pipeline.self_play.leaf_batch_size == 192
@@ -32,7 +32,7 @@ def test_runpod_pure_gumbel_configs_are_loadable_and_pure() -> None:
     assert train.device == "cuda"
     assert train.model_preset == "medium_plus"
     assert train.batch_size <= pipeline.min_replay_samples
-    assert train.batch_size * train.steps >= pipeline.min_replay_samples * 10
+    assert train.batch_size * train.steps >= pipeline.min_replay_samples * 12
 
     assert arena.device == "cuda"
     assert arena.policy_target_c_visit == arena.gumbel_c_visit
