@@ -20,9 +20,9 @@ from great_kingdom_ai.evaluate import (
 from great_kingdom_ai.replay_buffer import ReplayBuffer
 from great_kingdom_ai.train import TrainingConfig, load_training_config, train_from_replay
 
-DEFAULT_WORK_DIR = Path("data/runpod/pure-gumbel")
-DEFAULT_TRAIN_CONFIG = Path("configs/runpod/pure-gumbel-train.json")
-DEFAULT_ARENA_CONFIG = Path("configs/runpod/pure-gumbel-arena.json")
+DEFAULT_WORK_DIR = Path("data/runpod/pure-gumbel-medium-plus")
+DEFAULT_TRAIN_CONFIG = Path("configs/runpod/train.json")
+DEFAULT_ARENA_CONFIG = Path("configs/runpod/arena.json")
 DEFAULT_SPECS = ("0.0002:150", "0.0002:300", "0.0001:150", "0.0001:300")
 
 

@@ -73,6 +73,7 @@ class PipelineConfig:
     always_promote: bool = False
     skip_arena: bool = False
     resume: bool = True
+    train_checkpoint_mode: str = "resume"
 
 
 @dataclass(frozen=True)
@@ -226,6 +227,7 @@ def run_pipeline(
     printer.metric("completed iterations", completed_iterations)
     printer.metric("self-play", _self_play_config_summary(pipeline_config))
     printer.metric("training", f"steps={train_config.steps}, batch={train_config.batch_size}")
+    printer.metric("train checkpoint", pipeline_config.train_checkpoint_mode)
 
     for iteration in range(first_iteration, last_iteration + 1):
         printer.title(f"Iteration {iteration}/{last_iteration}")
@@ -347,7 +349,10 @@ def run_pipeline(
             replay,
             train_config,
             checkpoint_path=candidate_checkpoint,
-            resume_path=paths.best_checkpoint,
+            **_train_checkpoint_kwargs(
+                pipeline_config,
+                paths.best_checkpoint,
+            ),
             log_every=max(1, train_config.steps // 10),
             progress_callback=lambda current, target, loss: printer.progress(
                 "train",
@@ -752,6 +757,21 @@ def _validate_pipeline_config(config: PipelineConfig) -> None:
         raise ValueError("playout_cap_full_search_fraction must be in (0, 1]")
     if config.playout_cap_fast_simulations <= 0:
         raise ValueError("playout_cap_fast_simulations must be positive")
+    if config.train_checkpoint_mode not in {"resume", "bootstrap"}:
+        raise ValueError("train_checkpoint_mode must be one of: resume, bootstrap")
+
+
+def _train_checkpoint_kwargs(
+    config: PipelineConfig,
+    best_checkpoint: Path,
+) -> dict[str, Path | None]:
+    if config.train_checkpoint_mode == "resume":
+        return {"resume_path": best_checkpoint, "bootstrap_weights_path": None}
+    if config.train_checkpoint_mode == "bootstrap":
+        return {"resume_path": None, "bootstrap_weights_path": best_checkpoint}
+    raise ValueError("train_checkpoint_mode must be one of: resume, bootstrap")
+
+
 def _load_or_create_replay(path: Path, config: PipelineConfig) -> ReplayBuffer:
     if config.resume and path.exists():
         return ReplayBuffer.load(path)
@@ -950,6 +970,12 @@ def build_parser() -> argparse.ArgumentParser:
     train_group = parser.add_argument_group("training and arena")
     train_group.add_argument("--train-steps", type=int, default=None, help="steps per iteration")
     train_group.add_argument(
+        "--train-checkpoint-mode",
+        choices=["resume", "bootstrap"],
+        default=None,
+        help="resume optimizer/scheduler state or bootstrap model weights only",
+    )
+    train_group.add_argument(
         "--arena-games",
         type=int,
         default=None,
@@ -989,6 +1015,7 @@ def _configs_from_args(
         "always_promote": True if args.always_promote else None,
         "skip_arena": True if args.skip_arena else None,
         "resume": False if args.fresh else None,
+        "train_checkpoint_mode": args.train_checkpoint_mode,
     }.items():
         if value is not None:
             pipeline_data[key] = value

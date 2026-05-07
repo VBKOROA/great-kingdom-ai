@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import random
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
@@ -35,8 +36,12 @@ class TrainingConfig:
     value_loss_weight: float = 1.0
     policy_loss_weight: float = 1.0
     l2_loss_weight: float = 0.0
+    lr_schedule: str = "step"
     lr_decay_gamma: float = 0.99
     lr_decay_steps: int = 100
+    lr_warmup_steps: int = 0
+    lr_min_factor: float = 0.1
+    lr_cosine_steps: int = 0
     seed: int = 0
     device: str = "cpu"
     model_preset: str = "small"
@@ -177,11 +182,7 @@ def create_train_state(config: TrainingConfig) -> TrainState:
         lr=config.learning_rate,
         weight_decay=config.weight_decay,
     )
-    scheduler = torch.optim.lr_scheduler.StepLR(
-        optimizer,
-        step_size=config.lr_decay_steps,
-        gamma=config.lr_decay_gamma,
-    )
+    scheduler = create_lr_scheduler(torch, optimizer, config)
     return TrainState(
         model=model,
         optimizer=optimizer,
@@ -242,8 +243,13 @@ def load_checkpoint(
     device: torch.device | str | None = None,
     learning_rate: float = 1e-3,
     weight_decay: float = 1e-4,
+    lr_schedule: str = "step",
     lr_decay_steps: int = 100,
     lr_decay_gamma: float = 0.99,
+    lr_warmup_steps: int = 0,
+    lr_min_factor: float = 0.1,
+    lr_cosine_steps: int = 0,
+    steps: int = 1000,
     amp: bool = False,
 ) -> TrainState:
     torch = _import_torch()
@@ -255,12 +261,24 @@ def load_checkpoint(
     model.load_state_dict(checkpoint["model_state"])
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     optimizer.load_state_dict(checkpoint["optimizer_state"])
-    scheduler = torch.optim.lr_scheduler.StepLR(
+    scheduler = create_lr_scheduler(
+        torch,
         optimizer,
-        step_size=lr_decay_steps,
-        gamma=lr_decay_gamma,
+        TrainingConfig(
+            steps=steps,
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            lr_schedule=lr_schedule,
+            lr_decay_steps=lr_decay_steps,
+            lr_decay_gamma=lr_decay_gamma,
+            lr_warmup_steps=lr_warmup_steps,
+            lr_min_factor=lr_min_factor,
+            lr_cosine_steps=lr_cosine_steps,
+            device=str(device or "cpu"),
+        ),
     )
     scheduler.load_state_dict(checkpoint["scheduler_state"])
+    _restore_optimizer_lrs_from_scheduler(optimizer, scheduler)
     scaler = _create_grad_scaler_for_device(torch, device, enabled=amp)
     scaler_state = checkpoint.get("scaler_state")
     if scaler is not None and scaler_state is not None:
@@ -292,11 +310,7 @@ def load_checkpoint_weights(
         lr=config.learning_rate,
         weight_decay=config.weight_decay,
     )
-    scheduler = torch.optim.lr_scheduler.StepLR(
-        optimizer,
-        step_size=config.lr_decay_steps,
-        gamma=config.lr_decay_gamma,
-    )
+    scheduler = create_lr_scheduler(torch, optimizer, config)
     return TrainState(
         model=model,
         optimizer=optimizer,
@@ -305,6 +319,57 @@ def load_checkpoint_weights(
         step=0,
         model_preset=str(checkpoint.get("model_preset", "custom")),
     )
+
+
+def create_lr_scheduler(
+    torch: Any,
+    optimizer: Optimizer,
+    config: TrainingConfig,
+) -> LRScheduler:
+    """Create the configured learning-rate scheduler.
+
+    ``step`` preserves the original training behavior. ``warmup_cosine`` ramps the
+    learning rate up for ``lr_warmup_steps`` then decays it to ``lr_min_factor``.
+    """
+    if config.lr_schedule == "step":
+        if config.lr_decay_steps <= 0:
+            raise ValueError("lr_decay_steps must be positive")
+        if not math.isfinite(config.lr_decay_gamma) or config.lr_decay_gamma <= 0.0:
+            raise ValueError("lr_decay_gamma must be finite and positive")
+        return torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=config.lr_decay_steps,
+            gamma=config.lr_decay_gamma,
+        )
+    if config.lr_schedule != "warmup_cosine":
+        raise ValueError("lr_schedule must be one of: step, warmup_cosine")
+    if config.lr_warmup_steps < 0:
+        raise ValueError("lr_warmup_steps must be non-negative")
+    if not math.isfinite(config.lr_min_factor) or not 0.0 <= config.lr_min_factor <= 1.0:
+        raise ValueError("lr_min_factor must be in [0, 1]")
+
+    total_steps = config.lr_cosine_steps if config.lr_cosine_steps > 0 else config.steps
+    if total_steps <= 0:
+        raise ValueError("lr_cosine_steps or steps must be positive")
+    warmup_steps = min(config.lr_warmup_steps, total_steps)
+
+    def lr_factor(step_index: int) -> float:
+        if warmup_steps > 0 and step_index < warmup_steps:
+            return (step_index + 1) / warmup_steps
+        decay_steps = max(1, total_steps - warmup_steps)
+        progress = min(1.0, max(0.0, (step_index - warmup_steps) / decay_steps))
+        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return config.lr_min_factor + (1.0 - config.lr_min_factor) * cosine
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_factor)
+
+
+def _restore_optimizer_lrs_from_scheduler(
+    optimizer: Optimizer,
+    scheduler: LRScheduler,
+) -> None:
+    for group, learning_rate in zip(optimizer.param_groups, scheduler.get_last_lr(), strict=True):
+        group["lr"] = learning_rate
 
 
 def train_from_replay(
@@ -336,8 +401,13 @@ def train_from_replay(
             device=config.device,
             learning_rate=config.learning_rate,
             weight_decay=config.weight_decay,
+            lr_schedule=config.lr_schedule,
             lr_decay_steps=config.lr_decay_steps,
             lr_decay_gamma=config.lr_decay_gamma,
+            lr_warmup_steps=config.lr_warmup_steps,
+            lr_min_factor=config.lr_min_factor,
+            lr_cosine_steps=config.lr_cosine_steps,
+            steps=config.steps,
             amp=config.amp,
         )
 
@@ -638,6 +708,7 @@ __all__ = [
     "TrainingConfig",
     "ReplayDataset",
     "compute_losses",
+    "create_lr_scheduler",
     "create_train_state",
     "load_checkpoint",
     "load_checkpoint_weights",

@@ -70,6 +70,7 @@ class RustOnnxPipelineConfig:
     promote: bool = True
     always_promote: bool = False
     resume: bool = True
+    train_checkpoint_mode: str = "resume"
     aggregate_replay: bool = True
     aggregate_replay_weight_mode: str = "sqrt_count"
     aggregate_replay_weight_cap: float | None = 16.0
@@ -213,6 +214,7 @@ def run_rust_onnx_pipeline(
         ),
     )
     printer.metric("training", f"steps={train_config.steps}, batch={train_config.batch_size}")
+    printer.metric("train checkpoint", pipeline_config.train_checkpoint_mode)
 
     try:
         for iteration in range(
@@ -267,7 +269,10 @@ def run_rust_onnx_pipeline(
                 replay,
                 train_config,
                 checkpoint_path=candidate_checkpoint,
-                resume_path=paths["best_checkpoint"],
+                **_train_checkpoint_kwargs(
+                    pipeline_config,
+                    paths["best_checkpoint"],
+                ),
                 log_every=max(1, train_config.steps // 10),
                 progress_callback=lambda current, target, loss: printer.progress(
                     "train",
@@ -412,6 +417,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-self-play-games", type=int, default=None)
     parser.add_argument("--skip-arena", action="store_true")
     parser.add_argument("--always-promote", action="store_true")
+    parser.add_argument(
+        "--train-checkpoint-mode",
+        choices=["resume", "bootstrap"],
+        default=None,
+        help="resume optimizer/scheduler state or bootstrap model weights only",
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -433,6 +444,7 @@ def main() -> NoReturn:
         "max_self_play_games": args.max_self_play_games,
         "skip_arena": True if args.skip_arena else None,
         "always_promote": True if args.always_promote else None,
+        "train_checkpoint_mode": args.train_checkpoint_mode,
     }.items():
         if value is not None:
             data[key] = value
@@ -653,6 +665,19 @@ def _validate_config(config: RustOnnxPipelineConfig) -> None:
         raise ValueError("onnx_max_batch_size must be positive")
     if config.rust_self_play_batch_size <= 0:
         raise ValueError("rust_self_play_batch_size must be positive")
+    if config.train_checkpoint_mode not in {"resume", "bootstrap"}:
+        raise ValueError("train_checkpoint_mode must be one of: resume, bootstrap")
+
+
+def _train_checkpoint_kwargs(
+    config: RustOnnxPipelineConfig,
+    best_checkpoint: Path,
+) -> dict[str, Path | None]:
+    if config.train_checkpoint_mode == "resume":
+        return {"resume_path": best_checkpoint, "bootstrap_weights_path": None}
+    if config.train_checkpoint_mode == "bootstrap":
+        return {"resume_path": None, "bootstrap_weights_path": best_checkpoint}
+    raise ValueError("train_checkpoint_mode must be one of: resume, bootstrap")
 
 
 def _load_initial_aggregate_replay_buffer(

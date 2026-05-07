@@ -67,8 +67,14 @@ def run_single_batch_overfit(
             device=config.device,
             learning_rate=config.learning_rate,
             weight_decay=config.weight_decay,
+            lr_schedule=config.lr_schedule,
             lr_decay_steps=config.lr_decay_steps,
             lr_decay_gamma=config.lr_decay_gamma,
+            lr_warmup_steps=config.lr_warmup_steps,
+            lr_min_factor=config.lr_min_factor,
+            lr_cosine_steps=config.lr_cosine_steps,
+            steps=config.steps,
+            amp=config.amp,
         )
 
     start_step = state.step

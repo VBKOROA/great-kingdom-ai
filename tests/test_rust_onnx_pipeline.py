@@ -230,6 +230,20 @@ def test_rust_onnx_arena_config_offsets_seed_start_by_iteration() -> None:
     assert config.seed_start == 100040
 
 
+def test_rust_onnx_train_checkpoint_mode_bootstraps_weights() -> None:
+    best_checkpoint = Path("best.pt")
+
+    kwargs = pipeline_module._train_checkpoint_kwargs(
+        RustOnnxPipelineConfig(
+            self_play=make_self_play_config(),
+            train_checkpoint_mode="bootstrap",
+        ),
+        best_checkpoint,
+    )
+
+    assert kwargs == {"resume_path": None, "bootstrap_weights_path": best_checkpoint}
+
+
 def test_rust_onnx_pipeline_runs_more_games_until_min_replay_samples(
     tmp_path: Path,
     monkeypatch,

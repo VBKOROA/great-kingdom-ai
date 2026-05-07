@@ -1,9 +1,9 @@
 {
-  "games": 800,
-  "batch_size": 800,
+  "games": 400,
+  "batch_size": 400,
   "seed_start": 2000000,
-  "max_turns": 96,
-  "gumbel_simulations": 32,
+  "max_turns": 88,
+  "gumbel_simulations": 48,
   "gumbel_max_considered_actions": 24,
   "gumbel_c_visit": 50.0,
   "gumbel_c_scale": 1.0,

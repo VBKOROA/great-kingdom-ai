@@ -221,6 +221,17 @@ def test_arena_config_for_pipeline_rejects_non_positive_iteration() -> None:
         )
 
 
+def test_train_checkpoint_mode_bootstraps_weights() -> None:
+    best_checkpoint = Path("best.pt")
+
+    kwargs = pipeline_module._train_checkpoint_kwargs(
+        make_pipeline_config(train_checkpoint_mode="bootstrap"),
+        best_checkpoint,
+    )
+
+    assert kwargs == {"resume_path": None, "bootstrap_weights_path": best_checkpoint}
+
+
 def test_run_pipeline_saves_artifacts_and_promotes_candidate(
     tmp_path: Path,
     monkeypatch,

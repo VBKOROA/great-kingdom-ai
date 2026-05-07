@@ -129,7 +129,7 @@ great-kingdom-train \
 ```bash
 great-kingdom-single-batch-overfit \
   --replay data/pipeline/replay.npz \
-  --config configs/runpod/train-runpod.json \
+  --config configs/runpod/train.json \
   --device cuda \
   --steps 1000 \
   --batch-size 512 \
@@ -201,14 +201,13 @@ Runpod용 설정 파일은 `configs/runpod/` 아래에 있습니다.
 ```bash
 great-kingdom-rust-onnx-pipeline \
   --device cuda \
-  --pipeline-config configs/runpod/pipeline-runpod.json \
-  --train-config configs/runpod/train-runpod.json \
-  --arena-config configs/runpod/arena-runpod.json
+  --pipeline-config configs/runpod/pipeline.json \
+  --train-config configs/runpod/train.json \
+  --arena-config configs/runpod/arena.json
 ```
 
 기존 replay를 중복 state 기준으로 평균낸 학습용 replay로 변환하려면 다음 명령을 사용합니다.
-현재 Runpod pipeline 기본값은 raw replay 학습입니다. Aggregated replay는 기존 replay를 살리거나
-중복 state 충돌을 진단할 때 쓰는 보조 도구로 둡니다.
+현재 Runpod pipeline 기본값은 중복 state를 온라인으로 집계한 replay 학습입니다.
 
 ```bash
 great-kingdom-aggregate-replay \
@@ -217,11 +216,10 @@ great-kingdom-aggregate-replay \
   --pretty
 ```
 
-`configs/runpod/pipeline-runpod.json`은 Rust ONNX self-play 경로용 설정입니다. 현재 기본 work dir은
-`data/runpod/onnx-pipeline-t2`이고, 새 temperature target replay를 기존 replay와 섞지 않기 위해
-legacy replay import는 기본적으로 꺼져 있습니다. Runpod 기본값은 최소 `384` games와
-`8192` replay samples를 모두 만족할 때까지 self-play를 추가 실행하고, runaway를 막기 위해
-`1024` games에서 멈춥니다. ONNX inference는 최대 `8192` positions 단위로 chunking해 RTX 3090
+`configs/runpod/pipeline.json`은 Rust ONNX self-play 경로용 설정입니다. 현재 기본 work dir은
+`data/runpod/pure-gumbel-medium-plus`이고, legacy replay import는 기본적으로 꺼져 있습니다.
+Runpod 기본값은 최소 `1500` games와 `30000` replay samples를 모두 만족할 때까지 self-play를
+추가 실행합니다. ONNX inference는 최대 `8192` positions 단위로 chunking해 RTX 3090
 24GB에서 큰 leaf wave를 한 번에 밀어 넣지 않도록 합니다.
 
 ## 테스트와 품질 확인
