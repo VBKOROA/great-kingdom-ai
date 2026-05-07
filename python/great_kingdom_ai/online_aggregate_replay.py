@@ -91,6 +91,45 @@ class OnlineAggregateReplayBuffer:
         indexes = rng.sample(range(len(entries)), batch_size)
         return [self._sample_from_entry(entries[index]) for index in indexes]
 
+    def sample_recency_biased(
+        self,
+        batch_size: int,
+        rng: random.Random,
+        *,
+        recent_fraction: float,
+        recent_window: int,
+    ) -> list[ReplaySample]:
+        """Sample a batch with a fixed fraction drawn from recently updated rows."""
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if batch_size > len(self._entries):
+            raise ValueError("batch_size exceeds replay buffer size")
+        if not 0.0 <= recent_fraction <= 1.0:
+            raise ValueError("recent_fraction must be in [0, 1]")
+        if recent_window <= 0:
+            raise ValueError("recent_window must be positive")
+
+        entries = list(self._entries.values())
+        recent_count = min(recent_window, len(entries))
+        recent_indexes = list(range(len(entries) - recent_count, len(entries)))
+        old_indexes = list(range(0, len(entries) - recent_count))
+
+        target_recent = round(batch_size * recent_fraction)
+        recent_take = min(target_recent, len(recent_indexes), batch_size)
+        old_take = min(batch_size - recent_take, len(old_indexes))
+        recent_take = min(batch_size - old_take, len(recent_indexes))
+        old_take = batch_size - recent_take
+        if old_take > len(old_indexes):
+            old_take = len(old_indexes)
+            recent_take = batch_size - old_take
+        if recent_take > len(recent_indexes):
+            raise ValueError("not enough replay rows to satisfy recency-biased sample")
+
+        indexes = rng.sample(recent_indexes, recent_take)
+        indexes.extend(rng.sample(old_indexes, old_take))
+        rng.shuffle(indexes)
+        return [self._sample_from_entry(entries[index]) for index in indexes]
+
     def save(self, path: str | Path, *, compressed: bool = True) -> None:
         destination = Path(path)
         destination.parent.mkdir(parents=True, exist_ok=True)

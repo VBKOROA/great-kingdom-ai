@@ -107,3 +107,36 @@ def test_online_aggregate_replay_capacity_counts_unique_rows() -> None:
     assert len(replay) == 2
     assert any(sample.policy[0] == pytest.approx(0.5) for sample in batch)
     assert any(sample.policy[3] == pytest.approx(1.0) for sample in batch)
+
+
+def test_online_aggregate_replay_can_sample_recent_rows() -> None:
+    replay = OnlineAggregateReplayBuffer(capacity=8)
+    for index in range(6):
+        replay.push(make_sample(index, index))
+
+    batch = replay.sample_recency_biased(
+        2,
+        random.Random(0),
+        recent_fraction=1.0,
+        recent_window=2,
+    )
+
+    assert {int(np.argmax(sample.policy)) for sample in batch} == {4, 5}
+
+
+def test_online_aggregate_replay_recency_updates_duplicate_rows() -> None:
+    replay = OnlineAggregateReplayBuffer(capacity=8)
+    replay.push(make_sample(0, 0))
+    replay.push(make_sample(1, 1))
+    replay.push(make_sample(2, 2))
+    replay.push(make_sample(0, 3))
+
+    batch = replay.sample_recency_biased(
+        1,
+        random.Random(0),
+        recent_fraction=1.0,
+        recent_window=1,
+    )
+
+    assert batch[0].policy[0] == pytest.approx(0.5)
+    assert batch[0].policy[3] == pytest.approx(0.5)

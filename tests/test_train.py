@@ -58,6 +58,30 @@ def make_replay(size: int = 6) -> ReplayBuffer:
     return buffer
 
 
+class RecencyReplay:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, float, int]] = []
+
+    def __len__(self) -> int:
+        return 4
+
+    def sample(self, batch_size: int, rng: random.Random) -> list[ReplaySample]:
+        del batch_size, rng
+        raise AssertionError("uniform sample should not be used")
+
+    def sample_recency_biased(
+        self,
+        batch_size: int,
+        rng: random.Random,
+        *,
+        recent_fraction: float,
+        recent_window: int,
+    ) -> list[ReplaySample]:
+        del rng
+        self.calls.append((batch_size, recent_fraction, recent_window))
+        return [make_sample(index) for index in range(batch_size)]
+
+
 def test_compute_losses_returns_policy_value_and_regularization_terms() -> None:
     config = TrainingConfig(batch_size=2, l2_loss_weight=1e-6)
     state = create_train_state(config)
@@ -107,6 +131,12 @@ def test_train_step_updates_model_parameters() -> None:
     after = next(state.model.parameters()).detach()
 
     assert not torch.equal(before, after)
+
+
+def test_amp_is_disabled_without_cuda_device() -> None:
+    state = create_train_state(TrainingConfig(batch_size=2, amp=True, device="cpu"))
+
+    assert state.scaler is None
 
 
 def test_checkpoint_round_trips_model_outputs_and_optimizer_state(tmp_path) -> None:
@@ -237,6 +267,20 @@ def test_train_from_replay_rejects_resume_and_weight_bootstrap_together(tmp_path
             resume_path=checkpoint,
             bootstrap_weights_path=checkpoint,
         )
+
+
+def test_train_from_replay_uses_recency_biased_sampler() -> None:
+    replay = RecencyReplay()
+    config = TrainingConfig(
+        batch_size=2,
+        steps=1,
+        recent_sample_fraction=0.5,
+        recent_sample_window=3,
+    )
+
+    train_from_replay(replay, config)
+
+    assert replay.calls == [(2, 0.5, 3)]
 
 
 def test_train_parser_accepts_log_every_override() -> None:

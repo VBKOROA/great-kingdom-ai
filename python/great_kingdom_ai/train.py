@@ -6,6 +6,7 @@ import argparse
 import json
 import random
 from collections.abc import Callable, Sequence
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast
@@ -41,6 +42,9 @@ class TrainingConfig:
     model_preset: str = "small"
     symmetry_augmentation: bool = True
     mask_policy_loss: bool = True
+    amp: bool = False
+    recent_sample_fraction: float = 0.0
+    recent_sample_window: int = 0
 
 
 @dataclass(frozen=True)
@@ -77,6 +81,7 @@ class TrainState:
     model: PolicyValueNetwork
     optimizer: Optimizer
     scheduler: LRScheduler
+    scaler: Any | None = None
     step: int = 0
     model_preset: str = "small"
 
@@ -181,24 +186,33 @@ def create_train_state(config: TrainingConfig) -> TrainState:
         model=model,
         optimizer=optimizer,
         scheduler=scheduler,
+        scaler=_create_grad_scaler(config),
         step=0,
         model_preset=config.model_preset,
     )
 
 
 def train_step(state: TrainState, batch: TrainingBatch, config: TrainingConfig) -> LossBreakdown:
+    torch = _import_torch()
     state.model.train()
     state.optimizer.zero_grad(set_to_none=True)
-    losses = compute_losses(
-        state.model,
-        batch,
-        policy_loss_weight=config.policy_loss_weight,
-        value_loss_weight=config.value_loss_weight,
-        l2_loss_weight=config.l2_loss_weight,
-        mask_policy_loss=config.mask_policy_loss,
-    )
-    losses.total.backward()  # type: ignore[no-untyped-call]
-    state.optimizer.step()
+    amp_enabled = _amp_enabled(config)
+    with _autocast_context(torch, enabled=amp_enabled):
+        losses = compute_losses(
+            state.model,
+            batch,
+            policy_loss_weight=config.policy_loss_weight,
+            value_loss_weight=config.value_loss_weight,
+            l2_loss_weight=config.l2_loss_weight,
+            mask_policy_loss=config.mask_policy_loss,
+        )
+    if amp_enabled and state.scaler is not None:
+        state.scaler.scale(losses.total).backward()  # type: ignore[no-untyped-call]
+        state.scaler.step(state.optimizer)
+        state.scaler.update()
+    else:
+        losses.total.backward()  # type: ignore[no-untyped-call]
+        state.optimizer.step()
     state.scheduler.step()
     return losses
 
@@ -215,6 +229,7 @@ def save_checkpoint(state: TrainState, path: str | Path) -> Path:
             "model_state": state.model.state_dict(),
             "optimizer_state": state.optimizer.state_dict(),
             "scheduler_state": state.scheduler.state_dict(),
+            "scaler_state": None if state.scaler is None else state.scaler.state_dict(),
         },
         destination,
     )
@@ -229,6 +244,7 @@ def load_checkpoint(
     weight_decay: float = 1e-4,
     lr_decay_steps: int = 100,
     lr_decay_gamma: float = 0.99,
+    amp: bool = False,
 ) -> TrainState:
     torch = _import_torch()
     from great_kingdom_ai.model import ModelConfig, PolicyValueNetwork
@@ -245,10 +261,15 @@ def load_checkpoint(
         gamma=lr_decay_gamma,
     )
     scheduler.load_state_dict(checkpoint["scheduler_state"])
+    scaler = _create_grad_scaler_for_device(torch, device, enabled=amp)
+    scaler_state = checkpoint.get("scaler_state")
+    if scaler is not None and scaler_state is not None:
+        scaler.load_state_dict(scaler_state)
     return TrainState(
         model=model,
         optimizer=optimizer,
         scheduler=scheduler,
+        scaler=scaler,
         step=int(checkpoint["step"]),
         model_preset=str(checkpoint.get("model_preset", "custom")),
     )
@@ -280,6 +301,7 @@ def load_checkpoint_weights(
         model=model,
         optimizer=optimizer,
         scheduler=scheduler,
+        scaler=_create_grad_scaler(config),
         step=0,
         model_preset=str(checkpoint.get("model_preset", "custom")),
     )
@@ -316,12 +338,13 @@ def train_from_replay(
             weight_decay=config.weight_decay,
             lr_decay_steps=config.lr_decay_steps,
             lr_decay_gamma=config.lr_decay_gamma,
+            amp=config.amp,
         )
 
     start_step = state.step
     losses: list[dict[str, float]] = []
     for step in range(start_step, start_step + config.steps):
-        samples = replay.sample(config.batch_size, rng)
+        samples = _sample_training_replay(replay, config, rng)
         if config.symmetry_augmentation:
             samples = augment_samples_randomly(samples, rng)
         batch = samples_to_batch(samples, device=config.device)
@@ -330,6 +353,7 @@ def train_from_replay(
             model=state.model,
             optimizer=state.optimizer,
             scheduler=state.scheduler,
+            scaler=state.scaler,
             step=step + 1,
             model_preset=state.model_preset,
         )
@@ -349,6 +373,31 @@ def train_from_replay(
         end_step=state.step,
         checkpoint_path=saved_path,
         losses=losses,
+    )
+
+
+def _sample_training_replay(
+    replay: ReplayDataset,
+    config: TrainingConfig,
+    rng: random.Random,
+) -> list[ReplaySample]:
+    if config.recent_sample_fraction <= 0.0:
+        return replay.sample(config.batch_size, rng)
+    if config.recent_sample_fraction > 1.0:
+        raise ValueError("recent_sample_fraction must be in [0, 1]")
+    if config.recent_sample_window <= 0:
+        raise ValueError("recent_sample_window must be positive when recency sampling is enabled")
+    sampler = getattr(replay, "sample_recency_biased", None)
+    if sampler is None:
+        raise ValueError("replay dataset does not support recency-biased sampling")
+    return cast(
+        list[ReplaySample],
+        sampler(
+            config.batch_size,
+            rng,
+            recent_fraction=config.recent_sample_fraction,
+            recent_window=config.recent_sample_window,
+        ),
     )
 
 
@@ -406,6 +455,47 @@ def _policy_target_entropy(policy: torch.Tensor, sample_weight: torch.Tensor) ->
 def _weighted_mean(values: torch.Tensor, sample_weight: torch.Tensor) -> torch.Tensor:
     weights = sample_weight.to(dtype=values.dtype)
     return (values * weights).sum() / weights.sum()
+
+
+def _create_grad_scaler(config: TrainingConfig) -> Any | None:
+    torch = _import_torch()
+    return _create_grad_scaler_for_device(torch, config.device, enabled=config.amp)
+
+
+def _create_grad_scaler_for_device(
+    torch: Any,
+    device: torch.device | str | None,
+    *,
+    enabled: bool,
+) -> Any | None:
+    if not _cuda_amp_enabled(torch, device, enabled=enabled):
+        return None
+    return torch.amp.GradScaler("cuda", enabled=True)
+
+
+def _amp_enabled(config: TrainingConfig) -> bool:
+    torch = _import_torch()
+    return _cuda_amp_enabled(torch, config.device, enabled=config.amp)
+
+
+def _cuda_amp_enabled(
+    torch: Any,
+    device: torch.device | str | None,
+    *,
+    enabled: bool,
+) -> bool:
+    return bool(
+        enabled
+        and device is not None
+        and str(device).startswith("cuda")
+        and torch.cuda.is_available()
+    )
+
+
+def _autocast_context(torch: Any, *, enabled: bool) -> Any:
+    if not enabled:
+        return nullcontext()
+    return torch.amp.autocast("cuda", enabled=True)
 
 
 def _import_torch() -> Any:
