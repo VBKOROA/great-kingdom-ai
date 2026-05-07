@@ -18,7 +18,7 @@
   "aggregate_replay_weight_cap": null,
   "self_play": {
     "max_turns": 180,
-    "gumbel_simulations": 80,
+    "gumbel_simulations": 32,
     "gumbel_max_considered_actions": 16,
     "gumbel_c_visit": 50.0,
     "gumbel_c_scale": 1.0,
