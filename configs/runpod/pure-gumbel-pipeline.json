@@ -7,7 +7,7 @@
   "max_self_play_games": 1600,
   "seed_start": 1000000,
   "onnx_device": "cuda",
-  "onnx_max_batch_size": 16384,
+  "onnx_max_batch_size": 8192,
   "rust_self_play_batch_size": 1600,
   "skip_arena": true,
   "promote": true,
