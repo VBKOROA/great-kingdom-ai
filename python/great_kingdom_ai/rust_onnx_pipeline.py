@@ -6,6 +6,7 @@ import argparse
 import json
 import shutil
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, NoReturn
@@ -117,6 +118,46 @@ class RustOnnxPipelineSummary:
         }
 
 
+class _AsyncAggregateReplaySaver:
+    def __init__(self, *, enabled: bool) -> None:
+        self._executor = (
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="aggregate-replay-save")
+            if enabled
+            else None
+        )
+        self._future: Future[None] | None = None
+
+    def save(
+        self,
+        replay: OnlineAggregateReplayBuffer,
+        path: Path,
+        *,
+        compressed: bool,
+    ) -> None:
+        self.wait()
+        if self._executor is None:
+            replay.save_atomic(path, compressed=compressed)
+            return
+        self._future = self._executor.submit(
+            replay.save_atomic,
+            path,
+            compressed=compressed,
+        )
+
+    def wait(self) -> None:
+        if self._future is None:
+            return
+        self._future.result()
+        self._future = None
+
+    def close(self) -> None:
+        try:
+            self.wait()
+        finally:
+            if self._executor is not None:
+                self._executor.shutdown(wait=True)
+
+
 def run_rust_onnx_pipeline(
     *,
     pipeline_config: RustOnnxPipelineConfig,
@@ -151,6 +192,7 @@ def run_rust_onnx_pipeline(
     completed_iterations = _load_completed_iteration_count(paths["metrics_path"], pipeline_config)
     seed_cursor = _initial_seed_cursor(pipeline_config)
     aggregate_replay_buffer = _load_initial_aggregate_replay_buffer(paths, pipeline_config)
+    aggregate_replay_saver = _AsyncAggregateReplaySaver(enabled=pipeline_config.aggregate_replay)
     summaries: list[RustOnnxPipelineIterationSummary] = []
     first_iteration = completed_iterations + 1
     last_iteration = completed_iterations + pipeline_config.iterations
@@ -172,133 +214,141 @@ def run_rust_onnx_pipeline(
     )
     printer.metric("training", f"steps={train_config.steps}, batch={train_config.batch_size}")
 
-    for iteration in range(
-        first_iteration,
-        last_iteration + 1,
-    ):
-        phase_total = 5 if not _should_run_arena(pipeline_config) else 6
-        printer.title(f"Rust ONNX Iteration {iteration}/{last_iteration}")
-        onnx_path = paths["onnx_checkpoint_dir"] / f"best-{iteration:06d}.onnx"
-        printer.step(f"exporting best checkpoint -> {onnx_path}")
-        export_checkpoint_to_onnx(paths["best_checkpoint"], onnx_path, device=train_config.device)
-        printer.progress("iteration", 1, phase_total, detail="onnx export complete")
-
-        artifact_root = paths["self_play_dir"] / f"iteration-{iteration:06d}"
-        self_play_summary, replay_import, seed_cursor = _generate_and_import_self_play(
-            pipeline_config=pipeline_config,
-            onnx_path=onnx_path,
-            artifact_root=artifact_root,
-            replay_path=paths["replay_path"],
-            aggregated_replay_path=paths["aggregated_replay_path"],
-            game_log_path=paths["game_log_path"],
-            seed_cursor=seed_cursor,
-            aggregate_replay_buffer=aggregate_replay_buffer,
-            runner=runner,
-            printer=printer,
-        )
-        printer.metric("imported games", replay_import.imported_games)
-        printer.metric("imported samples", replay_import.imported_samples)
-        printer.progress("iteration", 2, phase_total, detail="self-play/import complete")
-        printer.progress("iteration", 3, phase_total, detail="replay import complete")
-
-        replay = _prepare_training_replay(
-            paths=paths,
-            replay_capacity=pipeline_config.replay_capacity,
-            aggregate_replay=pipeline_config.aggregate_replay,
-            aggregate_replay_weight_mode=pipeline_config.aggregate_replay_weight_mode,
-            aggregate_replay_weight_cap=pipeline_config.aggregate_replay_weight_cap,
-            aggregate_replay_buffer=aggregate_replay_buffer,
-            printer=printer,
-        )
-        candidate_checkpoint = paths["candidate_dir"] / f"candidate-{iteration:06d}.pt"
-        printer.metric("replay samples", len(replay))
-        if pipeline_config.aggregate_replay:
-            printer.metric("training replay", paths["aggregated_replay_path"])
-        printer.step(f"training candidate -> {candidate_checkpoint}")
-        train_summary = train_from_replay(
-            replay,
-            train_config,
-            checkpoint_path=candidate_checkpoint,
-            resume_path=paths["best_checkpoint"],
-            log_every=max(1, train_config.steps // 10),
-            progress_callback=lambda current, target, loss: printer.progress(
-                "train",
-                current,
-                target,
-                detail=_format_train_loss_detail(loss),
-            ),
-        )
-        shutil.copy2(candidate_checkpoint, paths["candidate_checkpoint"])
-        printer.metric("train steps", f"{train_summary.start_step}->{train_summary.end_step}")
-        printer.progress("iteration", 4, phase_total, detail="training complete")
-
-        candidate_win_rate: float | None = None
-        promoted = False
-        if _should_run_arena(pipeline_config):
-            report_path = paths["arena_dir"] / f"arena-{iteration:06d}.json"
-            printer.step(f"arena evaluation -> {report_path}")
-            arena_search_config = _arena_config_for_pipeline(
-                arena_config,
-                iteration=iteration,
-            )
-            candidate_model = load_model_from_checkpoint(
-                candidate_checkpoint,
-                device=arena_config.device,
-            )
-            best_model = load_model_from_checkpoint(
+    try:
+        for iteration in range(
+            first_iteration,
+            last_iteration + 1,
+        ):
+            phase_total = 5 if not _should_run_arena(pipeline_config) else 6
+            printer.title(f"Rust ONNX Iteration {iteration}/{last_iteration}")
+            onnx_path = paths["onnx_checkpoint_dir"] / f"best-{iteration:06d}.onnx"
+            printer.step(f"exporting best checkpoint -> {onnx_path}")
+            export_checkpoint_to_onnx(
                 paths["best_checkpoint"],
-                device=arena_config.device,
+                onnx_path,
+                device=train_config.device,
             )
-            report = run_arena(
-                candidate_model=candidate_model,
-                best_model=best_model,
-                config=arena_search_config,
-                progress_callback=lambda current, target, game: printer.progress(
-                    "arena games",
+            printer.progress("iteration", 1, phase_total, detail="onnx export complete")
+
+            artifact_root = paths["self_play_dir"] / f"iteration-{iteration:06d}"
+            self_play_summary, replay_import, seed_cursor = _generate_and_import_self_play(
+                pipeline_config=pipeline_config,
+                onnx_path=onnx_path,
+                artifact_root=artifact_root,
+                replay_path=paths["replay_path"],
+                aggregated_replay_path=paths["aggregated_replay_path"],
+                game_log_path=paths["game_log_path"],
+                seed_cursor=seed_cursor,
+                aggregate_replay_buffer=aggregate_replay_buffer,
+                aggregate_replay_saver=aggregate_replay_saver,
+                runner=runner,
+                printer=printer,
+            )
+            printer.metric("imported games", replay_import.imported_games)
+            printer.metric("imported samples", replay_import.imported_samples)
+            printer.progress("iteration", 2, phase_total, detail="self-play/import complete")
+            printer.progress("iteration", 3, phase_total, detail="replay import complete")
+
+            replay = _prepare_training_replay(
+                paths=paths,
+                replay_capacity=pipeline_config.replay_capacity,
+                aggregate_replay=pipeline_config.aggregate_replay,
+                aggregate_replay_weight_mode=pipeline_config.aggregate_replay_weight_mode,
+                aggregate_replay_weight_cap=pipeline_config.aggregate_replay_weight_cap,
+                aggregate_replay_buffer=aggregate_replay_buffer,
+                printer=printer,
+            )
+            candidate_checkpoint = paths["candidate_dir"] / f"candidate-{iteration:06d}.pt"
+            printer.metric("replay samples", len(replay))
+            if pipeline_config.aggregate_replay:
+                printer.metric("training replay", paths["aggregated_replay_path"])
+            printer.step(f"training candidate -> {candidate_checkpoint}")
+            train_summary = train_from_replay(
+                replay,
+                train_config,
+                checkpoint_path=candidate_checkpoint,
+                resume_path=paths["best_checkpoint"],
+                log_every=max(1, train_config.steps // 10),
+                progress_callback=lambda current, target, loss: printer.progress(
+                    "train",
                     current,
                     target,
-                    detail=f"winner={game.winner}, elapsed={printer.elapsed()}",
+                    detail=_format_train_loss_detail(loss),
                 ),
             )
-            save_arena_report(report, report_path)
-            candidate_win_rate = report.summary.candidate_win_rate
-            printer.metric("candidate win rate", f"{candidate_win_rate:.3f}")
-            promoted = (
-                promote_candidate_if_needed(
+            shutil.copy2(candidate_checkpoint, paths["candidate_checkpoint"])
+            printer.metric("train steps", f"{train_summary.start_step}->{train_summary.end_step}")
+            printer.progress("iteration", 4, phase_total, detail="training complete")
+
+            candidate_win_rate: float | None = None
+            promoted = False
+            if _should_run_arena(pipeline_config):
+                report_path = paths["arena_dir"] / f"arena-{iteration:06d}.json"
+                printer.step(f"arena evaluation -> {report_path}")
+                arena_search_config = _arena_config_for_pipeline(
+                    arena_config,
+                    iteration=iteration,
+                )
+                candidate_model = load_model_from_checkpoint(
+                    candidate_checkpoint,
+                    device=arena_config.device,
+                )
+                best_model = load_model_from_checkpoint(
+                    paths["best_checkpoint"],
+                    device=arena_config.device,
+                )
+                report = run_arena(
+                    candidate_model=candidate_model,
+                    best_model=best_model,
+                    config=arena_search_config,
+                    progress_callback=lambda current, target, game: printer.progress(
+                        "arena games",
+                        current,
+                        target,
+                        detail=f"winner={game.winner}, elapsed={printer.elapsed()}",
+                    ),
+                )
+                save_arena_report(report, report_path)
+                candidate_win_rate = report.summary.candidate_win_rate
+                printer.metric("candidate win rate", f"{candidate_win_rate:.3f}")
+                promoted = (
+                    promote_candidate_if_needed(
+                        candidate_checkpoint=candidate_checkpoint,
+                        best_checkpoint=paths["best_checkpoint"],
+                        report=report,
+                    )
+                    if pipeline_config.promote
+                    else False
+                )
+                printer.metric("promoted", promoted)
+                printer.progress("iteration", 5, phase_total, detail="arena complete")
+            elif pipeline_config.always_promote:
+                promoted = _promote_candidate_unconditionally(
                     candidate_checkpoint=candidate_checkpoint,
                     best_checkpoint=paths["best_checkpoint"],
-                    report=report,
                 )
-                if pipeline_config.promote
-                else False
-            )
-            printer.metric("promoted", promoted)
-            printer.progress("iteration", 5, phase_total, detail="arena complete")
-        elif pipeline_config.always_promote:
-            promoted = _promote_candidate_unconditionally(
-                candidate_checkpoint=candidate_checkpoint,
-                best_checkpoint=paths["best_checkpoint"],
-            )
-            printer.metric("promoted", promoted)
-            printer.progress("iteration", 5, phase_total, detail="always promoted")
-        else:
-            printer.progress("iteration", 5, phase_total, detail="arena skipped")
+                printer.metric("promoted", promoted)
+                printer.progress("iteration", 5, phase_total, detail="always promoted")
+            else:
+                printer.progress("iteration", 5, phase_total, detail="arena skipped")
 
-        iteration_summary = RustOnnxPipelineIterationSummary(
-            iteration=iteration,
-            onnx_model_path=onnx_path,
-            self_play=self_play_summary,
-            replay_import=replay_import,
-            train_start_step=train_summary.start_step,
-            train_end_step=train_summary.end_step,
-            candidate_checkpoint=candidate_checkpoint,
-            candidate_win_rate=candidate_win_rate,
-            promoted=promoted,
-        )
-        summaries.append(iteration_summary)
-        _append_metrics(paths["metrics_path"], iteration_summary)
-        printer.done(f"iteration {iteration} complete in {printer.elapsed()}")
-        printer.progress("iteration", phase_total, phase_total, detail="metrics written")
+            iteration_summary = RustOnnxPipelineIterationSummary(
+                iteration=iteration,
+                onnx_model_path=onnx_path,
+                self_play=self_play_summary,
+                replay_import=replay_import,
+                train_start_step=train_summary.start_step,
+                train_end_step=train_summary.end_step,
+                candidate_checkpoint=candidate_checkpoint,
+                candidate_win_rate=candidate_win_rate,
+                promoted=promoted,
+            )
+            summaries.append(iteration_summary)
+            _append_metrics(paths["metrics_path"], iteration_summary)
+            printer.done(f"iteration {iteration} complete in {printer.elapsed()}")
+            printer.progress("iteration", phase_total, phase_total, detail="metrics written")
+    finally:
+        aggregate_replay_saver.close()
 
     return RustOnnxPipelineSummary(
         iterations=summaries,
@@ -408,7 +458,7 @@ def _paths(config: RustOnnxPipelineConfig) -> dict[str, Path]:
     return {
         "replay_path": config.work_dir / "replay" / "replay.npz",
         "aggregated_replay_path": config.work_dir / "replay" / "replay-aggregated.npz",
-        "game_log_path": config.work_dir / "replay" / "game_logs.json",
+        "game_log_path": config.work_dir / "replay" / "game_logs.jsonl",
         "best_checkpoint": config.work_dir / "checkpoints" / "best.pt",
         "candidate_checkpoint": config.work_dir / "checkpoints" / "candidate.pt",
         "candidate_dir": config.work_dir / "checkpoints" / "candidates",
@@ -442,6 +492,7 @@ def _generate_and_import_self_play(
     game_log_path: Path,
     seed_cursor: int,
     aggregate_replay_buffer: OnlineAggregateReplayBuffer | None,
+    aggregate_replay_saver: _AsyncAggregateReplaySaver,
     runner: Callable[[RustOnnxSelfPlayConfig], RustSelfPlayRunSummary],
     printer: PipelinePrinter,
 ) -> tuple[RustSelfPlayRunSummary, RustReplayImportSummary, int]:
@@ -497,6 +548,7 @@ def _generate_and_import_self_play(
         )
 
         printer.step("adding Rust self-play samples to replay")
+        aggregate_replay_saver.wait()
         batch_samples = self_play_summary.replay_samples
         game_logs = self_play_summary.game_logs
         if len(batch_samples) != self_play_summary.samples:
@@ -525,7 +577,14 @@ def _generate_and_import_self_play(
             aggregate_replay_weight_cap=pipeline_config.aggregate_replay_weight_cap,
             materialize_raw_replay=not pipeline_config.aggregate_replay,
             aggregate_replay=aggregate_replay_buffer,
+            save_aggregate_replay=aggregate_replay_buffer is None,
         )
+        if aggregate_replay_buffer is not None:
+            aggregate_replay_saver.save(
+                aggregate_replay_buffer,
+                aggregated_replay_path,
+                compressed=False,
+            )
         imported_games += replay_import.imported_games
         imported_samples += replay_import.imported_samples
         replay_samples = replay_import.replay_samples
@@ -747,18 +806,38 @@ def _load_completed_iteration_count(path: Path, config: RustOnnxPipelineConfig) 
 
 
 def _initial_seed_cursor(config: RustOnnxPipelineConfig) -> int:
-    logs_path = config.work_dir / "replay" / "game_logs.json"
-    if not config.resume or not logs_path.exists():
+    if not config.resume:
         return config.seed_start
-    data = json.loads(logs_path.read_text(encoding="utf-8"))
-    if not isinstance(data, list):
-        raise ValueError("game_logs.json must contain a list")
+    jsonl_path = config.work_dir / "replay" / "game_logs.jsonl"
+    json_path = config.work_dir / "replay" / "game_logs.json"
+    if jsonl_path.exists():
+        data = _load_jsonl_logs(jsonl_path)
+    elif json_path.exists():
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            raise ValueError("game_logs.json must contain a list")
+    else:
+        return config.seed_start
     seeds = [
         int(item["seed"])
         for item in data
         if isinstance(item, dict) and isinstance(item.get("seed"), int)
     ]
     return max(config.seed_start, max(seeds, default=config.seed_start - 1) + 1)
+
+
+def _load_jsonl_logs(path: Path) -> list[dict[str, Any]]:
+    logs: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as file:
+        for line_number, line in enumerate(file, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            data = json.loads(stripped)
+            if not isinstance(data, dict):
+                raise ValueError(f"{path} line {line_number} must contain a JSON object")
+            logs.append(data)
+    return logs
 
 
 def _append_metrics(path: Path, summary: RustOnnxPipelineIterationSummary) -> None:

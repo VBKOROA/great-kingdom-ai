@@ -60,6 +60,26 @@ def test_import_rust_self_play_samples_extends_replay_and_logs(tmp_path: Path) -
     assert not artifact_dir.exists()
 
 
+def test_import_rust_self_play_samples_appends_jsonl_logs(tmp_path: Path) -> None:
+    log_path = tmp_path / "replay" / "game_logs.jsonl"
+
+    import_rust_self_play_samples(
+        artifact_dir=tmp_path / "artifact",
+        samples=[],
+        logs=[make_log(10), make_log(11)],
+        replay_path=tmp_path / "replay" / "replay.npz",
+        replay_capacity=8,
+        game_log_path=log_path,
+        aggregate_replay_path=tmp_path / "replay" / "replay-aggregated.npz",
+        materialize_raw_replay=False,
+    )
+
+    lines = log_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    assert '"seed": 10' in lines[0]
+    assert '"seed": 11' in lines[1]
+
+
 def test_import_rust_self_play_samples_updates_online_aggregate_replay(
     tmp_path: Path,
 ) -> None:

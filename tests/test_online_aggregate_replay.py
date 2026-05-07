@@ -81,6 +81,20 @@ def test_online_aggregate_replay_save_load_preserves_counts(tmp_path: Path) -> N
     assert sample.sample_weight == pytest.approx(np.sqrt(3.0))
 
 
+def test_online_aggregate_replay_atomic_save_preserves_counts(tmp_path: Path) -> None:
+    path = tmp_path / "replay-aggregated.npz"
+    replay = OnlineAggregateReplayBuffer(capacity=8, sample_weight_mode="sqrt_count")
+    replay.push(make_sample(0, 0, value=1.0))
+    replay.push(make_sample(0, 1, value=-1.0))
+
+    replay.save_atomic(path, compressed=False)
+
+    loaded = OnlineAggregateReplayBuffer.load(path, sample_weight_mode="sqrt_count")
+    assert len(loaded) == 1
+    assert loaded.raw_sample_count == 2
+    assert not (tmp_path / "replay-aggregated.npz.tmp").exists()
+
+
 def test_online_aggregate_replay_capacity_counts_unique_rows() -> None:
     replay = OnlineAggregateReplayBuffer(capacity=2)
     replay.push(make_sample(0, 0))

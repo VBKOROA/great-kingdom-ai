@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
@@ -74,6 +74,7 @@ def import_rust_self_play_samples(
     aggregate_replay_weight_cap: float | None = 16.0,
     materialize_raw_replay: bool = True,
     aggregate_replay: OnlineAggregateReplayBuffer | None = None,
+    save_aggregate_replay: bool = True,
 ) -> RustReplayImportSummary:
     if not materialize_raw_replay and aggregate_replay_path is None:
         raise ValueError("materialize_raw_replay=False requires aggregate_replay_path")
@@ -100,15 +101,19 @@ def import_rust_self_play_samples(
             sample_weight_cap=aggregate_replay_weight_cap,
             raw_replay_includes_samples=materialize_raw_replay,
             aggregate_replay=aggregate_replay,
+            save=save_aggregate_replay,
         )
         if not materialize_raw_replay:
             replay_samples = aggregate_samples
 
     if game_log_path is not None:
         log_path = Path(game_log_path)
-        existing = _read_json_list(log_path) if log_path.exists() else []
-        existing.extend(log.to_dict() for log in logs)
-        _write_json(log_path, existing)
+        if log_path.suffix == ".jsonl":
+            _append_jsonl(log_path, (log.to_dict() for log in logs))
+        else:
+            existing = _read_json_list(log_path) if log_path.exists() else []
+            existing.extend(log.to_dict() for log in logs)
+            _write_json(log_path, existing)
 
     return RustReplayImportSummary(
         artifact_dir=artifact,
@@ -227,6 +232,7 @@ def _extend_online_aggregate_replay(
     sample_weight_cap: float | None,
     raw_replay_includes_samples: bool,
     aggregate_replay: OnlineAggregateReplayBuffer | None = None,
+    save: bool = True,
 ) -> int:
     if aggregate_replay is not None:
         replay = aggregate_replay
@@ -252,7 +258,8 @@ def _extend_online_aggregate_replay(
             )
         if not raw_replay_includes_samples:
             replay.extend(samples)
-    replay.save(aggregate_replay_path, compressed=False)
+    if save:
+        replay.save(aggregate_replay_path, compressed=False)
     return len(replay)
 
 
@@ -301,6 +308,14 @@ def _read_json_list(path: Path) -> list[dict[str, Any]]:
 def _write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _append_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as file:
+        for row in rows:
+            file.write(json.dumps(row, sort_keys=True))
+            file.write("\n")
 
 
 def _copy_if_exists(source: Path, destination: Path) -> Path | None:

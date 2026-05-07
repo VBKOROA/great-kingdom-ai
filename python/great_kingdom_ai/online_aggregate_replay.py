@@ -94,6 +94,16 @@ class OnlineAggregateReplayBuffer:
     def save(self, path: str | Path, *, compressed: bool = True) -> None:
         destination = Path(path)
         destination.parent.mkdir(parents=True, exist_ok=True)
+        _save_payload(destination, self.to_payload(), compressed=compressed)
+
+    def save_atomic(self, path: str | Path, *, compressed: bool = True) -> None:
+        destination = Path(path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(f"{destination.name}.tmp")
+        _save_payload(temporary, self.to_payload(), compressed=compressed)
+        temporary.replace(destination)
+
+    def to_payload(self) -> dict[str, np.ndarray]:
         entries = list(self._entries.values())
         if entries:
             features = np.stack([entry.features for entry in entries], axis=0).astype(np.float32)
@@ -131,8 +141,7 @@ class OnlineAggregateReplayBuffer:
         if root_policy_logits is not None:
             payload["root_policy_logits"] = root_policy_logits
             payload["root_policy_counts"] = root_policy_counts
-        save = np.savez_compressed if compressed else np.savez
-        save(destination, **cast(dict[str, Any], payload))
+        return payload
 
     @classmethod
     def load(
@@ -265,6 +274,17 @@ def _root_policy_logits_arrays(
             continue
         rows[index] = entry.root_policy_sum / np.float32(entry.root_policy_count)
     return rows, root_policy_counts
+
+
+def _save_payload(
+    path: Path,
+    payload: dict[str, np.ndarray],
+    *,
+    compressed: bool,
+) -> None:
+    save = np.savez_compressed if compressed else np.savez
+    with path.open("wb") as file:
+        save(file, **cast(dict[str, Any], payload))
 
 
 def _validate_loaded_arrays(

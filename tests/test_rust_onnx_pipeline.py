@@ -136,7 +136,7 @@ def test_rust_onnx_pipeline_dispatches_runner_and_imports_replay(
     assert resume_paths == [tmp_path / "checkpoints" / "best.pt"]
     assert bootstrap_paths == [None]
     assert (tmp_path / "checkpoints" / "candidate.pt").read_text(encoding="utf-8") == "candidate"
-    assert (tmp_path / "replay" / "game_logs.json").is_file()
+    assert (tmp_path / "replay" / "game_logs.jsonl").is_file()
     assert not (tmp_path / "replay" / "replay.npz").exists()
     assert (tmp_path / "replay" / "replay-aggregated.npz").is_file()
     assert not (tmp_path / "self-play").exists()
