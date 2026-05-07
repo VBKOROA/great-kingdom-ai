@@ -9,6 +9,8 @@ from great_kingdom_ai.cli import (
     outcome_line,
     parse_action_sequence,
     parse_command,
+    parse_player,
+    play_against_model,
     render_board,
     replay_actions,
     status_line,
@@ -86,6 +88,38 @@ class FakeReplayState:
         return self._winner is not None
 
 
+class FakeModelPlayState(FakeReplayState):
+    def __init__(self, *, terminal_after: int = 2) -> None:
+        super().__init__()
+        self._terminal_after = terminal_after
+
+    def feature_planes(self) -> list[float]:
+        return [0.0] * (11 * 9 * 9)
+
+    def legal_mask(self) -> list[bool]:
+        return [True] * (BOARD_CELLS + 1)
+
+    def apply_action(self, action_index: int) -> int | None:
+        self.applied.append(action_index)
+        if action_index < BOARD_CELLS:
+            self._board[action_index] = self._current_player
+        self._current_player = 2 if self._current_player == 1 else 1
+        if len(self.applied) >= self._terminal_after:
+            self._winner = 1
+            self._end_reason = 3
+        return self._winner
+
+
+class FakeModelPlayer:
+    def __init__(self, action: int) -> None:
+        self.action = action
+        self.seen_players: list[int] = []
+
+    def select_action(self, state: FakeModelPlayState) -> int:
+        self.seen_players.append(state.current_player())
+        return self.action
+
+
 def test_parse_coordinate_commands() -> None:
     assert parse_command("A1").action == 0
     assert parse_command("i9").action == BOARD_CELLS - 1
@@ -110,6 +144,15 @@ def test_parse_meta_commands() -> None:
 
 def test_parse_action_sequence_accepts_indexes_and_coordinates() -> None:
     assert parse_action_sequence("20, F8 C3") == [20, 68, 20]
+
+
+def test_parse_player_accepts_side_aliases() -> None:
+    assert parse_player("blue") == 1
+    assert parse_player("B") == 1
+    assert parse_player("2") == 2
+    assert parse_player("orange") == 2
+    with pytest.raises(ValueError, match="player must be blue or orange"):
+        parse_player("green")
 
 
 def test_parse_rejects_invalid_input() -> None:
@@ -166,3 +209,43 @@ def test_replay_actions_prints_each_move_and_board() -> None:
     assert lines[-1] == (
         "Game over: Orange wins by opponent castle destroyed. Territory: Blue 0, Orange 0."
     )
+
+
+def test_play_against_model_applies_model_move_after_human_move() -> None:
+    state = FakeModelPlayState()
+    model_player = FakeModelPlayer(action=10)
+    lines: list[str] = []
+
+    result = play_against_model(
+        state,
+        model_player,
+        human_player=1,
+        input_fn=lambda prompt: "A1",
+        print_fn=lines.append,
+    )
+
+    assert result == 0
+    assert state.applied == [0, 10]
+    assert model_player.seen_players == [2]
+    assert move_line(turn=0, player=1, action=0) in lines
+    assert move_line(turn=1, player=2, action=10) in lines
+    assert "Orange model thinking..." in lines
+
+
+def test_play_against_model_can_open_as_blue_model() -> None:
+    state = FakeModelPlayState(terminal_after=1)
+    model_player = FakeModelPlayer(action=20)
+    lines: list[str] = []
+
+    result = play_against_model(
+        state,
+        model_player,
+        human_player=2,
+        input_fn=lambda prompt: pytest.fail(f"unexpected prompt: {prompt}"),
+        print_fn=lines.append,
+    )
+
+    assert result == 0
+    assert state.applied == [20]
+    assert model_player.seen_players == [1]
+    assert move_line(turn=0, player=1, action=20) in lines

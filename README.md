@@ -65,6 +65,17 @@ python -m pytest
 great-kingdom-play
 ```
 
+학습된 PyTorch checkpoint와 직접 대국하려면 다음처럼 실행합니다. 로컬 CPU 환경에서는
+`--model-simulations`를 낮게 두면 응답이 더 빠릅니다.
+
+```bash
+great-kingdom-play \
+  --model-checkpoint data/pipeline/checkpoints/best.pt \
+  --human-player blue \
+  --device cpu \
+  --model-simulations 64
+```
+
 Arena나 self-play 로그의 action index 수순을 CLI에서 재생하려면 다음처럼 실행합니다.
 
 ```bash

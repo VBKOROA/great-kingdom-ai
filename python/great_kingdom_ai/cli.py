@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import NoReturn, Protocol, cast
+from pathlib import Path
+from typing import Any, NoReturn, Protocol, cast
 
 BOARD_SIZE = 9
 BOARD_CELLS = BOARD_SIZE * BOARD_SIZE
@@ -49,6 +51,10 @@ class GameStateProtocol(Protocol):
 
     def legal_actions(self) -> list[int]: ...
 
+    def feature_planes(self) -> list[float]: ...
+
+    def legal_mask(self) -> list[bool]: ...
+
     def territory_scores(self) -> tuple[int, int]: ...
 
     def apply_action(self, action_index: int) -> int | None: ...
@@ -62,6 +68,10 @@ class ParsedCommand:
     show_help: bool = False
     show_legal: bool = False
     show_board: bool = False
+
+
+class ModelPlayerProtocol(Protocol):
+    def select_action(self, state: GameStateProtocol) -> int: ...
 
 
 def parse_command(raw: str) -> ParsedCommand:
@@ -118,6 +128,15 @@ def parse_action_sequence(raw: str) -> list[int]:
     if not actions:
         raise ValueError("replay action sequence is empty")
     return actions
+
+
+def parse_player(raw: str) -> int:
+    text = raw.strip().lower()
+    if text in {"1", "b", "blue"}:
+        return 1
+    if text in {"2", "o", "orange"}:
+        return 2
+    raise ValueError("player must be blue or orange")
 
 
 def parse_coordinate(text: str) -> tuple[int, int] | None:
@@ -263,16 +282,7 @@ def run_repl(
     input_fn: Callable[[str], str] = input,
     print_fn: Callable[[str], None] = print,
 ) -> int:
-    try:
-        import great_kingdom_core as core  # type: ignore[import-untyped]
-    except ModuleNotFoundError as exc:
-        raise SystemExit(
-            "great_kingdom_core is not installed. Build it first with:\n"
-            "  cd rust/great_kingdom_core\n"
-            "  ../../.venv/bin/python -m maturin develop\n"
-            "  cd ../.."
-        ) from exc
-
+    core = _import_core()
     state = cast(GameStateProtocol, core.GameState())
     print_fn(render_board(state.board()))
     print_fn(status_line(state))
@@ -318,6 +328,130 @@ def run_repl(
     return 0
 
 
+def play_against_model(
+    state: GameStateProtocol,
+    model_player: ModelPlayerProtocol,
+    *,
+    human_player: int = 1,
+    max_turns: int = 200,
+    input_fn: Callable[[str], str] = input,
+    print_fn: Callable[[str], None] = print,
+) -> int:
+    if human_player not in {1, 2}:
+        raise ValueError("human_player must be 1 or 2")
+    if max_turns <= 0:
+        raise ValueError("max_turns must be positive")
+
+    model_side = 2 if human_player == 1 else 1
+    print_fn(render_board(state.board()))
+    print_fn(status_line(state))
+    print_fn(
+        "You are "
+        f"{PLAYER_NAMES[human_player]}; model is {PLAYER_NAMES[model_side]}."
+    )
+    print_fn(help_text())
+
+    turn = 0
+    while not state.is_terminal():
+        if turn >= max_turns:
+            print_fn(f"Stopped: game exceeded max_turns={max_turns}.")
+            return 1
+
+        current_player = state.current_player()
+        if current_player != human_player:
+            player_name = PLAYER_NAMES.get(current_player, f"Player {current_player}")
+            print_fn(f"{player_name} model thinking...")
+            try:
+                action = model_player.select_action(state)
+                state.apply_action(action)
+            except ValueError as exc:
+                print_fn(f"Model move error: {exc}")
+                return 1
+            print_fn(move_line(turn=turn, player=current_player, action=action))
+            turn += 1
+            print_fn(render_board(state.board()))
+            if state.is_terminal():
+                print_fn(outcome_line(state))
+            else:
+                print_fn(status_line(state))
+            continue
+
+        player = PLAYER_NAMES.get(current_player, f"Player {current_player}")
+        try:
+            parsed = parse_command(input_fn(f"{player}> "))
+        except CliExit:
+            print_fn("Exited.")
+            return 0
+        except ValueError as exc:
+            print_fn(f"Input error: {exc}")
+            continue
+
+        if parsed.show_help:
+            print_fn(help_text())
+            continue
+        if parsed.show_board:
+            print_fn(render_board(state.board()))
+            print_fn(status_line(state))
+            continue
+        if parsed.show_legal:
+            print_fn(format_legal_actions(state.legal_actions()))
+            continue
+
+        if parsed.action is None:
+            continue
+
+        try:
+            state.apply_action(parsed.action)
+        except ValueError as exc:
+            print_fn(f"Illegal move: {exc}")
+            continue
+
+        print_fn(move_line(turn=turn, player=current_player, action=parsed.action))
+        turn += 1
+        print_fn(render_board(state.board()))
+        if state.is_terminal():
+            print_fn(outcome_line(state))
+        else:
+            print_fn(status_line(state))
+
+    return 0
+
+
+def run_model_repl(
+    *,
+    checkpoint: Path,
+    human_player: int = 1,
+    device: str = "cpu",
+    max_turns: int = 200,
+    model_simulations: int = 64,
+    model_max_considered_actions: int = 16,
+    model_gumbel_seed: int = 0,
+    model_leaf_batch_size: int = 8,
+    input_fn: Callable[[str], str] = input,
+    print_fn: Callable[[str], None] = print,
+) -> int:
+    core = _import_core()
+    from great_kingdom_ai.play_model import ModelPlayConfig, ModelPlayer
+
+    config = ModelPlayConfig(
+        device=device,
+        gumbel_simulations=model_simulations,
+        gumbel_max_considered_actions=model_max_considered_actions,
+        gumbel_seed=model_gumbel_seed,
+        leaf_batch_size=model_leaf_batch_size,
+    )
+    model_player = ModelPlayer.from_checkpoint(checkpoint, config=config)
+    state = cast(GameStateProtocol, core.GameState())
+    return play_against_model(
+        state,
+        model_player,
+        human_player=human_player,
+        max_turns=max_turns,
+        input_fn=input_fn,
+        print_fn=print_fn,
+    )
+
+
 def run_replay(
     actions: Iterable[int],
     *,
@@ -325,8 +459,14 @@ def run_replay(
     input_fn: Callable[[str], str] = input,
     print_fn: Callable[[str], None] = print,
 ) -> int:
+    core = _import_core()
+    state = cast(GameStateProtocol, core.GameState())
+    return replay_actions(state, actions, pause=pause, input_fn=input_fn, print_fn=print_fn)
+
+
+def _import_core() -> Any:
     try:
-        import great_kingdom_core as core  # type: ignore[import-untyped]
+        return importlib.import_module("great_kingdom_core")
     except ModuleNotFoundError as exc:
         raise SystemExit(
             "great_kingdom_core is not installed. Build it first with:\n"
@@ -335,23 +475,57 @@ def run_replay(
             "  cd ../.."
         ) from exc
 
-    state = cast(GameStateProtocol, core.GameState())
-    return replay_actions(state, actions, pause=pause, input_fn=input_fn, print_fn=print_fn)
-
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="great-kingdom-play",
         description="Manual self-play CLI backed by the Rust Great Kingdom rules engine.",
     )
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--replay-actions",
         help="replay comma/space separated action indexes or coordinates, e.g. '20,68,C3'",
+    )
+    mode.add_argument(
+        "--model-checkpoint",
+        type=Path,
+        help="play an interactive game against a trained PyTorch checkpoint",
     )
     parser.add_argument(
         "--pause",
         action="store_true",
         help="wait for Enter between replay moves",
+    )
+    parser.add_argument(
+        "--human-player",
+        default="blue",
+        help="side to play in model mode: blue/1 or orange/2",
+    )
+    parser.add_argument("--device", default="cpu", help="model evaluation device")
+    parser.add_argument("--max-turns", type=int, default=200, help="model game turn guard")
+    parser.add_argument(
+        "--model-simulations",
+        type=int,
+        default=64,
+        help="Gumbel search simulations per model move",
+    )
+    parser.add_argument(
+        "--model-max-considered-actions",
+        type=int,
+        default=16,
+        help="maximum actions considered by model Gumbel search",
+    )
+    parser.add_argument(
+        "--model-gumbel-seed",
+        type=int,
+        default=0,
+        help="deterministic seed for model Gumbel search",
+    )
+    parser.add_argument(
+        "--model-leaf-batch-size",
+        type=int,
+        default=8,
+        help="leaf evaluation batch size for model Gumbel search",
     )
     return parser
 
@@ -364,6 +538,23 @@ def main() -> NoReturn:
         except ValueError as exc:
             raise SystemExit(f"Replay input error: {exc}") from exc
         raise SystemExit(run_replay(actions, pause=args.pause))
+    if args.model_checkpoint is not None:
+        try:
+            human_player = parse_player(args.human_player)
+        except ValueError as exc:
+            raise SystemExit(f"Model play input error: {exc}") from exc
+        raise SystemExit(
+            run_model_repl(
+                checkpoint=args.model_checkpoint,
+                human_player=human_player,
+                device=args.device,
+                max_turns=args.max_turns,
+                model_simulations=args.model_simulations,
+                model_max_considered_actions=args.model_max_considered_actions,
+                model_gumbel_seed=args.model_gumbel_seed,
+                model_leaf_batch_size=args.model_leaf_batch_size,
+            )
+        )
     raise SystemExit(run_repl())
 
 
