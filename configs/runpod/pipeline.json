@@ -29,8 +29,6 @@
     "policy_target_c_scale": 1.0,
     "policy_target_temperature": 1.0,
     "gumbel_seed": 700000,
-    "temperature_turns": 12,
-    "sampling_temperature": 1.0,
     "playout_cap_randomization": false,
     "playout_cap_full_search_fraction": 1.0,
     "playout_cap_full_simulations": 48,
