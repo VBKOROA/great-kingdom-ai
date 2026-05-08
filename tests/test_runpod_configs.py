@@ -29,11 +29,13 @@ def test_runpod_low_time_high_quality_configs_are_loadable() -> None:
 
     assert train.device == "cuda"
     assert train.model_preset == "medium_plus"
+    assert train.steps == 768
     assert train.learning_rate == 1e-4
     assert train.lr_schedule == "constant_with_warmup"
+    assert train.lr_warmup_steps == 32
     assert train.amp is True
     assert train.value_loss_weight == 0.5
-    assert train.recent_sample_fraction == 0.4
+    assert train.recent_sample_fraction == 0.5
     assert train.batch_size <= pipeline.min_replay_samples
     assert train.batch_size * train.steps >= pipeline.min_replay_samples * 12
 
