@@ -19,7 +19,7 @@ def test_runpod_low_time_high_quality_configs_are_loadable() -> None:
     assert pipeline.train_checkpoint_mode == "resume"
     assert pipeline.self_play_games == 1500
     assert pipeline.min_replay_samples == 30000
-    assert pipeline.self_play.max_turns == 88
+    assert pipeline.self_play.max_turns == 112
     assert pipeline.self_play.gumbel_simulations == 48
     assert pipeline.self_play.gumbel_max_considered_actions == 16
     assert pipeline.self_play.playout_cap_full_simulations == 48
