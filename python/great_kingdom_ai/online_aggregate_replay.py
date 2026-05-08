@@ -27,6 +27,14 @@ class _AggregateEntry:
     root_policy_count: int
 
 
+@dataclass(frozen=True)
+class AggregateReplayBatch:
+    features: np.ndarray
+    policies: np.ndarray
+    values: np.ndarray
+    sample_weights: np.ndarray
+
+
 class OnlineAggregateReplayBuffer:
     """Fixed-capacity replay store that merges exact duplicate feature rows on push.
 
@@ -48,6 +56,7 @@ class OnlineAggregateReplayBuffer:
         self._sample_weight_mode = sample_weight_mode
         self._sample_weight_cap = sample_weight_cap
         self._entries: OrderedDict[str, _AggregateEntry] = OrderedDict()
+        self._entry_cache: list[_AggregateEntry] | None = None
 
     @property
     def capacity(self) -> int:
@@ -68,6 +77,7 @@ class OnlineAggregateReplayBuffer:
             if len(self._entries) >= self._capacity:
                 self._entries.popitem(last=False)
             self._entries[digest] = _entry_from_sample(validated)
+            self._entry_cache = None
             return
 
         entry.policy_sum += validated.policy
@@ -77,6 +87,7 @@ class OnlineAggregateReplayBuffer:
             entry.root_policy_sum += validated.root_policy_logits
             entry.root_policy_count += 1
         self._entries.move_to_end(digest)
+        self._entry_cache = None
 
     def extend(self, samples: Sequence[ReplaySample]) -> None:
         for sample in samples:
@@ -87,7 +98,7 @@ class OnlineAggregateReplayBuffer:
             raise ValueError("batch_size must be positive")
         if batch_size > len(self._entries):
             raise ValueError("batch_size exceeds replay buffer size")
-        entries = list(self._entries.values())
+        entries = self._entry_list()
         indexes = rng.sample(range(len(entries)), batch_size)
         return [self._sample_from_entry(entries[index]) for index in indexes]
 
@@ -109,26 +120,56 @@ class OnlineAggregateReplayBuffer:
         if recent_window <= 0:
             raise ValueError("recent_window must be positive")
 
-        entries = list(self._entries.values())
-        recent_count = min(recent_window, len(entries))
-        recent_indexes = list(range(len(entries) - recent_count, len(entries)))
-        old_indexes = list(range(0, len(entries) - recent_count))
-
-        target_recent = round(batch_size * recent_fraction)
-        recent_take = min(target_recent, len(recent_indexes), batch_size)
-        old_take = min(batch_size - recent_take, len(old_indexes))
-        recent_take = min(batch_size - old_take, len(recent_indexes))
-        old_take = batch_size - recent_take
-        if old_take > len(old_indexes):
-            old_take = len(old_indexes)
-            recent_take = batch_size - old_take
-        if recent_take > len(recent_indexes):
+        entries = self._entry_list()
+        indexes = self._recency_biased_indexes(
+            batch_size,
+            rng,
+            recent_fraction=recent_fraction,
+            recent_window=recent_window,
+        )
+        if len(indexes) != batch_size:
             raise ValueError("not enough replay rows to satisfy recency-biased sample")
-
-        indexes = rng.sample(recent_indexes, recent_take)
-        indexes.extend(rng.sample(old_indexes, old_take))
-        rng.shuffle(indexes)
         return [self._sample_from_entry(entries[index]) for index in indexes]
+
+    def sample_arrays(
+        self,
+        batch_size: int,
+        rng: random.Random,
+        *,
+        recent_fraction: float = 0.0,
+        recent_window: int = 0,
+    ) -> AggregateReplayBatch:
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if batch_size > len(self._entries):
+            raise ValueError("batch_size exceeds replay buffer size")
+        entries = self._entry_list()
+        if recent_fraction <= 0.0:
+            indexes = rng.sample(range(len(entries)), batch_size)
+        else:
+            indexes = self._recency_biased_indexes(
+                batch_size,
+                rng,
+                recent_fraction=recent_fraction,
+                recent_window=recent_window,
+            )
+        selected = [entries[index] for index in indexes]
+        counts = np.asarray([entry.count for entry in selected], dtype=np.int64)
+        return AggregateReplayBatch(
+            features=np.stack([entry.features for entry in selected], axis=0).astype(np.float32),
+            policies=np.stack([_policy_from_entry(entry) for entry in selected], axis=0).astype(
+                np.float32
+            ),
+            values=np.asarray(
+                [entry.value_sum / entry.count for entry in selected],
+                dtype=np.float32,
+            ),
+            sample_weights=_sample_weights_from_counts(
+                counts,
+                mode=self._sample_weight_mode,
+                cap=self._sample_weight_cap,
+            ),
+        )
 
     def save(self, path: str | Path, *, compressed: bool = True) -> None:
         destination = Path(path)
@@ -248,7 +289,49 @@ class OnlineAggregateReplayBuffer:
                 root_policy_count=root_count,
             )
             buffer._entries[_feature_digest(entry.features)] = entry
+        buffer._entry_cache = None
         return buffer
+
+    def _entry_list(self) -> list[_AggregateEntry]:
+        if self._entry_cache is None:
+            self._entry_cache = list(self._entries.values())
+        return self._entry_cache
+
+    def _recency_biased_indexes(
+        self,
+        batch_size: int,
+        rng: random.Random,
+        *,
+        recent_fraction: float,
+        recent_window: int,
+    ) -> list[int]:
+        if not 0.0 <= recent_fraction <= 1.0:
+            raise ValueError("recent_fraction must be in [0, 1]")
+        if recent_window <= 0:
+            raise ValueError("recent_window must be positive")
+
+        entries_len = len(self._entries)
+        recent_count = min(recent_window, entries_len)
+        old_count = entries_len - recent_count
+        target_recent = round(batch_size * recent_fraction)
+        recent_take = min(target_recent, recent_count, batch_size)
+        old_take = min(batch_size - recent_take, old_count)
+        recent_take = min(batch_size - old_take, recent_count)
+        old_take = batch_size - recent_take
+        if old_take > old_count:
+            old_take = old_count
+            recent_take = batch_size - old_take
+        if recent_take > recent_count:
+            raise ValueError("not enough replay rows to satisfy recency-biased sample")
+
+        recent_start = entries_len - recent_count
+        indexes = [
+            recent_start + index
+            for index in rng.sample(range(recent_count), recent_take)
+        ]
+        indexes.extend(rng.sample(range(old_count), old_take))
+        rng.shuffle(indexes)
+        return indexes
 
     def _sample_from_entry(self, entry: _AggregateEntry) -> ReplaySample:
         counts = np.asarray([entry.count], dtype=np.int64)
@@ -347,4 +430,4 @@ def _validate_loaded_arrays(
         raise ValueError("root_policy_logits shape must match policies shape")
 
 
-__all__ = ["OnlineAggregateReplayBuffer"]
+__all__ = ["AggregateReplayBatch", "OnlineAggregateReplayBuffer"]

@@ -18,6 +18,7 @@ torch = importlib.import_module("torch") if _torch_spec is not None else None
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS  # noqa: E402
 from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample  # noqa: E402
 from great_kingdom_ai.train import (  # noqa: E402
+    TrainingArrays,
     TrainingConfig,
     build_parser,
     compute_losses,
@@ -80,6 +81,39 @@ class RecencyReplay:
         del rng
         self.calls.append((batch_size, recent_fraction, recent_window))
         return [make_sample(index) for index in range(batch_size)]
+
+
+class ArrayReplay:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, float, int]] = []
+
+    def __len__(self) -> int:
+        return 4
+
+    def sample(self, batch_size: int, rng: random.Random) -> list[ReplaySample]:
+        del batch_size, rng
+        raise AssertionError("sample should not be used when sample_arrays exists")
+
+    def sample_arrays(
+        self,
+        batch_size: int,
+        rng: random.Random,
+        *,
+        recent_fraction: float = 0.0,
+        recent_window: int = 0,
+    ) -> TrainingArrays:
+        del rng
+        self.calls.append((batch_size, recent_fraction, recent_window))
+        samples = [
+            make_sample(index, value=1.0 if index % 2 else -1.0)
+            for index in range(batch_size)
+        ]
+        return TrainingArrays(
+            features=np.stack([sample.features for sample in samples], axis=0).astype(np.float32),
+            policies=np.stack([sample.policy for sample in samples], axis=0).astype(np.float32),
+            values=np.asarray([sample.value for sample in samples], dtype=np.float32),
+            sample_weights=np.ones((batch_size,), dtype=np.float32),
+        )
 
 
 def test_compute_losses_returns_policy_value_and_regularization_terms() -> None:
@@ -331,6 +365,20 @@ def test_train_from_replay_rejects_resume_and_weight_bootstrap_together(tmp_path
 
 def test_train_from_replay_uses_recency_biased_sampler() -> None:
     replay = RecencyReplay()
+    config = TrainingConfig(
+        batch_size=2,
+        steps=1,
+        recent_sample_fraction=0.5,
+        recent_sample_window=3,
+    )
+
+    train_from_replay(replay, config)
+
+    assert replay.calls == [(2, 0.5, 3)]
+
+
+def test_train_from_replay_uses_array_sampler_when_available() -> None:
+    replay = ArrayReplay()
     config = TrainingConfig(
         batch_size=2,
         steps=1,

@@ -89,6 +89,49 @@ def augment_samples_randomly(
     return [augment_sample(sample, rng.choice(choices)) for sample in samples]
 
 
+def augment_policy_training_arrays_randomly(
+    features: np.ndarray,
+    policies: np.ndarray,
+    rng: random.Random,
+    *,
+    symmetries: Iterable[Symmetry] = ALL_SYMMETRIES,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Apply random board symmetries to feature and policy training arrays."""
+    choices = tuple(symmetries)
+    if not choices:
+        raise ValueError("symmetries must contain at least one transform")
+    if features.ndim != 4 or features.shape[1:] != FEATURE_SHAPE:
+        raise ValueError(f"expected features shape [N, {FEATURE_SHAPE}], got {features.shape}")
+    if policies.shape != (features.shape[0], ACTION_SPACE):
+        raise ValueError(
+            f"expected policies shape {(features.shape[0], ACTION_SPACE)}, got {policies.shape}"
+        )
+
+    transformed_features = np.empty_like(features, dtype=np.float32)
+    transformed_policies = np.empty_like(policies, dtype=np.float32)
+    selected = [rng.choice(choices) for _ in range(features.shape[0])]
+    for symmetry in choices:
+        indexes = [index for index, candidate in enumerate(selected) if candidate == symmetry]
+        if not indexes:
+            continue
+        index_array = np.asarray(indexes, dtype=np.int64)
+        transformed_features[index_array] = _transform_spatial(
+            features[index_array],
+            symmetry,
+        )
+        board_policy = policies[index_array, : BOARD_SIZE * BOARD_SIZE].reshape(
+            len(indexes),
+            BOARD_SIZE,
+            BOARD_SIZE,
+        )
+        transformed_policies[index_array, : BOARD_SIZE * BOARD_SIZE] = _transform_spatial(
+            board_policy,
+            symmetry,
+        ).reshape(len(indexes), BOARD_SIZE * BOARD_SIZE)
+        transformed_policies[index_array, -1] = policies[index_array, -1]
+    return transformed_features, transformed_policies
+
+
 def _transform_spatial(array: np.ndarray, symmetry: Symmetry) -> np.ndarray:
     if symmetry == "identity":
         return array

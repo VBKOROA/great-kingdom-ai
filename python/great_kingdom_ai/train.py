@@ -14,7 +14,10 @@ from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast
 
 import numpy as np
 
-from great_kingdom_ai.augmentation import augment_samples_randomly
+from great_kingdom_ai.augmentation import (
+    augment_policy_training_arrays_randomly,
+    augment_samples_randomly,
+)
 from great_kingdom_ai.features import BOARD_CELLS, LEGAL_PLACE_FEATURE_CHANNEL, PASS_ACTION
 from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
 
@@ -59,6 +62,14 @@ class TrainingBatch:
     value: torch.Tensor
     legal_mask: torch.Tensor
     sample_weight: torch.Tensor
+
+
+@dataclass(frozen=True)
+class TrainingArrays:
+    features: np.ndarray
+    policies: np.ndarray
+    values: np.ndarray
+    sample_weights: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -121,6 +132,28 @@ def samples_to_batch(
     sample_weights = np.asarray([sample.sample_weight for sample in samples], dtype=np.float32)
     legal_masks = _legal_masks_from_features(features)
 
+    return TrainingBatch(
+        features=torch.from_numpy(features).to(device=device),
+        policy=torch.from_numpy(policies).to(device=device),
+        value=torch.from_numpy(values).to(device=device),
+        legal_mask=torch.from_numpy(legal_masks).to(device=device),
+        sample_weight=torch.from_numpy(sample_weights).to(device=device),
+    )
+
+
+def arrays_to_batch(
+    arrays: TrainingArrays,
+    *,
+    device: torch.device | str | None = None,
+) -> TrainingBatch:
+    torch = _import_torch()
+    features = np.asarray(arrays.features, dtype=np.float32)
+    policies = np.asarray(arrays.policies, dtype=np.float32)
+    values = np.asarray(arrays.values, dtype=np.float32)
+    sample_weights = np.asarray(arrays.sample_weights, dtype=np.float32)
+    if features.shape[0] == 0:
+        raise ValueError("training batch must contain at least one sample")
+    legal_masks = _legal_masks_from_features(features)
     return TrainingBatch(
         features=torch.from_numpy(features).to(device=device),
         policy=torch.from_numpy(policies).to(device=device),
@@ -425,10 +458,7 @@ def train_from_replay(
     start_step = state.step
     losses: list[dict[str, float]] = []
     for step in range(start_step, start_step + config.steps):
-        samples = _sample_training_replay(replay, config, rng)
-        if config.symmetry_augmentation:
-            samples = augment_samples_randomly(samples, rng)
-        batch = samples_to_batch(samples, device=config.device)
+        batch = _sample_training_batch(replay, config, rng)
         loss = train_step(state, batch, config)
         state = TrainState(
             model=state.model,
@@ -480,6 +510,45 @@ def _sample_training_replay(
             recent_window=config.recent_sample_window,
         ),
     )
+
+
+def _sample_training_batch(
+    replay: ReplayDataset,
+    config: TrainingConfig,
+    rng: random.Random,
+) -> TrainingBatch:
+    array_sampler = getattr(replay, "sample_arrays", None)
+    if array_sampler is not None:
+        raw_arrays = array_sampler(
+            config.batch_size,
+            rng,
+            recent_fraction=config.recent_sample_fraction,
+            recent_window=config.recent_sample_window,
+        )
+        arrays = TrainingArrays(
+            features=np.asarray(raw_arrays.features, dtype=np.float32),
+            policies=np.asarray(raw_arrays.policies, dtype=np.float32),
+            values=np.asarray(raw_arrays.values, dtype=np.float32),
+            sample_weights=np.asarray(raw_arrays.sample_weights, dtype=np.float32),
+        )
+        if config.symmetry_augmentation:
+            features, policies = augment_policy_training_arrays_randomly(
+                arrays.features,
+                arrays.policies,
+                rng,
+            )
+            arrays = TrainingArrays(
+                features=features,
+                policies=policies,
+                values=arrays.values,
+                sample_weights=arrays.sample_weights,
+            )
+        return arrays_to_batch(arrays, device=config.device)
+
+    samples = _sample_training_replay(replay, config, rng)
+    if config.symmetry_augmentation:
+        samples = augment_samples_randomly(samples, rng)
+    return samples_to_batch(samples, device=config.device)
 
 
 def load_training_config(path: str | Path) -> TrainingConfig:
@@ -715,9 +784,11 @@ __all__ = [
     "LossBreakdown",
     "TrainState",
     "TrainSummary",
+    "TrainingArrays",
     "TrainingBatch",
     "TrainingConfig",
     "ReplayDataset",
+    "arrays_to_batch",
     "compute_losses",
     "create_lr_scheduler",
     "create_train_state",

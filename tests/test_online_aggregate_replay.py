@@ -124,6 +124,25 @@ def test_online_aggregate_replay_can_sample_recent_rows() -> None:
     assert {int(np.argmax(sample.policy)) for sample in batch} == {4, 5}
 
 
+def test_online_aggregate_replay_samples_training_arrays() -> None:
+    replay = OnlineAggregateReplayBuffer(capacity=8, sample_weight_mode="count")
+    replay.push(make_sample(0, 0, value=1.0))
+    replay.push(make_sample(0, 1, value=-1.0))
+    replay.push(make_sample(1, 2, value=1.0))
+
+    arrays = replay.sample_arrays(2, random.Random(3))
+
+    assert arrays.features.shape == (2, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
+    assert arrays.policies.shape == (2, ACTION_SPACE)
+    assert arrays.values.shape == (2,)
+    assert arrays.sample_weights.shape == (2,)
+    duplicate_index = int(np.argmax(arrays.sample_weights))
+    assert arrays.policies[duplicate_index, 0] == pytest.approx(0.5)
+    assert arrays.policies[duplicate_index, 1] == pytest.approx(0.5)
+    assert arrays.values[duplicate_index] == pytest.approx(0.0)
+    assert arrays.sample_weights[duplicate_index] == pytest.approx(2.0)
+
+
 def test_online_aggregate_replay_recency_updates_duplicate_rows() -> None:
     replay = OnlineAggregateReplayBuffer(capacity=8)
     replay.push(make_sample(0, 0))
