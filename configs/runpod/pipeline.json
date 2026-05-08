@@ -22,7 +22,7 @@
   "self_play": {
     "max_turns": 88,
     "gumbel_simulations": 48,
-    "gumbel_max_considered_actions": 24,
+    "gumbel_max_considered_actions": 16,
     "gumbel_c_visit": 50.0,
     "gumbel_c_scale": 1.0,
     "policy_target_c_visit": 50.0,

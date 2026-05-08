@@ -21,6 +21,7 @@ def test_runpod_low_time_high_quality_configs_are_loadable() -> None:
     assert pipeline.min_replay_samples == 30000
     assert pipeline.self_play.max_turns == 88
     assert pipeline.self_play.gumbel_simulations == 48
+    assert pipeline.self_play.gumbel_max_considered_actions == 16
     assert pipeline.self_play.playout_cap_full_simulations == 48
     assert pipeline.self_play.leaf_batch_size == 128
     assert pipeline.self_play.policy_target_c_visit == pipeline.self_play.gumbel_c_visit
@@ -42,6 +43,7 @@ def test_runpod_low_time_high_quality_configs_are_loadable() -> None:
 
     assert arena.device == "cuda"
     assert arena.max_turns == pipeline.self_play.max_turns
+    assert arena.gumbel_max_considered_actions == pipeline.self_play.gumbel_max_considered_actions
     assert arena.policy_target_c_visit == arena.gumbel_c_visit
     assert arena.policy_target_c_scale == arena.gumbel_c_scale
     assert arena.policy_target_temperature == 1.0
