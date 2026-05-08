@@ -12,7 +12,7 @@ def test_runpod_low_time_high_quality_configs_are_loadable() -> None:
 
     assert pipeline.onnx_device == "cuda"
     assert pipeline.aggregate_replay is True
-    assert pipeline.aggregate_replay_weight_mode == "log_count"
+    assert pipeline.aggregate_replay_weight_mode == "count"
     assert pipeline.aggregate_replay_weight_cap is None
     assert pipeline.skip_arena is True
     assert pipeline.always_promote is True
