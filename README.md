@@ -76,6 +76,16 @@ great-kingdom-play \
   --model-simulations 64
 ```
 
+두 checkpoint끼리 한 판 arena 대국을 보려면 다음처럼 실행합니다. 첫 번째 모델이 Blue,
+두 번째 모델이 Orange입니다.
+
+```bash
+great-kingdom-play \
+  --arena-checkpoints best.pt best-2.pt \
+  --device cpu \
+  --model-simulations 64
+```
+
 Arena나 self-play 로그의 action index 수순을 CLI에서 재생하려면 다음처럼 실행합니다.
 
 ```bash

@@ -417,6 +417,61 @@ def play_against_model(
     return 0
 
 
+def play_model_arena(
+    state: GameStateProtocol,
+    blue_model_player: ModelPlayerProtocol,
+    orange_model_player: ModelPlayerProtocol,
+    *,
+    max_turns: int = 200,
+    pause: bool = False,
+    input_fn: Callable[[str], str] = input,
+    print_fn: Callable[[str], None] = print,
+) -> int:
+    if max_turns <= 0:
+        raise ValueError("max_turns must be positive")
+
+    model_players = {
+        1: blue_model_player,
+        2: orange_model_player,
+    }
+    print_fn(render_board(state.board()))
+    print_fn(status_line(state))
+    print_fn("Arena: Blue model vs Orange model.")
+
+    turn = 0
+    while not state.is_terminal():
+        if turn >= max_turns:
+            print_fn(f"Stopped: game exceeded max_turns={max_turns}.")
+            return 1
+
+        current_player = state.current_player()
+        player_name = PLAYER_NAMES.get(current_player, f"Player {current_player}")
+        model_player = model_players.get(current_player)
+        if model_player is None:
+            print_fn(f"Arena error: unsupported current player {current_player}.")
+            return 1
+
+        print_fn(f"{player_name} model thinking...")
+        try:
+            action = model_player.select_action(state)
+            state.apply_action(action)
+        except ValueError as exc:
+            print_fn(f"Arena move error: {exc}")
+            return 1
+
+        print_fn(move_line(turn=turn, player=current_player, action=action))
+        turn += 1
+        print_fn(render_board(state.board()))
+        if state.is_terminal():
+            print_fn(outcome_line(state))
+        else:
+            print_fn(status_line(state))
+            if pause:
+                input_fn("Press Enter for next move...")
+
+    return 0
+
+
 def run_model_repl(
     *,
     checkpoint: Path,
@@ -447,6 +502,51 @@ def run_model_repl(
         model_player,
         human_player=human_player,
         max_turns=max_turns,
+        input_fn=input_fn,
+        print_fn=print_fn,
+    )
+
+
+def run_model_arena(
+    *,
+    blue_checkpoint: Path,
+    orange_checkpoint: Path,
+    device: str = "cpu",
+    max_turns: int = 200,
+    model_simulations: int = 64,
+    model_max_considered_actions: int = 16,
+    model_gumbel_seed: int = 0,
+    model_leaf_batch_size: int = 8,
+    pause: bool = False,
+    input_fn: Callable[[str], str] = input,
+    print_fn: Callable[[str], None] = print,
+) -> int:
+    core = _import_core()
+    from great_kingdom_ai.play_model import ModelPlayConfig, ModelPlayer
+
+    blue_config = ModelPlayConfig(
+        device=device,
+        gumbel_simulations=model_simulations,
+        gumbel_max_considered_actions=model_max_considered_actions,
+        gumbel_seed=model_gumbel_seed,
+        leaf_batch_size=model_leaf_batch_size,
+    )
+    orange_config = ModelPlayConfig(
+        device=device,
+        gumbel_simulations=model_simulations,
+        gumbel_max_considered_actions=model_max_considered_actions,
+        gumbel_seed=model_gumbel_seed + 1,
+        leaf_batch_size=model_leaf_batch_size,
+    )
+    blue_model_player = ModelPlayer.from_checkpoint(blue_checkpoint, config=blue_config)
+    orange_model_player = ModelPlayer.from_checkpoint(orange_checkpoint, config=orange_config)
+    state = cast(GameStateProtocol, core.GameState())
+    return play_model_arena(
+        state,
+        blue_model_player,
+        orange_model_player,
+        max_turns=max_turns,
+        pause=pause,
         input_fn=input_fn,
         print_fn=print_fn,
     )
@@ -491,10 +591,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="play an interactive game against a trained PyTorch checkpoint",
     )
+    mode.add_argument(
+        "--arena-checkpoints",
+        nargs=2,
+        type=Path,
+        metavar=("BLUE_CHECKPOINT", "ORANGE_CHECKPOINT"),
+        help="run one model-vs-model arena game; first checkpoint plays Blue, second plays Orange",
+    )
     parser.add_argument(
         "--pause",
         action="store_true",
-        help="wait for Enter between replay moves",
+        help="wait for Enter between replay or arena moves",
     )
     parser.add_argument(
         "--human-player",
@@ -553,6 +660,21 @@ def main() -> NoReturn:
                 model_max_considered_actions=args.model_max_considered_actions,
                 model_gumbel_seed=args.model_gumbel_seed,
                 model_leaf_batch_size=args.model_leaf_batch_size,
+            )
+        )
+    if args.arena_checkpoints is not None:
+        blue_checkpoint, orange_checkpoint = args.arena_checkpoints
+        raise SystemExit(
+            run_model_arena(
+                blue_checkpoint=blue_checkpoint,
+                orange_checkpoint=orange_checkpoint,
+                device=args.device,
+                max_turns=args.max_turns,
+                model_simulations=args.model_simulations,
+                model_max_considered_actions=args.model_max_considered_actions,
+                model_gumbel_seed=args.model_gumbel_seed,
+                model_leaf_batch_size=args.model_leaf_batch_size,
+                pause=args.pause,
             )
         )
     raise SystemExit(run_repl())

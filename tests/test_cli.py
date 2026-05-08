@@ -11,6 +11,7 @@ from great_kingdom_ai.cli import (
     parse_command,
     parse_player,
     play_against_model,
+    play_model_arena,
     render_board,
     replay_actions,
     status_line,
@@ -249,3 +250,25 @@ def test_play_against_model_can_open_as_blue_model() -> None:
     assert state.applied == [20]
     assert model_player.seen_players == [1]
     assert move_line(turn=0, player=1, action=20) in lines
+
+
+def test_play_model_arena_alternates_between_two_models() -> None:
+    state = FakeModelPlayState()
+    blue_model = FakeModelPlayer(action=4)
+    orange_model = FakeModelPlayer(action=9)
+    lines: list[str] = []
+
+    result = play_model_arena(
+        state,
+        blue_model,
+        orange_model,
+        print_fn=lines.append,
+    )
+
+    assert result == 0
+    assert state.applied == [4, 9]
+    assert blue_model.seen_players == [1]
+    assert orange_model.seen_players == [2]
+    assert move_line(turn=0, player=1, action=4) in lines
+    assert move_line(turn=1, player=2, action=9) in lines
+    assert "Arena: Blue model vs Orange model." in lines
