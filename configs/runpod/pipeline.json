@@ -5,7 +5,7 @@
   "import_legacy_on_first_run": false,
   "replay_capacity": 750000,
   "self_play_games": 1500,
-  "min_replay_samples": 30000,
+  "min_replay_samples": 1,
   "max_self_play_games": 1500,
   "seed_start": 1000000,
   "onnx_device": "cuda",
