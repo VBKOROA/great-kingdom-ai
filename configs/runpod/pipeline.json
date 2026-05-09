@@ -33,6 +33,6 @@
     "playout_cap_full_search_fraction": 0.25,
     "playout_cap_full_simulations": 128,
     "playout_cap_fast_simulations": 16,
-    "leaf_batch_size": 128
+    "leaf_batch_size": 256
   }
 }
