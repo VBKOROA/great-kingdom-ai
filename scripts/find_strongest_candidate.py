@@ -32,6 +32,8 @@ class MatchResult:
     report_path: Path
     challenger_win_rate: float
     champion_win_rate: float
+    challenger_blue_win_rate: float
+    challenger_orange_win_rate: float
     games: int
 
     def to_dict(self) -> dict[str, Any]:
@@ -43,6 +45,8 @@ class MatchResult:
             "report_path": str(self.report_path),
             "challenger_win_rate": self.challenger_win_rate,
             "champion_win_rate": self.champion_win_rate,
+            "challenger_blue_win_rate": self.challenger_blue_win_rate,
+            "challenger_orange_win_rate": self.challenger_orange_win_rate,
             "games": self.games,
         }
 
@@ -84,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--win-threshold",
         type=float,
         default=0.5,
-        help="challenger must reach this win rate to become champion",
+        help="challenger must reach this win rate as both Blue and Orange to become champion",
     )
     parser.add_argument("--force", action="store_true", help="rerun existing match reports")
     return parser
@@ -216,7 +220,19 @@ def _run_or_load_match(
 
     challenger_win_rate = float(summary["candidate_win_rate"])
     champion_win_rate = float(summary["best_win_rate"])
-    winner = challenger if challenger_win_rate >= arena_config.promotion_threshold else champion
+    challenger_blue_win_rate = _side_win_rate(
+        wins=int(summary["candidate_blue_wins"]),
+        games=int(summary["candidate_blue_games"]),
+    )
+    challenger_orange_win_rate = _side_win_rate(
+        wins=int(summary["candidate_orange_wins"]),
+        games=int(summary["candidate_orange_games"]),
+    )
+    challenger_promoted = (
+        challenger_blue_win_rate >= arena_config.promotion_threshold
+        and challenger_orange_win_rate >= arena_config.promotion_threshold
+    )
+    winner = challenger if challenger_promoted else champion
     return MatchResult(
         match_index=match_index,
         champion_before=champion,
@@ -225,8 +241,14 @@ def _run_or_load_match(
         report_path=report_path,
         challenger_win_rate=challenger_win_rate,
         champion_win_rate=champion_win_rate,
+        challenger_blue_win_rate=challenger_blue_win_rate,
+        challenger_orange_win_rate=challenger_orange_win_rate,
         games=int(summary["games"]),
     )
+
+
+def _side_win_rate(*, wins: int, games: int) -> float:
+    return wins / games if games > 0 else 0.0
 
 
 def _load_effective_arena_config(
