@@ -21,8 +21,8 @@
   "aggregate_replay_weight_cap": null,
   "self_play": {
     "max_turns": 112,
-    "gumbel_simulations": 128,
-    "gumbel_max_considered_actions": 48,
+    "gumbel_simulations": 96,
+    "gumbel_max_considered_actions": 32,
     "gumbel_c_visit": 50.0,
     "gumbel_c_scale": 1.0,
     "policy_target_c_visit": 50.0,
@@ -31,8 +31,8 @@
     "gumbel_seed": 700000,
     "playout_cap_randomization": true,
     "playout_cap_full_search_fraction": 0.35,
-    "playout_cap_full_simulations": 128,
-    "playout_cap_fast_simulations": 48,
+    "playout_cap_full_simulations": 96,
+    "playout_cap_fast_simulations": 40,
     "leaf_batch_size": 128
   }
 }

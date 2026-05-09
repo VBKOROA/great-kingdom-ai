@@ -20,12 +20,12 @@ def test_runpod_low_time_high_quality_configs_are_loadable() -> None:
     assert pipeline.self_play_games == 1500
     assert pipeline.min_replay_samples == 30000
     assert pipeline.self_play.max_turns == 112
-    assert pipeline.self_play.gumbel_simulations == 128
-    assert pipeline.self_play.gumbel_max_considered_actions == 48
+    assert pipeline.self_play.gumbel_simulations == 96
+    assert pipeline.self_play.gumbel_max_considered_actions == 32
     assert pipeline.self_play.playout_cap_randomization is True
     assert pipeline.self_play.playout_cap_full_search_fraction == 0.35
-    assert pipeline.self_play.playout_cap_full_simulations == 128
-    assert pipeline.self_play.playout_cap_fast_simulations == 48
+    assert pipeline.self_play.playout_cap_full_simulations == 96
+    assert pipeline.self_play.playout_cap_fast_simulations == 40
     assert pipeline.self_play.leaf_batch_size == 128
     assert pipeline.self_play.policy_target_c_visit == pipeline.self_play.gumbel_c_visit
     assert pipeline.self_play.policy_target_c_scale == pipeline.self_play.gumbel_c_scale
