@@ -17,7 +17,7 @@
   "resume": true,
   "train_checkpoint_mode": "resume",
   "aggregate_replay": true,
-  "aggregate_replay_weight_mode": "count",
+  "aggregate_replay_weight_mode": "sqrt_count",
   "aggregate_replay_weight_cap": null,
   "self_play": {
     "max_turns": 112,
