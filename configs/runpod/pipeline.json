@@ -1,6 +1,6 @@
 {
   "work_dir": "data/runpod/pure-gumbel-medium-plus",
-  "iterations": 12,
+  "iterations": 50,
   "legacy_import_dir": null,
   "import_legacy_on_first_run": false,
   "replay_capacity": 150000,
