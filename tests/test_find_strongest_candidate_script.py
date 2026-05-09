@@ -78,6 +78,38 @@ def test_select_candidate_checkpoints_rejects_non_positive_interval(tmp_path: Pa
         )
 
 
+def test_load_effective_arena_config_applies_gumbel_overrides(tmp_path: Path) -> None:
+    config_path = tmp_path / "arena.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "games": 400,
+                "gumbel_simulations": 256,
+                "gumbel_max_considered_actions": 64,
+                "promotion_threshold": 0.55,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = module._load_effective_arena_config(
+        config_path,
+        device="cuda",
+        games=96,
+        seed_start=123,
+        gumbel_simulations=24,
+        gumbel_max_considered_actions=8,
+        promotion_threshold=0.5,
+    )
+
+    assert config.device == "cuda"
+    assert config.games == 96
+    assert config.seed_start == 123
+    assert config.gumbel_simulations == 24
+    assert config.gumbel_max_considered_actions == 8
+    assert config.promotion_threshold == pytest.approx(0.5)
+
+
 def test_match_promotes_only_when_challenger_wins_on_both_sides(tmp_path: Path) -> None:
     champion = tmp_path / "candidate-000001.pt"
     challenger = tmp_path / "candidate-000002.pt"

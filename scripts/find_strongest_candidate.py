@@ -84,6 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--games", type=int, default=None)
     parser.add_argument("--seed-start", type=int, default=None)
     parser.add_argument("--gumbel-simulations", type=int, default=None)
+    parser.add_argument("--gumbel-max-considered-actions", type=int, default=None)
     parser.add_argument(
         "--win-threshold",
         type=float,
@@ -106,6 +107,7 @@ def main() -> NoReturn:
         games=args.games,
         seed_start=args.seed_start,
         gumbel_simulations=args.gumbel_simulations,
+        gumbel_max_considered_actions=args.gumbel_max_considered_actions,
         promotion_threshold=args.win_threshold,
     )
     candidates = (
@@ -258,6 +260,7 @@ def _load_effective_arena_config(
     games: int | None,
     seed_start: int | None,
     gumbel_simulations: int | None,
+    gumbel_max_considered_actions: int | None,
     promotion_threshold: float,
 ) -> ArenaConfig:
     config = load_arena_config(path)
@@ -267,6 +270,7 @@ def _load_effective_arena_config(
         "games": games,
         "seed_start": seed_start,
         "gumbel_simulations": gumbel_simulations,
+        "gumbel_max_considered_actions": gumbel_max_considered_actions,
         "promotion_threshold": promotion_threshold,
     }
     data.update({key: value for key, value in overrides.items() if value is not None})
