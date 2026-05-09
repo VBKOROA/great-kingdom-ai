@@ -65,6 +65,8 @@ class SearchLike(Protocol):
 
     def set_simulations(self, simulations: int) -> None: ...
 
+    def set_max_considered_actions(self, max_considered_actions: int) -> None: ...
+
 
 class SelfPlayBatchLike(Protocol):
     def len(self) -> int: ...
@@ -101,6 +103,11 @@ class SelfPlayBatchLike(Protocol):
     def apply_actions(self, actions: list[int | None]) -> list[int | None]: ...
 
     def set_simulations(self, simulations: list[int | None]) -> None: ...
+
+    def set_max_considered_actions(
+        self,
+        max_considered_actions: list[int | None],
+    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -151,6 +158,8 @@ class SelfPlayConfig:
     playout_cap_full_search_fraction: float = 0.25
     playout_cap_full_simulations: int = 128
     playout_cap_fast_simulations: int = 16
+    playout_cap_full_max_considered_actions: int | None = None
+    playout_cap_fast_max_considered_actions: int | None = None
     leaf_batch_size: int = 8
 
     def __post_init__(self) -> None:
@@ -183,6 +192,16 @@ class SelfPlayConfig:
             raise ValueError("playout_cap_full_simulations must be positive")
         if self.playout_cap_fast_simulations <= 0:
             raise ValueError("playout_cap_fast_simulations must be positive")
+        if (
+            self.playout_cap_full_max_considered_actions is not None
+            and self.playout_cap_full_max_considered_actions <= 0
+        ):
+            raise ValueError("playout_cap_full_max_considered_actions must be positive")
+        if (
+            self.playout_cap_fast_max_considered_actions is not None
+            and self.playout_cap_fast_max_considered_actions <= 0
+        ):
+            raise ValueError("playout_cap_fast_max_considered_actions must be positive")
         if self.leaf_batch_size <= 0:
             raise ValueError("leaf_batch_size must be positive")
 
@@ -293,6 +312,10 @@ def play_self_play_game(
                 else config.playout_cap_fast_simulations
             )
             _set_search_simulations(search_engine, simulations)
+            _set_search_max_considered_actions(
+                search_engine,
+                _playout_cap_max_considered_actions(use_full_search, config),
+            )
         result, root_policy_logits = _run_self_play_search(
             game_state,
             search_engine,
@@ -678,6 +701,19 @@ def _play_self_play_games_core_batched(
 
         if config.playout_cap_randomization:
             batch.set_simulations(simulation_budgets)
+            batch.set_max_considered_actions(
+                [
+                    (
+                        _playout_cap_max_considered_actions(
+                            use_full_by_game[game_index],
+                            config,
+                        )
+                        if game_index in use_full_by_game
+                        else None
+                    )
+                    for game_index in range(batch.len())
+                ]
+            )
         if evaluator_provider is None and request_evaluator_provider is None:
             results = batch.search_active_with_logits(noisy_priors)
         else:
@@ -877,6 +913,10 @@ def _play_batched_self_play_turn(
             else config.playout_cap_fast_simulations
         )
         _set_search_simulations(game.search, simulations)
+        _set_search_max_considered_actions(
+            game.search,
+            _playout_cap_max_considered_actions(use_full_search, config),
+        )
 
     result, root_policy_logits = _run_self_play_search(
         game.state,
@@ -937,6 +977,20 @@ def _use_full_search_turn(rng: random.Random, config: SelfPlayConfig) -> bool:
     return rng.random() < config.playout_cap_full_search_fraction
 
 
+def _playout_cap_max_considered_actions(use_full_search: bool, config: SelfPlayConfig) -> int:
+    if use_full_search:
+        return (
+            config.playout_cap_full_max_considered_actions
+            if config.playout_cap_full_max_considered_actions is not None
+            else config.gumbel_max_considered_actions
+        )
+    return (
+        config.playout_cap_fast_max_considered_actions
+        if config.playout_cap_fast_max_considered_actions is not None
+        else config.gumbel_max_considered_actions
+    )
+
+
 def _policy_target_from_result(result: SearchResultLike) -> np.ndarray:
     if hasattr(result, "policy_target"):
         policy = np.asarray(cast(Any, result).policy_target(), dtype=np.float32)
@@ -966,6 +1020,13 @@ def _select_self_play_action(
 
 def _set_search_simulations(search: SearchLike, simulations: int) -> None:
     search.set_simulations(simulations)
+
+
+def _set_search_max_considered_actions(
+    search: SearchLike,
+    max_considered_actions: int,
+) -> None:
+    search.set_max_considered_actions(max_considered_actions)
 
 
 def _state_features_for_replay(state: SelfPlayState) -> np.ndarray:

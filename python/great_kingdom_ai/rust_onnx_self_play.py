@@ -133,6 +133,19 @@ def _run_one_batch(
                 )
         if config.self_play.playout_cap_randomization:
             batch.set_simulations(simulation_budgets)
+            batch.set_max_considered_actions(
+                [
+                    (
+                        _playout_cap_max_considered_actions(
+                            use_full_by_game[game_index],
+                            config.self_play,
+                        )
+                        if game_index in use_full_by_game
+                        else None
+                    )
+                    for game_index in range(game_count)
+                ]
+            )
 
         results, root_policy_logits_rows = _search_active_with_root_policy_logits(
             batch,
@@ -249,6 +262,20 @@ def _use_full_search_turn(rng: random.Random, config: SelfPlayConfig) -> bool:
     if not config.playout_cap_randomization:
         return True
     return rng.random() < config.playout_cap_full_search_fraction
+
+
+def _playout_cap_max_considered_actions(use_full_search: bool, config: SelfPlayConfig) -> int:
+    if use_full_search:
+        return (
+            config.playout_cap_full_max_considered_actions
+            if config.playout_cap_full_max_considered_actions is not None
+            else config.gumbel_max_considered_actions
+        )
+    return (
+        config.playout_cap_fast_max_considered_actions
+        if config.playout_cap_fast_max_considered_actions is not None
+        else config.gumbel_max_considered_actions
+    )
 
 
 def _import_core() -> Any:

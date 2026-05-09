@@ -118,6 +118,16 @@ impl GumbelSearch {
         Ok(())
     }
 
+    pub fn set_max_considered_actions(&mut self, max_considered_actions: usize) -> PyResult<()> {
+        if max_considered_actions == 0 {
+            return Err(PyValueError::new_err(
+                "max_considered_actions must be positive",
+            ));
+        }
+        self.config.max_considered_actions = max_considered_actions;
+        Ok(())
+    }
+
     pub fn set_seed(&mut self, seed: u64) {
         self.config.seed = seed;
         self.root_search_count = 0;

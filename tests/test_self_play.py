@@ -227,6 +227,9 @@ class FakeSearchSearch:
     def set_simulations(self, simulations: int) -> None:
         del simulations
 
+    def set_max_considered_actions(self, max_considered_actions: int) -> None:
+        del max_considered_actions
+
 
 class FakeGumbelSearch(FakeSearchSearch):
     def __init__(self, selected: int, policy: list[float]) -> None:
@@ -264,9 +267,13 @@ class BudgetRecordingSearch(FakeSearchSearch):
     def __init__(self, visits: list[int]) -> None:
         super().__init__(visits)
         self.simulation_budgets: list[int] = []
+        self.max_considered_action_budgets: list[int] = []
 
     def set_simulations(self, simulations: int) -> None:
         self.simulation_budgets.append(simulations)
+
+    def set_max_considered_actions(self, max_considered_actions: int) -> None:
+        self.max_considered_action_budgets.append(max_considered_actions)
 
 
 class FakeCoreBatch:
@@ -277,6 +284,8 @@ class FakeCoreBatch:
         self._end_reasons: list[int | None] = [None] * game_count
         self.applied_actions: list[int | None] = []
         self.leaf_batch_sizes: list[int] = []
+        self.simulation_budgets: list[list[int | None]] = []
+        self.max_considered_action_budgets: list[list[int | None]] = []
 
     def len(self) -> int:
         return self._game_count
@@ -373,7 +382,10 @@ class FakeCoreBatch:
         return self._winners
 
     def set_simulations(self, simulations: list[int | None]) -> None:
-        del simulations
+        self.simulation_budgets.append(list(simulations))
+
+    def set_max_considered_actions(self, max_considered_actions: list[int | None]) -> None:
+        self.max_considered_action_budgets.append(list(max_considered_actions))
 
 
 class _SingleStateEvalRequest:
@@ -559,6 +571,7 @@ def test_play_self_play_game_can_skip_fast_playout_cap_turns() -> None:
     assert len(log.moves) == 3
     assert samples == []
     assert search.simulation_budgets == [16, 16, 16]
+    assert search.max_considered_action_budgets == [16, 16, 16]
 
 
 def test_play_self_play_game_keeps_full_playout_cap_turns_as_samples() -> None:
@@ -584,6 +597,33 @@ def test_play_self_play_game_keeps_full_playout_cap_turns_as_samples() -> None:
     assert len(log.moves) == 2
     assert len(samples) == 2
     assert search.simulation_budgets == [100, 100]
+    assert search.max_considered_action_budgets == [16, 16]
+
+
+def test_play_self_play_game_can_set_fast_playout_cap_max_actions() -> None:
+    visits = [0] * 82
+    visits[1] = 1
+    state = MultiTurnSearchState(terminal_after=3)
+    search = BudgetRecordingSearch(visits)
+
+    play_self_play_game(
+        seed=1,
+        state=state,
+        search=search,
+        config=make_self_play_config(
+            max_turns=5,
+            temperature_turns=0,
+            gumbel_max_considered_actions=32,
+            playout_cap_randomization=True,
+            playout_cap_full_search_fraction=0.01,
+            playout_cap_full_simulations=100,
+            playout_cap_fast_simulations=16,
+            playout_cap_fast_max_considered_actions=8,
+        ),
+    )
+
+    assert search.simulation_budgets == [16, 16, 16]
+    assert search.max_considered_action_budgets == [8, 8, 8]
 
 
 def test_play_self_play_games_batched_evaluates_root_priors_together() -> None:

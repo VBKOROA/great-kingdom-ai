@@ -112,9 +112,11 @@ def test_generate_self_play_samples_passes_playout_cap_config() -> None:
             self_play_games=1,
             min_replay_samples=1,
             gumbel_simulations=100,
+            gumbel_max_considered_actions=32,
             playout_cap_randomization=True,
             playout_cap_full_search_fraction=0.25,
             playout_cap_fast_simulations=16,
+            playout_cap_fast_max_considered_actions=8,
         ),
         runner=recording_runner,
         printer=PipelinePrinter(enabled=False),
@@ -124,6 +126,8 @@ def test_generate_self_play_samples_passes_playout_cap_config() -> None:
     assert seen_configs[0].playout_cap_full_search_fraction == pytest.approx(0.25)
     assert seen_configs[0].playout_cap_full_simulations == 100
     assert seen_configs[0].playout_cap_fast_simulations == 16
+    assert seen_configs[0].playout_cap_full_max_considered_actions == 32
+    assert seen_configs[0].playout_cap_fast_max_considered_actions == 8
 
 
 def test_generate_self_play_samples_passes_gumbel_config() -> None:

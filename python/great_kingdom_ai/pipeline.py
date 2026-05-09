@@ -69,6 +69,7 @@ class PipelineConfig:
     playout_cap_randomization: bool = False
     playout_cap_full_search_fraction: float = 0.25
     playout_cap_fast_simulations: int = 16
+    playout_cap_fast_max_considered_actions: int | None = None
     promote: bool = True
     always_promote: bool = False
     skip_arena: bool = False
@@ -490,6 +491,10 @@ def generate_self_play_samples(
         playout_cap_full_search_fraction=pipeline_config.playout_cap_full_search_fraction,
         playout_cap_full_simulations=pipeline_config.gumbel_simulations,
         playout_cap_fast_simulations=pipeline_config.playout_cap_fast_simulations,
+        playout_cap_full_max_considered_actions=pipeline_config.gumbel_max_considered_actions,
+        playout_cap_fast_max_considered_actions=(
+            pipeline_config.playout_cap_fast_max_considered_actions
+        ),
         leaf_batch_size=pipeline_config.leaf_batch_size,
     )
 
@@ -657,7 +662,9 @@ def _pcr_summary(config: PipelineConfig) -> str:
     return (
         "on("
         f"full={config.playout_cap_full_search_fraction:.2f}, "
-        f"fast_sims={config.playout_cap_fast_simulations}"
+        f"fast_sims={config.playout_cap_fast_simulations}, "
+        "fast_actions="
+        f"{config.playout_cap_fast_max_considered_actions or config.gumbel_max_considered_actions}"
         ")"
     )
 
@@ -757,6 +764,11 @@ def _validate_pipeline_config(config: PipelineConfig) -> None:
         raise ValueError("playout_cap_full_search_fraction must be in (0, 1]")
     if config.playout_cap_fast_simulations <= 0:
         raise ValueError("playout_cap_fast_simulations must be positive")
+    if (
+        config.playout_cap_fast_max_considered_actions is not None
+        and config.playout_cap_fast_max_considered_actions <= 0
+    ):
+        raise ValueError("playout_cap_fast_max_considered_actions must be positive")
     if config.train_checkpoint_mode not in {"resume", "bootstrap"}:
         raise ValueError("train_checkpoint_mode must be one of: resume, bootstrap")
 
@@ -966,6 +978,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Gumbel simulations for fast self-play turns",
     )
+    self_play_group.add_argument(
+        "--playout-cap-fast-max-considered-actions",
+        type=int,
+        default=None,
+        help="maximum root actions considered on fast PCR self-play turns",
+    )
 
     train_group = parser.add_argument_group("training and arena")
     train_group.add_argument("--train-steps", type=int, default=None, help="steps per iteration")
@@ -1011,6 +1029,9 @@ def _configs_from_args(
         "playout_cap_randomization": True if args.playout_cap_randomization else None,
         "playout_cap_full_search_fraction": args.playout_cap_full_search_fraction,
         "playout_cap_fast_simulations": args.playout_cap_fast_simulations,
+        "playout_cap_fast_max_considered_actions": (
+            args.playout_cap_fast_max_considered_actions
+        ),
         "promote": False if args.no_promote else None,
         "always_promote": True if args.always_promote else None,
         "skip_arena": True if args.skip_arena else None,

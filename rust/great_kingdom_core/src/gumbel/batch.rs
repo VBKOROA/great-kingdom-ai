@@ -298,6 +298,30 @@ impl GumbelSelfPlayBatch {
         Ok(())
     }
 
+    pub fn set_max_considered_actions(
+        &mut self,
+        max_considered_actions: Vec<Option<usize>>,
+    ) -> PyResult<()> {
+        if max_considered_actions.len() != self.searches.len() {
+            return Err(PyValueError::new_err(format!(
+                "expected {} max_considered_actions slots, got {}",
+                self.searches.len(),
+                max_considered_actions.len()
+            )));
+        }
+        for (search, max_considered_actions) in self
+            .searches
+            .iter_mut()
+            .zip(max_considered_actions.into_iter())
+        {
+            let Some(max_considered_actions) = max_considered_actions else {
+                continue;
+            };
+            search.set_max_considered_actions(max_considered_actions)?;
+        }
+        Ok(())
+    }
+
     pub fn set_seeds(&mut self, seeds: Vec<Option<u64>>) -> PyResult<()> {
         if seeds.len() != self.searches.len() {
             return Err(PyValueError::new_err(format!(

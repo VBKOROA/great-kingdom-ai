@@ -36,6 +36,11 @@ def test_gumbel_search_constructor_exposes_config() -> None:
     assert search.policy_target_temperature() == 2.0
     assert search.seed() == 123
 
+    if not hasattr(search, "set_max_considered_actions"):
+        pytest.skip("installed great_kingdom_core does not expose set_max_considered_actions")
+    search.set_max_considered_actions(4)
+    assert search.max_considered_actions() == 4
+
 
 @pytest.mark.skipif(
     importlib.util.find_spec("great_kingdom_core") is None,
@@ -123,6 +128,10 @@ def test_gumbel_self_play_batch_constructor_and_active_request() -> None:
     assert request.len() == 2
     assert list(request.game_indexes()) == []
     assert list(batch.current_players()) == [1, 1]
+
+    if not hasattr(batch, "set_max_considered_actions"):
+        pytest.skip("installed great_kingdom_core does not expose set_max_considered_actions")
+    batch.set_max_considered_actions([4, None])
 
 
 @pytest.mark.skipif(
