@@ -71,6 +71,7 @@ class RustOnnxPipelineConfig:
     always_promote: bool = False
     resume: bool = True
     train_checkpoint_mode: str = "resume"
+    ema_decay: float | None = None
     aggregate_replay: bool = True
     aggregate_replay_weight_mode: str = "sqrt_count"
     aggregate_replay_weight_cap: float | None = 16.0
@@ -189,6 +190,8 @@ def run_rust_onnx_pipeline(
     if not paths["best_checkpoint"].exists():
         printer.step(f"initializing best checkpoint at {paths['best_checkpoint']}")
         save_checkpoint(create_train_state(train_config), paths["best_checkpoint"])
+    if _ema_enabled(pipeline_config) and not paths["training_checkpoint"].exists():
+        shutil.copy2(paths["best_checkpoint"], paths["training_checkpoint"])
 
     completed_iterations = _load_completed_iteration_count(paths["metrics_path"], pipeline_config)
     seed_cursor = _initial_seed_cursor(pipeline_config)
@@ -215,6 +218,8 @@ def run_rust_onnx_pipeline(
     )
     printer.metric("training", f"steps={train_config.steps}, batch={train_config.batch_size}")
     printer.metric("train checkpoint", pipeline_config.train_checkpoint_mode)
+    if _ema_enabled(pipeline_config):
+        printer.metric("ema decay", f"{pipeline_config.ema_decay:.3f}")
 
     try:
         for iteration in range(
@@ -271,7 +276,7 @@ def run_rust_onnx_pipeline(
                 checkpoint_path=candidate_checkpoint,
                 **_train_checkpoint_kwargs(
                     pipeline_config,
-                    paths["best_checkpoint"],
+                    _training_source_checkpoint(pipeline_config, paths),
                 ),
                 log_every=max(1, train_config.steps // 10),
                 progress_callback=lambda current, target, loss: printer.progress(
@@ -282,6 +287,8 @@ def run_rust_onnx_pipeline(
                 ),
             )
             shutil.copy2(candidate_checkpoint, paths["candidate_checkpoint"])
+            if _ema_enabled(pipeline_config):
+                shutil.copy2(candidate_checkpoint, paths["training_checkpoint"])
             printer.metric("train steps", f"{train_summary.start_step}->{train_summary.end_step}")
             printer.progress("iteration", 4, phase_total, detail="training complete")
 
@@ -331,6 +338,7 @@ def run_rust_onnx_pipeline(
                 promoted = _promote_candidate_unconditionally(
                     candidate_checkpoint=candidate_checkpoint,
                     best_checkpoint=paths["best_checkpoint"],
+                    ema_decay=pipeline_config.ema_decay,
                 )
                 printer.metric("promoted", promoted)
                 printer.progress("iteration", 5, phase_total, detail="always promoted")
@@ -423,6 +431,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="resume optimizer/scheduler state or bootstrap model weights only",
     )
+    parser.add_argument("--ema-decay", type=float, default=None)
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -445,6 +454,7 @@ def main() -> NoReturn:
         "skip_arena": True if args.skip_arena else None,
         "always_promote": True if args.always_promote else None,
         "train_checkpoint_mode": args.train_checkpoint_mode,
+        "ema_decay": args.ema_decay,
     }.items():
         if value is not None:
             data[key] = value
@@ -472,6 +482,7 @@ def _paths(config: RustOnnxPipelineConfig) -> dict[str, Path]:
         "aggregated_replay_path": config.work_dir / "replay" / "replay-aggregated.npz",
         "game_log_path": config.work_dir / "replay" / "game_logs.jsonl",
         "best_checkpoint": config.work_dir / "checkpoints" / "best.pt",
+        "training_checkpoint": config.work_dir / "checkpoints" / "training-latest.pt",
         "candidate_checkpoint": config.work_dir / "checkpoints" / "candidate.pt",
         "candidate_dir": config.work_dir / "checkpoints" / "candidates",
         "onnx_checkpoint_dir": config.work_dir / "checkpoints" / "onnx",
@@ -667,6 +678,8 @@ def _validate_config(config: RustOnnxPipelineConfig) -> None:
         raise ValueError("rust_self_play_batch_size must be positive")
     if config.train_checkpoint_mode not in {"resume", "bootstrap"}:
         raise ValueError("train_checkpoint_mode must be one of: resume, bootstrap")
+    if config.ema_decay is not None and not 0.0 <= config.ema_decay < 1.0:
+        raise ValueError("ema_decay must be in [0, 1)")
 
 
 def _train_checkpoint_kwargs(
@@ -678,6 +691,17 @@ def _train_checkpoint_kwargs(
     if config.train_checkpoint_mode == "bootstrap":
         return {"resume_path": None, "bootstrap_weights_path": best_checkpoint}
     raise ValueError("train_checkpoint_mode must be one of: resume, bootstrap")
+
+
+def _training_source_checkpoint(
+    config: RustOnnxPipelineConfig,
+    paths: dict[str, Path],
+) -> Path:
+    return paths["training_checkpoint"] if _ema_enabled(config) else paths["best_checkpoint"]
+
+
+def _ema_enabled(config: RustOnnxPipelineConfig) -> bool:
+    return config.ema_decay is not None
 
 
 def _load_initial_aggregate_replay_buffer(
@@ -711,12 +735,70 @@ def _promote_candidate_unconditionally(
     *,
     candidate_checkpoint: str | Path,
     best_checkpoint: str | Path,
+    ema_decay: float | None = None,
 ) -> bool:
     source = Path(candidate_checkpoint)
     destination = Path(best_checkpoint)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, destination)
+    if ema_decay is None:
+        shutil.copy2(source, destination)
+    else:
+        _update_ema_checkpoint(
+            previous_checkpoint=destination,
+            candidate_checkpoint=source,
+            output_checkpoint=destination,
+            decay=ema_decay,
+        )
     return True
+
+
+def _update_ema_checkpoint(
+    *,
+    previous_checkpoint: str | Path,
+    candidate_checkpoint: str | Path,
+    output_checkpoint: str | Path,
+    decay: float,
+) -> Path:
+    if not 0.0 <= decay < 1.0:
+        raise ValueError("decay must be in [0, 1)")
+    torch = _import_torch()
+    previous_path = Path(previous_checkpoint)
+    candidate_path = Path(candidate_checkpoint)
+    output_path = Path(output_checkpoint)
+    previous = torch.load(previous_path, map_location="cpu", weights_only=False)
+    candidate = torch.load(candidate_path, map_location="cpu", weights_only=False)
+    if previous["model_config"] != candidate["model_config"]:
+        raise ValueError("EMA checkpoints must use the same model_config")
+    previous_state = previous["model_state"]
+    candidate_state = candidate["model_state"]
+    if previous_state.keys() != candidate_state.keys():
+        raise ValueError("EMA checkpoints must have matching model_state keys")
+
+    ema_state = {}
+    for key, candidate_tensor in candidate_state.items():
+        previous_tensor = previous_state[key]
+        if candidate_tensor.is_floating_point() and previous_tensor.is_floating_point():
+            ema_state[key] = previous_tensor.to(dtype=candidate_tensor.dtype).mul(decay).add(
+                candidate_tensor,
+                alpha=1.0 - decay,
+            )
+        else:
+            ema_state[key] = candidate_tensor
+
+    updated = dict(candidate)
+    updated["model_state"] = ema_state
+    updated["ema_decay"] = decay
+    updated["ema_previous_checkpoint"] = str(previous_path)
+    updated["ema_candidate_checkpoint"] = str(candidate_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(updated, output_path)
+    return output_path
+
+
+def _import_torch() -> Any:
+    import torch
+
+    return torch
 
 
 def _prepare_training_replay(

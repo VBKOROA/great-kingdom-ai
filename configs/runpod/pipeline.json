@@ -16,6 +16,7 @@
   "always_promote": true,
   "resume": true,
   "train_checkpoint_mode": "resume",
+  "ema_decay": 0.9,
   "aggregate_replay": true,
   "aggregate_replay_weight_mode": "none",
   "aggregate_replay_weight_cap": null,

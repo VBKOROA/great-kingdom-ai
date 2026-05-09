@@ -14,7 +14,7 @@ from great_kingdom_ai.replay_buffer import ReplaySample
 from great_kingdom_ai.rust_onnx_pipeline import RustOnnxPipelineConfig, run_rust_onnx_pipeline
 from great_kingdom_ai.rust_onnx_self_play import RustOnnxSelfPlayConfig, RustSelfPlayRunSummary
 from great_kingdom_ai.self_play import GameLog, MoveLog, SelfPlayConfig
-from great_kingdom_ai.train import TrainingConfig
+from great_kingdom_ai.train import TrainingConfig, create_train_state, save_checkpoint
 
 
 def make_sample(index: int) -> ReplaySample:
@@ -219,6 +219,127 @@ def test_rust_onnx_pipeline_always_promote_skips_arena(
     assert summary.iterations[0].candidate_win_rate is None
     assert summary.best_checkpoint.read_text(encoding="utf-8") == "candidate"
     assert not (tmp_path / "reports" / "arena").exists()
+
+
+def test_rust_onnx_pipeline_ema_uses_raw_checkpoint_for_resume(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    resume_paths: list[Path | None] = []
+    ema_updates: list[tuple[Path, Path, Path, float]] = []
+
+    def fake_save_checkpoint(state: object, path: str | Path) -> Path:
+        del state
+        destination = Path(path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("initial", encoding="utf-8")
+        return destination
+
+    def fake_export(checkpoint_path: str | Path, output_path: str | Path, **kwargs: Any) -> object:
+        del checkpoint_path, kwargs
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_text("onnx", encoding="utf-8")
+        return object()
+
+    def fake_train_from_replay(
+        replay: Any,
+        config: TrainingConfig,
+        *,
+        checkpoint_path: str | Path,
+        resume_path: str | Path | None,
+        bootstrap_weights_path: str | Path | None = None,
+        log_every: int,
+        progress_callback: Any = None,
+    ) -> FakeTrainSummary:
+        del replay, config, bootstrap_weights_path, log_every, progress_callback
+        resume_paths.append(Path(resume_path) if resume_path is not None else None)
+        destination = Path(checkpoint_path)
+        destination.write_text("candidate", encoding="utf-8")
+        return FakeTrainSummary(destination)
+
+    def fake_update_ema_checkpoint(
+        *,
+        previous_checkpoint: str | Path,
+        candidate_checkpoint: str | Path,
+        output_checkpoint: str | Path,
+        decay: float,
+    ) -> Path:
+        previous = Path(previous_checkpoint)
+        candidate = Path(candidate_checkpoint)
+        output = Path(output_checkpoint)
+        ema_updates.append((previous, candidate, output, decay))
+        output.write_text("ema", encoding="utf-8")
+        return output
+
+    monkeypatch.setattr(pipeline_module, "create_train_state", lambda config: object())
+    monkeypatch.setattr(pipeline_module, "save_checkpoint", fake_save_checkpoint)
+    monkeypatch.setattr(pipeline_module, "export_checkpoint_to_onnx", fake_export)
+    monkeypatch.setattr(pipeline_module, "train_from_replay", fake_train_from_replay)
+    monkeypatch.setattr(pipeline_module, "_update_ema_checkpoint", fake_update_ema_checkpoint)
+
+    summary = run_rust_onnx_pipeline(
+        pipeline_config=RustOnnxPipelineConfig(
+            work_dir=tmp_path,
+            iterations=1,
+            replay_capacity=8,
+            self_play_games=1,
+            skip_arena=False,
+            promote=False,
+            always_promote=True,
+            ema_decay=0.9,
+            self_play=make_self_play_config(),
+        ),
+        train_config=TrainingConfig(batch_size=1, steps=1, device="cpu"),
+        arena_config=ArenaConfig(games=1, device="cpu"),
+        printer=PipelinePrinter(enabled=False),
+        rust_self_play_runner=fake_runner,
+    )
+
+    assert resume_paths == [tmp_path / "checkpoints" / "training-latest.pt"]
+    assert ema_updates == [
+        (
+            tmp_path / "checkpoints" / "best.pt",
+            tmp_path / "checkpoints" / "candidates" / "candidate-000001.pt",
+            tmp_path / "checkpoints" / "best.pt",
+            0.9,
+        )
+    ]
+    assert (tmp_path / "checkpoints" / "training-latest.pt").read_text(
+        encoding="utf-8"
+    ) == "candidate"
+    assert summary.best_checkpoint.read_text(encoding="utf-8") == "ema"
+
+
+def test_update_ema_checkpoint_averages_floating_model_state(tmp_path: Path) -> None:
+    torch = pytest.importorskip("torch")
+    config = TrainingConfig(device="cpu", model_preset="small")
+    previous_path = tmp_path / "previous.pt"
+    candidate_path = tmp_path / "candidate.pt"
+    output_path = tmp_path / "ema.pt"
+    previous = create_train_state(config)
+    candidate = create_train_state(config)
+    for tensor in previous.model.state_dict().values():
+        if tensor.is_floating_point():
+            tensor.fill_(1.0)
+    for tensor in candidate.model.state_dict().values():
+        if tensor.is_floating_point():
+            tensor.fill_(3.0)
+    save_checkpoint(previous, previous_path)
+    save_checkpoint(candidate, candidate_path)
+
+    pipeline_module._update_ema_checkpoint(
+        previous_checkpoint=previous_path,
+        candidate_checkpoint=candidate_path,
+        output_checkpoint=output_path,
+        decay=0.75,
+    )
+
+    checkpoint = torch.load(output_path, map_location="cpu", weights_only=False)
+    for tensor in checkpoint["model_state"].values():
+        if tensor.is_floating_point():
+            assert torch.allclose(tensor, torch.full_like(tensor, 1.5))
+            break
+    assert checkpoint["ema_decay"] == pytest.approx(0.75)
 
 
 def test_rust_onnx_arena_config_offsets_seed_start_by_iteration() -> None:
