@@ -3,7 +3,7 @@
   "iterations": 12,
   "legacy_import_dir": null,
   "import_legacy_on_first_run": false,
-  "replay_capacity": 750000,
+  "replay_capacity": 75000,
   "self_play_games": 1500,
   "min_replay_samples": 1,
   "max_self_play_games": 1500,
@@ -21,7 +21,7 @@
   "aggregate_replay_weight_cap": null,
   "self_play": {
     "max_turns": 112,
-    "gumbel_simulations": 96,
+    "gumbel_simulations": 128,
     "gumbel_max_considered_actions": 32,
     "gumbel_c_visit": 50.0,
     "gumbel_c_scale": 1.0,
@@ -30,9 +30,9 @@
     "policy_target_temperature": 1.0,
     "gumbel_seed": 700000,
     "playout_cap_randomization": true,
-    "playout_cap_full_search_fraction": 0.35,
-    "playout_cap_full_simulations": 96,
-    "playout_cap_fast_simulations": 40,
+    "playout_cap_full_search_fraction": 0.25,
+    "playout_cap_full_simulations": 128,
+    "playout_cap_fast_simulations": 16,
     "leaf_batch_size": 128
   }
 }
