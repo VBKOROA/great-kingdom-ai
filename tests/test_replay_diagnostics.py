@@ -56,6 +56,33 @@ def test_summarize_replay_arrays_reports_aggregate_counts_and_weights() -> None:
     assert summary["sample_weight"]["effective_weighted_rows"] == pytest.approx(4.1)
 
 
+def test_summarize_replay_arrays_reports_move_count_duplicate_distribution() -> None:
+    features, policies, values = make_arrays()
+    for row, moves in enumerate([0, 10, 30]):
+        remaining_total = 80 - moves
+        features[row, 7, :, :] = (remaining_total / 2) / 40
+        features[row, 8, :, :] = (remaining_total / 2) / 40
+
+    summary = summarize_replay_arrays(
+        features=features,
+        policies=policies,
+        values=values,
+        counts=np.asarray([100, 4, 2], dtype=np.int64),
+        sample_weights=np.asarray([10.0, 2.0, 1.4], dtype=np.float32),
+        conflict_samples=0,
+    )
+
+    assert summary["move_count"]["unique_rows"]["max"] == 30.0
+    assert summary["move_count"]["raw_rows"]["p50"] == 0.0
+    assert summary["move_count"]["top_move_counts_by_raw_rows"][0]["move_count"] == 0
+    assert summary["move_count"]["top_move_counts_by_raw_rows"][0]["raw_rows"] == pytest.approx(
+        100.0
+    )
+    opening_bucket = summary["move_count"]["buckets"][0]
+    assert opening_bucket["moves"] == "0-0"
+    assert opening_bucket["raw_fraction"] == pytest.approx(100 / 106)
+
+
 def test_summarize_replay_arrays_detects_illegal_target_mass() -> None:
     features, policies, values = make_arrays()
     features[:, 4, :, :] = 0.0

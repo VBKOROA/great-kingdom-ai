@@ -25,6 +25,11 @@ from great_kingdom_ai.replay_buffer import FEATURE_SHAPE
 FloatArray = npt.NDArray[np.float32]
 BoolArray = npt.NDArray[np.bool_]
 
+OWN_REMAINING_CASTLES_FEATURE_CHANNEL = 7
+OPPONENT_REMAINING_CASTLES_FEATURE_CHANNEL = 8
+CASTLES_PER_PLAYER = 40
+MOVE_COUNT_BUCKETS = (0, 1, 2, 4, 8, 16, 24, 32, 48, 64, 80)
+
 
 @dataclass
 class ConflictGroup:
@@ -122,6 +127,12 @@ def summarize_replay_arrays(
             **_describe(sample_weights),
             "effective_weighted_rows": float(np.sum(sample_weights)),
         }
+    summary["move_count"] = _move_count_diagnostics(
+        features=features,
+        counts=counts,
+        sample_weights=sample_weights,
+        top_k=top_k,
+    )
     return summary
 
 
@@ -264,6 +275,123 @@ def _categorical_kl(left: FloatArray, right: FloatArray) -> FloatArray:
     right_clipped = np.clip(right, epsilon, 1.0)
     kl = np.sum(left_clipped * (np.log(left_clipped) - np.log(right_clipped)), axis=1)
     return cast(FloatArray, kl.astype(np.float32))
+
+
+def _move_count_diagnostics(
+    *,
+    features: FloatArray,
+    counts: npt.NDArray[np.integer[Any]] | None,
+    sample_weights: FloatArray | None,
+    top_k: int,
+) -> dict[str, Any]:
+    move_counts = _move_counts_from_features(features)
+    raw_counts = (
+        counts.astype(np.float64)
+        if counts is not None
+        else np.ones(features.shape[0], dtype=np.float64)
+    )
+    weighted_counts = (
+        sample_weights.astype(np.float64)
+        if sample_weights is not None
+        else np.ones(features.shape[0], dtype=np.float64)
+    )
+    return {
+        "unique_rows": _describe(move_counts.astype(np.float32)),
+        "raw_rows": _weighted_move_count_summary(move_counts, raw_counts),
+        "weighted_rows": _weighted_move_count_summary(move_counts, weighted_counts),
+        "top_move_counts_by_raw_rows": _top_move_counts(move_counts, raw_counts, top_k=top_k),
+        "buckets": _move_count_buckets(move_counts, raw_counts, weighted_counts),
+    }
+
+
+def _move_counts_from_features(features: FloatArray) -> npt.NDArray[np.int64]:
+    own_remaining = features[:, OWN_REMAINING_CASTLES_FEATURE_CHANNEL].mean(axis=(1, 2))
+    opponent_remaining = features[:, OPPONENT_REMAINING_CASTLES_FEATURE_CHANNEL].mean(axis=(1, 2))
+    used = (2 * CASTLES_PER_PLAYER) - (
+        (own_remaining + opponent_remaining) * CASTLES_PER_PLAYER
+    )
+    move_counts = np.rint(used).clip(0, 2 * CASTLES_PER_PLAYER).astype(np.int64)
+    return cast(npt.NDArray[np.int64], move_counts)
+
+
+def _weighted_move_count_summary(
+    move_counts: npt.NDArray[np.integer[Any]],
+    weights: npt.NDArray[np.floating[Any]],
+) -> dict[str, float]:
+    total_weight = float(np.sum(weights))
+    if total_weight <= 0.0:
+        raise ValueError("move-count weights must have positive mass")
+    order = np.argsort(move_counts)
+    sorted_moves = move_counts[order].astype(np.float64)
+    sorted_weights = weights[order].astype(np.float64)
+    cumulative = np.cumsum(sorted_weights)
+
+    def percentile(fraction: float) -> float:
+        index = int(np.searchsorted(cumulative, total_weight * fraction, side="left"))
+        return float(sorted_moves[min(index, sorted_moves.size - 1)])
+
+    return {
+        "min": float(np.min(move_counts)),
+        "p10": percentile(0.10),
+        "mean": float(np.sum(move_counts.astype(np.float64) * weights) / total_weight),
+        "p50": percentile(0.50),
+        "p90": percentile(0.90),
+        "max": float(np.max(move_counts)),
+        "total_weight": total_weight,
+    }
+
+
+def _top_move_counts(
+    move_counts: npt.NDArray[np.integer[Any]],
+    weights: npt.NDArray[np.floating[Any]],
+    *,
+    top_k: int,
+) -> list[dict[str, Any]]:
+    totals: Counter[int] = Counter()
+    for move_count, weight in zip(move_counts.tolist(), weights.tolist(), strict=True):
+        totals[int(move_count)] += float(weight)
+    total_weight = max(1e-12, float(sum(totals.values())))
+    return [
+        {
+            "move_count": move_count,
+            "raw_rows": weight,
+            "fraction": weight / total_weight,
+        }
+        for move_count, weight in totals.most_common(top_k)
+    ]
+
+
+def _move_count_buckets(
+    move_counts: npt.NDArray[np.integer[Any]],
+    raw_counts: npt.NDArray[np.floating[Any]],
+    weighted_counts: npt.NDArray[np.floating[Any]],
+) -> list[dict[str, Any]]:
+    buckets = []
+    total_unique = max(1, move_counts.size)
+    total_raw = max(1e-12, float(np.sum(raw_counts)))
+    total_weighted = max(1e-12, float(np.sum(weighted_counts)))
+    for start, end in zip(MOVE_COUNT_BUCKETS[:-1], MOVE_COUNT_BUCKETS[1:], strict=True):
+        if end == MOVE_COUNT_BUCKETS[-1]:
+            mask = (move_counts >= start) & (move_counts <= end)
+            label = f"{start}-{end}"
+        else:
+            mask = (move_counts >= start) & (move_counts < end)
+            label = f"{start}-{end - 1}"
+        unique_rows = int(np.count_nonzero(mask))
+        raw_rows = float(np.sum(raw_counts[mask]))
+        weighted_rows = float(np.sum(weighted_counts[mask]))
+        buckets.append(
+            {
+                "moves": label,
+                "unique_rows": unique_rows,
+                "unique_fraction": unique_rows / total_unique,
+                "raw_rows": raw_rows,
+                "raw_fraction": raw_rows / total_raw,
+                "weighted_rows": weighted_rows,
+                "weighted_fraction": weighted_rows / total_weighted,
+            }
+        )
+    return buckets
 
 
 def _describe(values: npt.NDArray[np.floating[Any]]) -> dict[str, float]:
