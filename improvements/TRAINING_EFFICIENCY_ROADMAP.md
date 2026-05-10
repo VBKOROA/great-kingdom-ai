@@ -392,7 +392,7 @@ priority = 1
 처음부터 sum-tree까지 만들 필요는 없다. shard 단위에서는 NumPy 확률 샘플링으로 충분하다.
 성능 병목이 확인되면 alias table 또는 segment tree를 도입한다.
 
-### Phase 5: Learner throughput 개선
+### ~~Phase 5: Learner throughput 개선~~
 
 목표:
 
