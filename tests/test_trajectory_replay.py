@@ -1,0 +1,237 @@
+import random
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+import pytest
+from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS, PASS_ACTION
+from great_kingdom_ai.replay_buffer import ReplaySample
+from great_kingdom_ai.trajectory_replay import (
+    TrajectoryEpisode,
+    TrajectoryReplayBuffer,
+    TrajectoryTransition,
+    legal_mask_from_features,
+    trajectory_episode_from_self_play_result,
+)
+
+
+@dataclass(frozen=True)
+class FakeMove:
+    turn: int
+    player: int
+    action: int
+
+
+@dataclass(frozen=True)
+class FakeLog:
+    seed: int
+    moves: list[FakeMove]
+    winner: int
+    end_reason: int
+    territory_scores: tuple[int, int]
+
+
+def make_features(action: int) -> np.ndarray:
+    features = np.zeros((FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
+    if action != PASS_ACTION:
+        features[4, action // BOARD_SIZE, action % BOARD_SIZE] = 1.0
+    return features
+
+
+def make_policy(action: int) -> np.ndarray:
+    policy = np.zeros(ACTION_SPACE, dtype=np.float32)
+    policy[action] = 1.0
+    return policy
+
+
+def make_transition(
+    *,
+    episode_id: int = 0,
+    timestep: int = 0,
+    player: int = 1,
+    action: int = PASS_ACTION,
+    winner: int = 1,
+    terminal: bool = True,
+    with_metadata: bool = False,
+) -> TrajectoryTransition:
+    features = make_features(action)
+    root_policy_logits = np.linspace(-1.0, 1.0, ACTION_SPACE, dtype=np.float32)
+    next_features = make_features(PASS_ACTION)
+    return TrajectoryTransition(
+        episode_id=episode_id,
+        timestep=timestep,
+        player=player,
+        features=features,
+        legal_mask=legal_mask_from_features(features),
+        action=action,
+        policy_target=make_policy(action),
+        root_policy_logits=root_policy_logits if with_metadata else None,
+        root_value=0.25 if with_metadata else None,
+        next_features=next_features if with_metadata else None,
+        winner=winner,
+        terminal=terminal,
+        model_version=7 if with_metadata else 0,
+        search_config_hash="search-v1" if with_metadata else "",
+        created_iteration=11 if with_metadata else 0,
+        sample_weight=1.5 if with_metadata else 1.0,
+    )
+
+
+def make_episode(
+    episode_id: int,
+    *,
+    actions: list[int],
+    winner: int = 1,
+) -> TrajectoryEpisode:
+    transitions = tuple(
+        make_transition(
+            episode_id=episode_id,
+            timestep=index,
+            player=1 if index % 2 == 0 else 2,
+            action=action,
+            winner=winner,
+            terminal=index == len(actions) - 1,
+        )
+        for index, action in enumerate(actions)
+    )
+    return TrajectoryEpisode(
+        episode_id=episode_id,
+        seed=100 + episode_id,
+        transitions=transitions,
+        winner=winner,
+        end_reason=1,
+        territory_scores=(3, 1),
+    )
+
+
+def test_trajectory_replay_saves_loads_and_samples_deterministically(tmp_path: Path) -> None:
+    path = tmp_path / "trajectory-replay.npz"
+    replay = TrajectoryReplayBuffer(capacity=8)
+    replay.push_episode(make_episode(0, actions=[1, 2]))
+    replay.push_episode(make_episode(1, actions=[3, PASS_ACTION], winner=2))
+
+    replay.save(path)
+    loaded = TrajectoryReplayBuffer.load(path)
+
+    batch = loaded.sample(3, random.Random(7))
+    reloaded_batch = TrajectoryReplayBuffer.load(path).sample(3, random.Random(7))
+
+    assert len(loaded) == 4
+    assert loaded.episode_count == 2
+    assert [(item.episode_id, item.timestep) for item in batch] == [
+        (item.episode_id, item.timestep) for item in reloaded_batch
+    ]
+
+
+def test_trajectory_replay_save_load_preserves_optional_transition_metadata(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "trajectory-replay.npz"
+    transition = make_transition(with_metadata=True)
+    replay = TrajectoryReplayBuffer(capacity=4)
+    replay.push_episode(
+        TrajectoryEpisode(
+            episode_id=0,
+            seed=10,
+            transitions=(transition,),
+            winner=1,
+            end_reason=1,
+            territory_scores=(3, 1),
+        )
+    )
+
+    replay.save(path)
+    loaded = TrajectoryReplayBuffer.load(path)
+    loaded_transition = loaded.transitions()[0]
+
+    assert loaded_transition.root_policy_logits is not None
+    assert loaded_transition.root_value == pytest.approx(0.25)
+    assert loaded_transition.next_features is not None
+    assert loaded_transition.model_version == 7
+    assert loaded_transition.search_config_hash == "search-v1"
+    assert loaded_transition.created_iteration == 11
+    assert loaded_transition.sample_weight == pytest.approx(1.5)
+
+
+def test_trajectory_replay_capacity_evicts_whole_old_episodes() -> None:
+    replay = TrajectoryReplayBuffer(capacity=3)
+    replay.push_episode(make_episode(0, actions=[1, 2]))
+    replay.push_episode(make_episode(1, actions=[3, PASS_ACTION]))
+
+    assert len(replay) == 2
+    assert [episode.episode_id for episode in replay.episodes] == [1]
+
+
+def test_trajectory_replay_legacy_replay_sample_view() -> None:
+    replay = TrajectoryReplayBuffer(capacity=4)
+    replay.push_episode(make_episode(0, actions=[5, PASS_ACTION], winner=2))
+
+    samples = replay.sample_replay_samples(2, random.Random(0))
+    as_replay_buffer = replay.as_replay_buffer()
+
+    assert {sample.value for sample in samples} == {-1.0, 1.0}
+    assert len(as_replay_buffer) == 2
+    assert as_replay_buffer.sample(1, random.Random(0))[0].policy.shape == (ACTION_SPACE,)
+
+
+def test_build_trajectory_episode_from_self_play_result() -> None:
+    root_logits = np.linspace(-1.0, 1.0, ACTION_SPACE, dtype=np.float32)
+    samples = [
+        ReplaySample(
+            features=make_features(7),
+            policy=make_policy(7),
+            value=1.0,
+            root_policy_logits=root_logits,
+            sample_weight=2.0,
+        ),
+        ReplaySample(
+            features=make_features(PASS_ACTION),
+            policy=make_policy(PASS_ACTION),
+            value=-1.0,
+        ),
+    ]
+    log = FakeLog(
+        seed=42,
+        moves=[
+            FakeMove(turn=0, player=1, action=7),
+            FakeMove(turn=1, player=2, action=PASS_ACTION),
+        ],
+        winner=1,
+        end_reason=2,
+        territory_scores=(5, 3),
+    )
+
+    episode = trajectory_episode_from_self_play_result(
+        log,
+        samples,
+        episode_id=9,
+        model_version=3,
+        search_config_hash="abc",
+        created_iteration=4,
+    )
+
+    assert episode.episode_id == 9
+    assert episode.transitions[0].next_features is not None
+    assert episode.transitions[0].root_policy_logits is not None
+    assert episode.transitions[0].sample_weight == pytest.approx(2.0)
+    assert episode.transitions[0].model_version == 3
+    assert episode.transitions[0].search_config_hash == "abc"
+    assert episode.transitions[0].created_iteration == 4
+    assert episode.transitions[-1].terminal is True
+
+
+def test_build_trajectory_episode_requires_unfiltered_self_play_samples() -> None:
+    log = FakeLog(
+        seed=42,
+        moves=[
+            FakeMove(turn=0, player=1, action=7),
+            FakeMove(turn=1, player=2, action=PASS_ACTION),
+        ],
+        winner=1,
+        end_reason=2,
+        territory_scores=(5, 3),
+    )
+    samples = [ReplaySample(features=make_features(7), policy=make_policy(7), value=1.0)]
+
+    with pytest.raises(ValueError, match="same length"):
+        trajectory_episode_from_self_play_result(log, samples, episode_id=0)
