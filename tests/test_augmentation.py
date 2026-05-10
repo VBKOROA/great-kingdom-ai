@@ -7,6 +7,7 @@ from great_kingdom_ai.augmentation import (
     augment_all_symmetries,
     augment_sample,
     augment_samples_randomly,
+    augment_training_arrays_randomly,
 )
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.replay_buffer import ReplaySample
@@ -81,3 +82,24 @@ def test_augment_samples_randomly_applies_configured_symmetries() -> None:
 def test_augment_samples_randomly_rejects_empty_symmetry_set() -> None:
     with pytest.raises(ValueError, match="at least one"):
         augment_samples_randomly([make_sample(action=10)], random.Random(1), symmetries=())
+
+
+def test_augment_training_arrays_transforms_legal_masks_with_policies() -> None:
+    sample = make_sample(action=1 * BOARD_SIZE + 2)
+    legal_masks = np.zeros((1, ACTION_SPACE), dtype=np.bool_)
+    legal_masks[0, 1 * BOARD_SIZE + 2] = True
+    legal_masks[0, 81] = True
+
+    features, policies, transformed_legal_masks = augment_training_arrays_randomly(
+        sample.features[np.newaxis],
+        sample.policy[np.newaxis],
+        legal_masks,
+        random.Random(1),
+        symmetries=("rot90",),
+    )
+
+    assert features[0, 0, 6, 1] == 1.0
+    assert policies[0, 6 * BOARD_SIZE + 1] == 0.75
+    assert transformed_legal_masks is not None
+    assert transformed_legal_masks[0, 6 * BOARD_SIZE + 1]
+    assert transformed_legal_masks[0, 81]

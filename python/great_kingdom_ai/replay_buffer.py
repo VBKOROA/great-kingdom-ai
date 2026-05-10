@@ -11,7 +11,14 @@ from typing import Any, cast
 
 import numpy as np
 
-from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
+from great_kingdom_ai.features import (
+    ACTION_SPACE,
+    BOARD_CELLS,
+    BOARD_SIZE,
+    FEATURE_CHANNELS,
+    LEGAL_PLACE_FEATURE_CHANNEL,
+    PASS_ACTION,
+)
 from great_kingdom_ai.priority_sampling import PrioritySamplingConfig, sample_priority_indexes
 
 FEATURE_SHAPE = (FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
@@ -24,6 +31,15 @@ class ReplaySample:
     value: float
     root_policy_logits: np.ndarray | None = None
     sample_weight: float = 1.0
+
+
+@dataclass(frozen=True)
+class ReplayArrayBatch:
+    features: np.ndarray
+    policies: np.ndarray
+    values: np.ndarray
+    sample_weights: np.ndarray
+    legal_masks: np.ndarray
 
 
 class ReplayBuffer:
@@ -91,6 +107,67 @@ class ReplayBuffer:
                 strict=True,
             )
         ]
+
+    def sample_arrays(
+        self,
+        batch_size: int,
+        rng: random.Random,
+        *,
+        recent_fraction: float = 0.0,
+        recent_window: int = 0,
+        priority_config: PrioritySamplingConfig | None = None,
+    ) -> ReplayArrayBatch:
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if batch_size > len(self._samples):
+            raise ValueError("batch_size exceeds replay buffer size")
+        samples = list(self._samples)
+        if priority_config is not None and priority_config.enabled:
+            base_weights = np.asarray(
+                [sample.sample_weight for sample in samples],
+                dtype=np.float32,
+            )
+            sampled = sample_priority_indexes(
+                priorities=base_weights ** np.float32(priority_config.alpha),
+                batch_size=batch_size,
+                rng=rng,
+                beta=priority_config.beta,
+                recent_fraction=recent_fraction,
+                recent_window=recent_window,
+            )
+            indexes = sampled.indexes
+            importance_weights = sampled.importance_weights
+        elif recent_fraction <= 0.0:
+            indexes = rng.sample(range(len(samples)), batch_size)
+            importance_weights = np.ones((batch_size,), dtype=np.float32)
+        else:
+            indexes = _recency_biased_indexes(
+                len(samples),
+                batch_size,
+                rng,
+                recent_fraction=recent_fraction,
+                recent_window=recent_window,
+            )
+            importance_weights = np.ones((batch_size,), dtype=np.float32)
+
+        selected = [samples[index] for index in indexes]
+        features = np.stack([sample.features for sample in selected], axis=0).astype(np.float32)
+        return ReplayArrayBatch(
+            features=np.ascontiguousarray(features, dtype=np.float32),
+            policies=np.ascontiguousarray(
+                np.stack([sample.policy for sample in selected], axis=0),
+                dtype=np.float32,
+            ),
+            values=np.ascontiguousarray(
+                np.asarray([sample.value for sample in selected], dtype=np.float32)
+            ),
+            sample_weights=np.ascontiguousarray(
+                np.asarray([sample.sample_weight for sample in selected], dtype=np.float32)
+                * importance_weights,
+                dtype=np.float32,
+            ),
+            legal_masks=_legal_masks_from_features(features),
+        )
 
     def save(self, path: str | Path, *, compressed: bool = True) -> None:
         destination = Path(path)
@@ -222,3 +299,44 @@ def _root_policy_logits_array(samples: list[ReplaySample]) -> np.ndarray | None:
             continue
         rows[index] = np.asarray(sample.root_policy_logits, dtype=np.float32)
     return rows
+
+
+def _recency_biased_indexes(
+    size: int,
+    batch_size: int,
+    rng: random.Random,
+    *,
+    recent_fraction: float,
+    recent_window: int,
+) -> list[int]:
+    if not 0.0 <= recent_fraction <= 1.0:
+        raise ValueError("recent_fraction must be in [0, 1]")
+    if recent_window <= 0:
+        raise ValueError("recent_window must be positive")
+
+    recent_count = min(recent_window, size)
+    old_count = size - recent_count
+    target_recent = round(batch_size * recent_fraction)
+    recent_take = min(target_recent, recent_count, batch_size)
+    old_take = min(batch_size - recent_take, old_count)
+    recent_take = min(batch_size - old_take, recent_count)
+    old_take = batch_size - recent_take
+    if old_take > old_count:
+        old_take = old_count
+        recent_take = batch_size - old_take
+    if recent_take > recent_count:
+        raise ValueError("not enough replay rows to satisfy recency-biased sample")
+
+    recent_start = size - recent_count
+    indexes = [recent_start + index for index in rng.sample(range(recent_count), recent_take)]
+    indexes.extend(rng.sample(range(old_count), old_take))
+    rng.shuffle(indexes)
+    return indexes
+
+
+def _legal_masks_from_features(features: np.ndarray) -> np.ndarray:
+    legal_place = features[:, LEGAL_PLACE_FEATURE_CHANNEL].reshape(-1, BOARD_CELLS) > 0.5
+    legal_mask = np.zeros((features.shape[0], ACTION_SPACE), dtype=np.bool_)
+    legal_mask[:, :BOARD_CELLS] = legal_place
+    legal_mask[:, PASS_ACTION] = True
+    return legal_mask

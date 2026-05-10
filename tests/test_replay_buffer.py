@@ -116,3 +116,33 @@ def test_replay_buffer_can_sample_priority_biased_rows() -> None:
 
     assert int(np.argmax(batch[0].policy)) == 3
     assert 0.0 < batch[0].sample_weight <= 1000.0
+
+
+def test_replay_buffer_samples_contiguous_training_arrays_with_legal_masks() -> None:
+    buffer = ReplayBuffer(capacity=3)
+    buffer.push(make_sample(value=1.0, action=1, sample_weight=1.0))
+    buffer.push(make_sample(value=1.0, action=2, sample_weight=3.0))
+
+    batch = buffer.sample_arrays(2, random.Random(0))
+
+    assert batch.features.flags.c_contiguous
+    assert batch.policies.flags.c_contiguous
+    assert batch.values.flags.c_contiguous
+    assert batch.sample_weights.flags.c_contiguous
+    assert batch.legal_masks.shape == (2, ACTION_SPACE)
+    assert batch.legal_masks[:, 81].all()
+
+
+def test_replay_buffer_sample_arrays_supports_priority_weights() -> None:
+    buffer = ReplayBuffer(capacity=3)
+    buffer.push(make_sample(value=1.0, action=1, sample_weight=1.0))
+    buffer.push(make_sample(value=1.0, action=2, sample_weight=1000.0))
+
+    batch = buffer.sample_arrays(
+        1,
+        random.Random(0),
+        priority_config=PrioritySamplingConfig(enabled=True, alpha=1.0, beta=0.4),
+    )
+
+    assert int(np.argmax(batch.policies[0])) == 2
+    assert 0.0 < batch.sample_weights[0] <= 1000.0

@@ -13,7 +13,11 @@ from typing import Any, cast
 import numpy as np
 
 from great_kingdom_ai.features import ACTION_SPACE
-from great_kingdom_ai.priority_sampling import PrioritySamplingConfig, sample_priority_indexes
+from great_kingdom_ai.priority_sampling import (
+    PrioritySamplingConfig,
+    legal_masks_from_features,
+    sample_priority_indexes,
+)
 from great_kingdom_ai.replay_aggregate import _sample_weights_from_counts
 from great_kingdom_ai.replay_buffer import FEATURE_SHAPE, ReplaySample, _validated_sample
 
@@ -34,6 +38,7 @@ class AggregateReplayBatch:
     policies: np.ndarray
     values: np.ndarray
     sample_weights: np.ndarray
+    legal_masks: np.ndarray
 
 
 class OnlineAggregateReplayBuffer:
@@ -176,21 +181,30 @@ class OnlineAggregateReplayBuffer:
             importance_weights = np.ones((batch_size,), dtype=np.float32)
         selected = [entries[index] for index in indexes]
         counts = np.asarray([entry.count for entry in selected], dtype=np.int64)
+        features = np.stack([entry.features for entry in selected], axis=0).astype(np.float32)
         return AggregateReplayBatch(
-            features=np.stack([entry.features for entry in selected], axis=0).astype(np.float32),
-            policies=np.stack([_policy_from_entry(entry) for entry in selected], axis=0).astype(
-                np.float32
-            ),
-            values=np.asarray(
-                [entry.value_sum / entry.count for entry in selected],
+            features=np.ascontiguousarray(features, dtype=np.float32),
+            policies=np.ascontiguousarray(
+                np.stack([_policy_from_entry(entry) for entry in selected], axis=0),
                 dtype=np.float32,
             ),
-            sample_weights=_sample_weights_from_counts(
-                counts,
-                mode=self._sample_weight_mode,
-                cap=self._sample_weight_cap,
-            )
-            * importance_weights,
+            values=np.ascontiguousarray(
+                np.asarray(
+                    [entry.value_sum / entry.count for entry in selected],
+                    dtype=np.float32,
+                ),
+                dtype=np.float32,
+            ),
+            sample_weights=np.ascontiguousarray(
+                _sample_weights_from_counts(
+                    counts,
+                    mode=self._sample_weight_mode,
+                    cap=self._sample_weight_cap,
+                )
+                * importance_weights,
+                dtype=np.float32,
+            ),
+            legal_masks=legal_masks_from_features(features),
         )
 
     def save(self, path: str | Path, *, compressed: bool = True) -> None:

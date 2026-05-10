@@ -54,6 +54,7 @@ class ReanalyzeTargetBatch:
     policies: np.ndarray
     values: np.ndarray
     sample_weights: np.ndarray
+    legal_masks: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -151,11 +152,19 @@ class ReanalyzeTargetSnapshot:
                 recent_window=recent_window,
             )
             sample_weights = self.sample_weights[indexes].astype(np.float32, copy=True)
+        features = self.features[indexes].astype(np.float32, copy=True)
         return ReanalyzeTargetBatch(
-            features=self.features[indexes].astype(np.float32, copy=True),
-            policies=self.policies[indexes].astype(np.float32, copy=True),
-            values=self.values[indexes].astype(np.float32, copy=True),
-            sample_weights=sample_weights,
+            features=np.ascontiguousarray(features, dtype=np.float32),
+            policies=np.ascontiguousarray(
+                self.policies[indexes].astype(np.float32, copy=True),
+                dtype=np.float32,
+            ),
+            values=np.ascontiguousarray(
+                self.values[indexes].astype(np.float32, copy=True),
+                dtype=np.float32,
+            ),
+            sample_weights=np.ascontiguousarray(sample_weights, dtype=np.float32),
+            legal_masks=legal_masks_from_features(features),
         )
 
     def priority_scores(self, config: PrioritySamplingConfig) -> np.ndarray:

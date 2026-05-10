@@ -97,6 +97,25 @@ def augment_policy_training_arrays_randomly(
     symmetries: Iterable[Symmetry] = ALL_SYMMETRIES,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Apply random board symmetries to feature and policy training arrays."""
+    transformed_features, transformed_policies, _legal_masks = augment_training_arrays_randomly(
+        features,
+        policies,
+        None,
+        rng,
+        symmetries=symmetries,
+    )
+    return transformed_features, transformed_policies
+
+
+def augment_training_arrays_randomly(
+    features: np.ndarray,
+    policies: np.ndarray,
+    legal_masks: np.ndarray | None,
+    rng: random.Random,
+    *,
+    symmetries: Iterable[Symmetry] = ALL_SYMMETRIES,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    """Apply random board symmetries to features, policies, and legal masks."""
     choices = tuple(symmetries)
     if not choices:
         raise ValueError("symmetries must contain at least one transform")
@@ -106,9 +125,17 @@ def augment_policy_training_arrays_randomly(
         raise ValueError(
             f"expected policies shape {(features.shape[0], ACTION_SPACE)}, got {policies.shape}"
         )
+    if legal_masks is not None and legal_masks.shape != (features.shape[0], ACTION_SPACE):
+        raise ValueError(
+            f"expected legal_masks shape {(features.shape[0], ACTION_SPACE)}, "
+            f"got {legal_masks.shape}"
+        )
 
     transformed_features = np.empty_like(features, dtype=np.float32)
     transformed_policies = np.empty_like(policies, dtype=np.float32)
+    transformed_legal_masks = (
+        None if legal_masks is None else np.empty_like(legal_masks, dtype=np.bool_)
+    )
     selected = [rng.choice(choices) for _ in range(features.shape[0])]
     for symmetry in choices:
         indexes = [index for index, candidate in enumerate(selected) if candidate == symmetry]
@@ -129,7 +156,18 @@ def augment_policy_training_arrays_randomly(
             symmetry,
         ).reshape(len(indexes), BOARD_SIZE * BOARD_SIZE)
         transformed_policies[index_array, -1] = policies[index_array, -1]
-    return transformed_features, transformed_policies
+        if transformed_legal_masks is not None and legal_masks is not None:
+            board_legal_masks = legal_masks[index_array, : BOARD_SIZE * BOARD_SIZE].reshape(
+                len(indexes),
+                BOARD_SIZE,
+                BOARD_SIZE,
+            )
+            transformed_legal_masks[index_array, : BOARD_SIZE * BOARD_SIZE] = _transform_spatial(
+                board_legal_masks,
+                symmetry,
+            ).reshape(len(indexes), BOARD_SIZE * BOARD_SIZE)
+            transformed_legal_masks[index_array, -1] = legal_masks[index_array, -1]
+    return transformed_features, transformed_policies, transformed_legal_masks
 
 
 def _transform_spatial(array: np.ndarray, symmetry: Symmetry) -> np.ndarray:

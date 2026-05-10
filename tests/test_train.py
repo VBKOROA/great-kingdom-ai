@@ -21,6 +21,7 @@ from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample  # noqa: E
 from great_kingdom_ai.train import (  # noqa: E402
     TrainingArrays,
     TrainingConfig,
+    arrays_to_batch,
     build_parser,
     compute_losses,
     create_train_state,
@@ -195,6 +196,29 @@ def test_compute_losses_uses_sample_weights() -> None:
 
     assert batch.sample_weight.tolist() == pytest.approx([1.0, 5.0])
     assert weighted.total.item() != pytest.approx(unweighted.total.item())
+
+
+def test_arrays_to_batch_uses_precomputed_legal_masks() -> None:
+    config = TrainingConfig(batch_size=1)
+    state = create_train_state(config)
+    features = np.zeros((1, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
+    policies = np.zeros((1, ACTION_SPACE), dtype=np.float32)
+    policies[0, 0] = 1.0
+    legal_masks = np.zeros((1, ACTION_SPACE), dtype=np.bool_)
+    legal_masks[0, 0] = True
+
+    batch = arrays_to_batch(
+        TrainingArrays(
+            features=features,
+            policies=policies,
+            values=np.asarray([0.0], dtype=np.float32),
+            sample_weights=np.asarray([1.0], dtype=np.float32),
+            legal_masks=legal_masks,
+        )
+    )
+    losses = compute_losses(state.model, batch, mask_policy_loss=True)
+
+    assert losses.total.item() > 0.0
 
 
 def test_train_step_updates_model_parameters() -> None:

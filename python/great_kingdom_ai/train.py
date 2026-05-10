@@ -6,7 +6,7 @@ import argparse
 import json
 import math
 import random
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -15,10 +15,11 @@ from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast
 import numpy as np
 
 from great_kingdom_ai.augmentation import (
-    augment_policy_training_arrays_randomly,
     augment_samples_randomly,
+    augment_training_arrays_randomly,
 )
 from great_kingdom_ai.features import BOARD_CELLS, LEGAL_PLACE_FEATURE_CHANNEL, PASS_ACTION
+from great_kingdom_ai.learner_prefetch import PrefetchIterator
 from great_kingdom_ai.priority_sampling import PrioritySamplingConfig
 from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
 
@@ -61,6 +62,7 @@ class TrainingConfig:
     priority_policy_kl_weight: float = 1.0
     priority_target_age_weight: float = 0.25
     priority_max_priority: float | None = 64.0
+    prefetch_batches: int = 1
 
 
 @dataclass(frozen=True)
@@ -78,6 +80,7 @@ class TrainingArrays:
     policies: np.ndarray
     values: np.ndarray
     sample_weights: np.ndarray
+    legal_masks: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -128,6 +131,7 @@ def samples_to_batch(
     samples: Sequence[ReplaySample],
     *,
     device: torch.device | str | None = None,
+    pin_memory: bool = False,
 ) -> TrainingBatch:
     """Convert replay samples into tensors shaped for the policy-value network."""
     torch = _import_torch()
@@ -141,11 +145,15 @@ def samples_to_batch(
     legal_masks = _legal_masks_from_features(features)
 
     return TrainingBatch(
-        features=torch.from_numpy(features).to(device=device),
-        policy=torch.from_numpy(policies).to(device=device),
-        value=torch.from_numpy(values).to(device=device),
-        legal_mask=torch.from_numpy(legal_masks).to(device=device),
-        sample_weight=torch.from_numpy(sample_weights).to(device=device),
+        features=_tensor_from_numpy(torch, features, pin_memory=pin_memory).to(device=device),
+        policy=_tensor_from_numpy(torch, policies, pin_memory=pin_memory).to(device=device),
+        value=_tensor_from_numpy(torch, values, pin_memory=pin_memory).to(device=device),
+        legal_mask=_tensor_from_numpy(torch, legal_masks, pin_memory=pin_memory).to(
+            device=device
+        ),
+        sample_weight=_tensor_from_numpy(torch, sample_weights, pin_memory=pin_memory).to(
+            device=device
+        ),
     )
 
 
@@ -153,21 +161,32 @@ def arrays_to_batch(
     arrays: TrainingArrays,
     *,
     device: torch.device | str | None = None,
+    pin_memory: bool = False,
 ) -> TrainingBatch:
     torch = _import_torch()
-    features = np.asarray(arrays.features, dtype=np.float32)
-    policies = np.asarray(arrays.policies, dtype=np.float32)
-    values = np.asarray(arrays.values, dtype=np.float32)
-    sample_weights = np.asarray(arrays.sample_weights, dtype=np.float32)
+    features = np.ascontiguousarray(arrays.features, dtype=np.float32)
+    policies = np.ascontiguousarray(arrays.policies, dtype=np.float32)
+    values = np.ascontiguousarray(arrays.values, dtype=np.float32)
+    sample_weights = np.ascontiguousarray(arrays.sample_weights, dtype=np.float32)
     if features.shape[0] == 0:
         raise ValueError("training batch must contain at least one sample")
-    legal_masks = _legal_masks_from_features(features)
+    legal_masks = (
+        _legal_masks_from_features(features)
+        if arrays.legal_masks is None
+        else np.ascontiguousarray(arrays.legal_masks, dtype=np.bool_)
+    )
+    if legal_masks.shape != policies.shape:
+        raise ValueError("legal_masks shape must match policies shape")
     return TrainingBatch(
-        features=torch.from_numpy(features).to(device=device),
-        policy=torch.from_numpy(policies).to(device=device),
-        value=torch.from_numpy(values).to(device=device),
-        legal_mask=torch.from_numpy(legal_masks).to(device=device),
-        sample_weight=torch.from_numpy(sample_weights).to(device=device),
+        features=_tensor_from_numpy(torch, features, pin_memory=pin_memory).to(device=device),
+        policy=_tensor_from_numpy(torch, policies, pin_memory=pin_memory).to(device=device),
+        value=_tensor_from_numpy(torch, values, pin_memory=pin_memory).to(device=device),
+        legal_mask=_tensor_from_numpy(torch, legal_masks, pin_memory=pin_memory).to(
+            device=device
+        ),
+        sample_weight=_tensor_from_numpy(torch, sample_weights, pin_memory=pin_memory).to(
+            device=device
+        ),
     )
 
 
@@ -249,7 +268,7 @@ def train_step(state: TrainState, batch: TrainingBatch, config: TrainingConfig) 
             mask_policy_loss=config.mask_policy_loss,
         )
     if amp_enabled and state.scaler is not None:
-        state.scaler.scale(losses.total).backward()  # type: ignore[no-untyped-call]
+        state.scaler.scale(losses.total).backward()
         state.scaler.step(state.optimizer)
         state.scaler.update()
     else:
@@ -436,6 +455,8 @@ def train_from_replay(
 ) -> TrainSummary:
     if len(replay) < config.batch_size:
         raise ValueError("replay buffer must contain at least batch_size samples")
+    if config.prefetch_batches < 0:
+        raise ValueError("prefetch_batches must be non-negative")
     if resume_path is not None and bootstrap_weights_path is not None:
         raise ValueError("resume_path and bootstrap_weights_path are mutually exclusive")
 
@@ -465,8 +486,11 @@ def train_from_replay(
 
     start_step = state.step
     losses: list[dict[str, float]] = []
-    for step in range(start_step, start_step + config.steps):
-        batch = _sample_training_batch(replay, config, rng)
+    for step, batch in zip(
+        range(start_step, start_step + config.steps),
+        _iter_training_batches(replay, config, rng, torch=torch),
+        strict=True,
+    ):
         loss = train_step(state, batch, config)
         state = TrainState(
             model=state.model,
@@ -493,6 +517,39 @@ def train_from_replay(
         checkpoint_path=saved_path,
         losses=losses,
     )
+
+
+def _iter_training_batches(
+    replay: ReplayDataset,
+    config: TrainingConfig,
+    rng: random.Random,
+    *,
+    torch: Any,
+) -> Iterator[TrainingBatch]:
+    if not _use_cuda_prefetch(torch, config):
+        for _ in range(config.steps):
+            yield _sample_training_batch(
+                replay,
+                config,
+                rng,
+                device=config.device,
+                pin_memory=False,
+            )
+        return
+
+    cpu_batches = PrefetchIterator(
+        producer=lambda: _sample_training_batch(
+            replay,
+            config,
+            rng,
+            device=None,
+            pin_memory=True,
+        ),
+        count=config.steps,
+        max_prefetch=config.prefetch_batches,
+    )
+    for batch in cpu_batches:
+        yield _batch_to_device(batch, config.device, non_blocking=True)
 
 
 def _sample_training_replay(
@@ -538,6 +595,9 @@ def _sample_training_batch(
     replay: ReplayDataset,
     config: TrainingConfig,
     rng: random.Random,
+    *,
+    device: torch.device | str | None,
+    pin_memory: bool,
 ) -> TrainingBatch:
     array_sampler = getattr(replay, "sample_arrays", None)
     if array_sampler is not None:
@@ -561,11 +621,17 @@ def _sample_training_batch(
             policies=np.asarray(raw_arrays.policies, dtype=np.float32),
             values=np.asarray(raw_arrays.values, dtype=np.float32),
             sample_weights=np.asarray(raw_arrays.sample_weights, dtype=np.float32),
+            legal_masks=(
+                None
+                if getattr(raw_arrays, "legal_masks", None) is None
+                else np.asarray(raw_arrays.legal_masks, dtype=np.bool_)
+            ),
         )
         if config.symmetry_augmentation:
-            features, policies = augment_policy_training_arrays_randomly(
+            features, policies, legal_masks = augment_training_arrays_randomly(
                 arrays.features,
                 arrays.policies,
+                arrays.legal_masks,
                 rng,
             )
             arrays = TrainingArrays(
@@ -573,13 +639,14 @@ def _sample_training_batch(
                 policies=policies,
                 values=arrays.values,
                 sample_weights=arrays.sample_weights,
+                legal_masks=legal_masks,
             )
-        return arrays_to_batch(arrays, device=config.device)
+        return arrays_to_batch(arrays, device=device, pin_memory=pin_memory)
 
     samples = _sample_training_replay(replay, config, rng)
     if config.symmetry_augmentation:
         samples = augment_samples_randomly(samples, rng)
-    return samples_to_batch(samples, device=config.device)
+    return samples_to_batch(samples, device=device, pin_memory=pin_memory)
 
 
 def _priority_sampling_config(config: TrainingConfig) -> PrioritySamplingConfig:
@@ -591,6 +658,44 @@ def _priority_sampling_config(config: TrainingConfig) -> PrioritySamplingConfig:
         policy_kl_weight=config.priority_policy_kl_weight,
         target_age_weight=config.priority_target_age_weight,
         max_priority=config.priority_max_priority,
+    )
+
+
+def _batch_to_device(
+    batch: TrainingBatch,
+    device: torch.device | str | None,
+    *,
+    non_blocking: bool = False,
+) -> TrainingBatch:
+    if device is None:
+        return batch
+    return TrainingBatch(
+        features=batch.features.to(device=device, non_blocking=non_blocking),
+        policy=batch.policy.to(device=device, non_blocking=non_blocking),
+        value=batch.value.to(device=device, non_blocking=non_blocking),
+        legal_mask=batch.legal_mask.to(device=device, non_blocking=non_blocking),
+        sample_weight=batch.sample_weight.to(device=device, non_blocking=non_blocking),
+    )
+
+
+def _tensor_from_numpy(
+    torch: Any,
+    array: np.ndarray,
+    *,
+    pin_memory: bool,
+) -> torch.Tensor:
+    tensor = torch.from_numpy(np.ascontiguousarray(array))
+    if pin_memory:
+        return cast("Tensor", tensor.pin_memory())
+    return cast("Tensor", tensor)
+
+
+def _use_cuda_prefetch(torch: Any, config: TrainingConfig) -> bool:
+    return bool(
+        config.prefetch_batches > 0
+        and config.steps > 0
+        and str(config.device).startswith("cuda")
+        and torch.cuda.is_available()
     )
 
 
