@@ -20,7 +20,11 @@ from great_kingdom_ai.features import (
     PASS_ACTION,
 )
 from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
-from great_kingdom_ai.trajectory_targets import replay_sample_from_transition
+from great_kingdom_ai.trajectory_targets import (
+    BootstrapValueTargetConfig,
+    replay_sample_from_episode_transition,
+    replay_sample_from_transition,
+)
 
 FEATURE_SHAPE = (FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
 
@@ -123,10 +127,26 @@ class TrajectoryReplayBuffer:
         indexes = rng.sample(range(len(transitions)), batch_size)
         return [transitions[index] for index in indexes]
 
-    def sample_replay_samples(self, batch_size: int, rng: random.Random) -> list[ReplaySample]:
+    def sample_replay_samples(
+        self,
+        batch_size: int,
+        rng: random.Random,
+        *,
+        value_target_config: BootstrapValueTargetConfig | None = None,
+    ) -> list[ReplaySample]:
+        if value_target_config is None:
+            return [
+                replay_sample_from_transition(transition)
+                for transition in self.sample(batch_size, rng)
+            ]
+        refs = self._sample_transition_refs(batch_size, rng)
         return [
-            replay_sample_from_transition(transition)
-            for transition in self.sample(batch_size, rng)
+            replay_sample_from_episode_transition(
+                episode,
+                transition_index,
+                value_target_config=value_target_config,
+            )
+            for episode, transition_index in refs
         ]
 
     def transitions(self) -> list[TrajectoryTransition]:
@@ -136,10 +156,26 @@ class TrajectoryReplayBuffer:
             for transition in episode.transitions
         ]
 
-    def as_replay_buffer(self, *, capacity: int | None = None) -> ReplayBuffer:
+    def as_replay_buffer(
+        self,
+        *,
+        capacity: int | None = None,
+        value_target_config: BootstrapValueTargetConfig | None = None,
+    ) -> ReplayBuffer:
         replay = ReplayBuffer(capacity=capacity or max(1, len(self)))
-        for transition in self.transitions():
-            replay.push(replay_sample_from_transition(transition))
+        if value_target_config is None:
+            for transition in self.transitions():
+                replay.push(replay_sample_from_transition(transition))
+            return replay
+        for episode in self._episodes:
+            for transition_index in range(len(episode.transitions)):
+                replay.push(
+                    replay_sample_from_episode_transition(
+                        episode,
+                        transition_index,
+                        value_target_config=value_target_config,
+                    )
+                )
         return replay
 
     def save(self, path: str | Path, *, compressed: bool = True) -> None:
@@ -148,6 +184,23 @@ class TrajectoryReplayBuffer:
         payload = _episodes_to_payload(self._capacity, list(self._episodes))
         save = np.savez_compressed if compressed else np.savez
         save(destination, **cast(dict[str, Any], payload))
+
+    def _sample_transition_refs(
+        self,
+        batch_size: int,
+        rng: random.Random,
+    ) -> list[tuple[TrajectoryEpisode, int]]:
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        refs = [
+            (episode, transition_index)
+            for episode in self._episodes
+            for transition_index in range(len(episode.transitions))
+        ]
+        if batch_size > len(refs):
+            raise ValueError("batch_size exceeds trajectory replay size")
+        indexes = rng.sample(range(len(refs)), batch_size)
+        return [refs[index] for index in indexes]
 
     @classmethod
     def load(cls, path: str | Path) -> TrajectoryReplayBuffer:
@@ -165,6 +218,7 @@ def trajectory_episode_from_self_play_result(
     samples: Sequence[ReplaySample],
     *,
     episode_id: int,
+    root_values: Sequence[float | None] | None = None,
     model_version: int = 0,
     search_config_hash: str = "",
     created_iteration: int = 0,
@@ -179,6 +233,8 @@ def trajectory_episode_from_self_play_result(
             "self-play log moves and replay samples must have the same length "
             "to build a full trajectory"
         )
+    if root_values is not None and len(root_values) != len(samples):
+        raise ValueError("root_values and replay samples must have the same length")
     transitions = []
     for index, (move, sample) in enumerate(zip(log.moves, samples, strict=True)):
         next_features = samples[index + 1].features if index + 1 < len(samples) else None
@@ -192,6 +248,7 @@ def trajectory_episode_from_self_play_result(
                 action=int(move.action),
                 policy_target=sample.policy,
                 root_policy_logits=sample.root_policy_logits,
+                root_value=None if root_values is None else root_values[index],
                 next_features=next_features,
                 winner=int(log.winner),
                 terminal=index == len(samples) - 1,

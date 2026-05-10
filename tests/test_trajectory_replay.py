@@ -13,6 +13,10 @@ from great_kingdom_ai.trajectory_replay import (
     legal_mask_from_features,
     trajectory_episode_from_self_play_result,
 )
+from great_kingdom_ai.trajectory_targets import (
+    BootstrapValueTargetConfig,
+    bootstrap_value_target_for_transition,
+)
 
 
 @dataclass(frozen=True)
@@ -53,6 +57,7 @@ def make_transition(
     winner: int = 1,
     terminal: bool = True,
     with_metadata: bool = False,
+    root_value: float | None = None,
 ) -> TrajectoryTransition:
     features = make_features(action)
     root_policy_logits = np.linspace(-1.0, 1.0, ACTION_SPACE, dtype=np.float32)
@@ -66,7 +71,7 @@ def make_transition(
         action=action,
         policy_target=make_policy(action),
         root_policy_logits=root_policy_logits if with_metadata else None,
-        root_value=0.25 if with_metadata else None,
+        root_value=root_value if root_value is not None else (0.25 if with_metadata else None),
         next_features=next_features if with_metadata else None,
         winner=winner,
         terminal=terminal,
@@ -82,7 +87,11 @@ def make_episode(
     *,
     actions: list[int],
     winner: int = 1,
+    root_values: list[float | None] | None = None,
 ) -> TrajectoryEpisode:
+    values = [None] * len(actions) if root_values is None else root_values
+    if len(values) != len(actions):
+        raise ValueError("root_values length must match actions length")
     transitions = tuple(
         make_transition(
             episode_id=episode_id,
@@ -91,6 +100,7 @@ def make_episode(
             action=action,
             winner=winner,
             terminal=index == len(actions) - 1,
+            root_value=values[index],
         )
         for index, action in enumerate(actions)
     )
@@ -174,6 +184,80 @@ def test_trajectory_replay_legacy_replay_sample_view() -> None:
     assert as_replay_buffer.sample(1, random.Random(0))[0].policy.shape == (ACTION_SPACE,)
 
 
+def test_bootstrap_value_target_uses_future_root_value_from_sample_player_perspective() -> None:
+    episode = make_episode(
+        0,
+        actions=[1, 2, 3, PASS_ACTION],
+        root_values=[None, None, 0.4, None],
+    )
+    config = BootstrapValueTargetConfig(bootstrap_td_steps=2, gamma=0.5)
+
+    target = bootstrap_value_target_for_transition(episode, 0, config)
+
+    assert target == pytest.approx(0.1)
+
+
+def test_bootstrap_value_target_flips_future_opponent_perspective() -> None:
+    episode = make_episode(
+        0,
+        actions=[1, 2, 3, PASS_ACTION],
+        root_values=[None, 0.25, None, None],
+    )
+    config = BootstrapValueTargetConfig(bootstrap_td_steps=1)
+
+    target = bootstrap_value_target_for_transition(episode, 0, config)
+
+    assert target == pytest.approx(-0.25)
+
+
+def test_bootstrap_value_target_uses_terminal_result_within_td_window() -> None:
+    episode = make_episode(
+        0,
+        actions=[1, 2, PASS_ACTION],
+        winner=2,
+        root_values=[None, 1.0, None],
+    )
+    config = BootstrapValueTargetConfig(bootstrap_td_steps=4)
+
+    target = bootstrap_value_target_for_transition(episode, 0, config)
+
+    assert target == pytest.approx(-1.0)
+
+
+def test_bootstrap_value_target_requires_future_root_value() -> None:
+    episode = make_episode(0, actions=[1, 2, 3, PASS_ACTION])
+    config = BootstrapValueTargetConfig(bootstrap_td_steps=2)
+
+    with pytest.raises(ValueError, match="root_value"):
+        bootstrap_value_target_for_transition(episode, 0, config)
+
+
+def test_trajectory_replay_bootstrap_replay_sample_view() -> None:
+    replay = TrajectoryReplayBuffer(capacity=4)
+    replay.push_episode(
+        make_episode(
+            0,
+            actions=[1, 2, 3, PASS_ACTION],
+            root_values=[None, 0.25, 0.4, None],
+        )
+    )
+    config = BootstrapValueTargetConfig(bootstrap_td_steps=1)
+
+    samples = replay.sample_replay_samples(
+        4,
+        random.Random(0),
+        value_target_config=config,
+    )
+    as_replay_buffer = replay.as_replay_buffer(value_target_config=config)
+
+    assert sorted(sample.value for sample in samples) == pytest.approx(
+        [-1.0, -0.4, -0.25, 1.0]
+    )
+    assert sorted(
+        sample.value for sample in as_replay_buffer.sample(4, random.Random(0))
+    ) == pytest.approx([-1.0, -0.4, -0.25, 1.0])
+
+
 def test_build_trajectory_episode_from_self_play_result() -> None:
     root_logits = np.linspace(-1.0, 1.0, ACTION_SPACE, dtype=np.float32)
     samples = [
@@ -205,6 +289,7 @@ def test_build_trajectory_episode_from_self_play_result() -> None:
         log,
         samples,
         episode_id=9,
+        root_values=[0.6, -0.2],
         model_version=3,
         search_config_hash="abc",
         created_iteration=4,
@@ -213,6 +298,7 @@ def test_build_trajectory_episode_from_self_play_result() -> None:
     assert episode.episode_id == 9
     assert episode.transitions[0].next_features is not None
     assert episode.transitions[0].root_policy_logits is not None
+    assert episode.transitions[0].root_value == pytest.approx(0.6)
     assert episode.transitions[0].sample_weight == pytest.approx(2.0)
     assert episode.transitions[0].model_version == 3
     assert episode.transitions[0].search_config_hash == "abc"

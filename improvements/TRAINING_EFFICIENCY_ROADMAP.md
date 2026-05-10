@@ -311,7 +311,7 @@ loss = policy_loss
 - 저장/로드 후 deterministic하게 같은 batch를 샘플링할 수 있다.
 - 기존 `ReplaySample`로 변환하는 compatibility view를 제공한다.
 
-### Phase 2: n-step/bootstrap value target
+### ~~Phase 2: n-step/bootstrap value target~~
 
 목표:
 
