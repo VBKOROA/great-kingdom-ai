@@ -374,7 +374,7 @@ z_t = terminal_result
 - 동일 trajectory에 대해 checkpoint별 target snapshot을 만들 수 있다.
 - learner는 raw replay가 아니라 target snapshot을 읽어 학습할 수 있다.
 
-### Phase 4: Priority/age-aware sampling
+### ~~Phase 4: Priority/age-aware sampling~~
 
 목표:
 

@@ -13,6 +13,7 @@ from typing import Any, cast
 import numpy as np
 
 from great_kingdom_ai.features import ACTION_SPACE
+from great_kingdom_ai.priority_sampling import PrioritySamplingConfig, sample_priority_indexes
 from great_kingdom_ai.replay_aggregate import _sample_weights_from_counts
 from great_kingdom_ai.replay_buffer import FEATURE_SHAPE, ReplaySample, _validated_sample
 
@@ -138,14 +139,33 @@ class OnlineAggregateReplayBuffer:
         *,
         recent_fraction: float = 0.0,
         recent_window: int = 0,
+        priority_config: PrioritySamplingConfig | None = None,
     ) -> AggregateReplayBatch:
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
         if batch_size > len(self._entries):
             raise ValueError("batch_size exceeds replay buffer size")
         entries = self._entry_list()
-        if recent_fraction <= 0.0:
+        if priority_config is not None and priority_config.enabled:
+            counts = np.asarray([entry.count for entry in entries], dtype=np.int64)
+            priorities = _sample_weights_from_counts(
+                counts,
+                mode=self._sample_weight_mode,
+                cap=self._sample_weight_cap,
+            )
+            sampled = sample_priority_indexes(
+                priorities=priorities ** np.float32(priority_config.alpha),
+                batch_size=batch_size,
+                rng=rng,
+                beta=priority_config.beta,
+                recent_fraction=recent_fraction,
+                recent_window=recent_window,
+            )
+            indexes = sampled.indexes
+            importance_weights = sampled.importance_weights
+        elif recent_fraction <= 0.0:
             indexes = rng.sample(range(len(entries)), batch_size)
+            importance_weights = np.ones((batch_size,), dtype=np.float32)
         else:
             indexes = self._recency_biased_indexes(
                 batch_size,
@@ -153,6 +173,7 @@ class OnlineAggregateReplayBuffer:
                 recent_fraction=recent_fraction,
                 recent_window=recent_window,
             )
+            importance_weights = np.ones((batch_size,), dtype=np.float32)
         selected = [entries[index] for index in indexes]
         counts = np.asarray([entry.count for entry in selected], dtype=np.int64)
         return AggregateReplayBatch(
@@ -168,7 +189,8 @@ class OnlineAggregateReplayBuffer:
                 counts,
                 mode=self._sample_weight_mode,
                 cap=self._sample_weight_cap,
-            ),
+            )
+            * importance_weights,
         )
 
     def save(self, path: str | Path, *, compressed: bool = True) -> None:

@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.online_aggregate_replay import OnlineAggregateReplayBuffer
+from great_kingdom_ai.priority_sampling import PrioritySamplingConfig
 from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
 
 
@@ -159,3 +160,25 @@ def test_online_aggregate_replay_recency_updates_duplicate_rows() -> None:
 
     assert batch[0].policy[0] == pytest.approx(0.5)
     assert batch[0].policy[3] == pytest.approx(0.5)
+
+
+def test_online_aggregate_replay_priority_sampling_uses_count_weights() -> None:
+    replay = OnlineAggregateReplayBuffer(
+        capacity=8,
+        sample_weight_mode="count",
+        sample_weight_cap=None,
+    )
+    replay.push(make_sample(0, 0))
+    for _ in range(999):
+        replay.push(make_sample(0, 1))
+    replay.push(make_sample(1, 2))
+
+    arrays = replay.sample_arrays(
+        1,
+        random.Random(0),
+        priority_config=PrioritySamplingConfig(enabled=True, alpha=1.0, beta=0.4),
+    )
+
+    assert arrays.policies[0, 0] == pytest.approx(0.001)
+    assert arrays.policies[0, 1] == pytest.approx(0.999)
+    assert 0.0 < arrays.sample_weights[0] <= 1000.0

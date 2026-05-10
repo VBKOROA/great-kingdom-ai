@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS, PASS_ACTION
+from great_kingdom_ai.priority_sampling import PrioritySamplingConfig
 from great_kingdom_ai.reanalyze import (
     ReanalyzeConfig,
     ReanalyzeTargetSnapshot,
@@ -92,6 +93,7 @@ def test_reanalyze_target_snapshot_round_trips_and_samples_arrays(tmp_path: Path
         bootstrap_td_steps=2,
         gamma=0.5,
         checkpoint_path="checkpoint.pt",
+        policy_logits=np.stack([make_policy(1), make_policy(PASS_ACTION)], axis=0),
     )
     path = tmp_path / "targets.npz"
 
@@ -104,9 +106,52 @@ def test_reanalyze_target_snapshot_round_trips_and_samples_arrays(tmp_path: Path
     assert loaded.capacity == 2
     assert loaded.model_version == 8
     assert loaded.target_ages.tolist() == [5, 5]
+    assert loaded.policy_logits is not None
     assert batch.features.shape == (2, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
     assert sorted(batch.sample_weights.tolist()) == pytest.approx([1.0, 2.0])
     assert load_training_replay(path).__class__ is ReanalyzeTargetSnapshot
+
+
+def test_reanalyze_target_snapshot_priority_sampling_uses_importance_weights() -> None:
+    features = np.stack([make_features(1), make_features(PASS_ACTION)], axis=0)
+    policies = np.stack([make_policy(1), make_policy(PASS_ACTION)], axis=0)
+    snapshot = ReanalyzeTargetSnapshot(
+        features=features,
+        policies=policies,
+        values=np.asarray([1.0, 0.0], dtype=np.float32),
+        refreshed_values=np.asarray([1.0, -1.0], dtype=np.float32),
+        sample_weights=np.asarray([1.0, 2.0], dtype=np.float32),
+        episode_ids=np.asarray([7, 7], dtype=np.int64),
+        timesteps=np.asarray([0, 1], dtype=np.int64),
+        players=np.asarray([1, 2], dtype=np.int64),
+        source_model_versions=np.asarray([3, 3], dtype=np.int64),
+        created_iterations=np.asarray([2, 2], dtype=np.int64),
+        target_ages=np.asarray([0, 5], dtype=np.int64),
+        model_version=8,
+        bootstrap_td_steps=0,
+        gamma=1.0,
+        policy_logits=np.stack([make_policy(1), make_policy(1)], axis=0),
+    )
+
+    scores = snapshot.priority_scores(
+        PrioritySamplingConfig(
+            enabled=True,
+            alpha=1.0,
+            beta=0.4,
+            value_error_weight=1.0,
+            policy_kl_weight=0.0,
+            target_age_weight=1.0,
+        )
+    )
+    batch = snapshot.sample_arrays(
+        1,
+        random.Random(0),
+        priority_config=PrioritySamplingConfig(enabled=True, alpha=1.0, beta=0.4),
+    )
+
+    assert scores[1] > scores[0]
+    assert batch.sample_weights.shape == (1,)
+    assert 0.0 < batch.sample_weights[0] <= 2.0
 
 
 @pytest.mark.skipif(_torch_spec is None, reason="torch is not installed")
@@ -136,6 +181,8 @@ def test_build_reanalyze_snapshot_refreshes_values_and_bootstrap_targets(
 
     assert snapshot.model_version == 9
     assert snapshot.target_ages.tolist() == [5, 5, 5]
+    assert snapshot.policy_logits is not None
+    assert snapshot.policy_logits.shape == (3, ACTION_SPACE)
     assert snapshot.refreshed_values.tolist() == pytest.approx([0.0, 0.0, 0.0])
     assert snapshot.values.tolist() == pytest.approx([-0.0, -1.0, 1.0])
 

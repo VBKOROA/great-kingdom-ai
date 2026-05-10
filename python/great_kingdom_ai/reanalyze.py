@@ -15,6 +15,12 @@ import numpy as np
 
 from great_kingdom_ai.evaluator import evaluate_feature_arrays_logits_values
 from great_kingdom_ai.features import ACTION_SPACE
+from great_kingdom_ai.priority_sampling import (
+    PrioritySamplingConfig,
+    legal_masks_from_features,
+    priority_scores,
+    sample_priority_indexes,
+)
 from great_kingdom_ai.replay_buffer import FEATURE_SHAPE, ReplaySample
 from great_kingdom_ai.self_play_data import value_target_for_player
 from great_kingdom_ai.trajectory_replay import TrajectoryEpisode, TrajectoryReplayBuffer
@@ -91,6 +97,7 @@ class ReanalyzeTargetSnapshot:
     bootstrap_td_steps: int
     gamma: float
     checkpoint_path: str = ""
+    policy_logits: np.ndarray | None = None
 
     @property
     def capacity(self) -> int:
@@ -118,19 +125,48 @@ class ReanalyzeTargetSnapshot:
         *,
         recent_fraction: float = 0.0,
         recent_window: int = 0,
+        priority_config: PrioritySamplingConfig | None = None,
     ) -> ReanalyzeTargetBatch:
-        indexes = _sample_indexes(
-            len(self),
-            batch_size,
-            rng,
-            recent_fraction=recent_fraction,
-            recent_window=recent_window,
-        )
+        if priority_config is not None and priority_config.enabled:
+            priorities = self.priority_scores(priority_config)
+            sampled = sample_priority_indexes(
+                priorities=priorities ** np.float32(priority_config.alpha),
+                batch_size=batch_size,
+                rng=rng,
+                beta=priority_config.beta,
+                recent_fraction=recent_fraction,
+                recent_window=recent_window,
+            )
+            indexes = sampled.indexes
+            sample_weights = (
+                self.sample_weights[indexes].astype(np.float32, copy=True)
+                * sampled.importance_weights
+            )
+        else:
+            indexes = _sample_indexes(
+                len(self),
+                batch_size,
+                rng,
+                recent_fraction=recent_fraction,
+                recent_window=recent_window,
+            )
+            sample_weights = self.sample_weights[indexes].astype(np.float32, copy=True)
         return ReanalyzeTargetBatch(
             features=self.features[indexes].astype(np.float32, copy=True),
             policies=self.policies[indexes].astype(np.float32, copy=True),
             values=self.values[indexes].astype(np.float32, copy=True),
-            sample_weights=self.sample_weights[indexes].astype(np.float32, copy=True),
+            sample_weights=sample_weights,
+        )
+
+    def priority_scores(self, config: PrioritySamplingConfig) -> np.ndarray:
+        return priority_scores(
+            values=self.values,
+            value_predictions=self.refreshed_values,
+            policies=self.policies,
+            policy_logits=self.policy_logits,
+            legal_masks=legal_masks_from_features(self.features),
+            target_ages=self.target_ages,
+            config=config,
         )
 
     def save(self, path: str | Path, *, compressed: bool = True) -> None:
@@ -155,6 +191,8 @@ class ReanalyzeTargetSnapshot:
             "gamma": np.asarray(snapshot.gamma, dtype=np.float32),
             "checkpoint_path": np.asarray(snapshot.checkpoint_path, dtype=np.str_),
         }
+        if snapshot.policy_logits is not None:
+            payload["policy_logits"] = snapshot.policy_logits
         save = np.savez_compressed if compressed else np.savez
         save(destination, **cast(dict[str, Any], payload))
 
@@ -179,6 +217,11 @@ class ReanalyzeTargetSnapshot:
                 bootstrap_td_steps=int(data["bootstrap_td_steps"]),
                 gamma=float(data["gamma"]),
                 checkpoint_path=str(data["checkpoint_path"]),
+                policy_logits=(
+                    np.asarray(data["policy_logits"], dtype=np.float32)
+                    if "policy_logits" in data
+                    else None
+                ),
             )
         return _validated_snapshot(snapshot)
 
@@ -228,7 +271,7 @@ def build_reanalyze_snapshot(
     features = np.stack([row.features for row in rows], axis=0).astype(np.float32)
     legal_masks = np.stack([row.legal_mask for row in rows], axis=0).astype(np.bool_)
     policies = np.stack([row.policy_target for row in rows], axis=0).astype(np.float32)
-    refreshed_values = _evaluate_values(
+    policy_logits, refreshed_values = _evaluate_policy_logits_values(
         state.model,
         features,
         legal_masks,
@@ -259,6 +302,7 @@ def build_reanalyze_snapshot(
             bootstrap_td_steps=config.bootstrap_td_steps,
             gamma=config.gamma,
             checkpoint_path=str(checkpoint_path),
+            policy_logits=policy_logits,
         )
     )
 
@@ -324,14 +368,15 @@ def main() -> NoReturn:
     raise SystemExit(0)
 
 
-def _evaluate_values(
+def _evaluate_policy_logits_values(
     model: Any,
     features: np.ndarray,
     legal_masks: np.ndarray,
     *,
     batch_size: int,
     device: str,
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray]:
+    policy_logits: list[np.ndarray] = []
     values: list[np.ndarray] = []
     for start in range(0, features.shape[0], batch_size):
         end = min(start + batch_size, features.shape[0])
@@ -341,8 +386,12 @@ def _evaluate_values(
             legal_masks[start:end],
             device=device,
         )
+        policy_logits.append(evaluation.policy_logits)
         values.append(evaluation.value)
-    return np.concatenate(values, axis=0).astype(np.float32)
+    return (
+        np.concatenate(policy_logits, axis=0).astype(np.float32),
+        np.concatenate(values, axis=0).astype(np.float32),
+    )
 
 
 def _bootstrap_targets_from_refreshed_values(
@@ -424,12 +473,19 @@ def _validated_snapshot(snapshot: ReanalyzeTargetSnapshot) -> ReanalyzeTargetSna
     source_model_versions = np.asarray(snapshot.source_model_versions, dtype=np.int64)
     created_iterations = np.asarray(snapshot.created_iterations, dtype=np.int64)
     target_ages = np.asarray(snapshot.target_ages, dtype=np.int64)
+    policy_logits = (
+        None
+        if snapshot.policy_logits is None
+        else np.asarray(snapshot.policy_logits, dtype=np.float32)
+    )
     row_count = values.shape[0]
 
     if features.shape != (row_count, *FEATURE_SHAPE):
         raise ValueError(f"expected features shape {(row_count, *FEATURE_SHAPE)}")
     if policies.shape != (row_count, ACTION_SPACE):
         raise ValueError(f"expected policies shape {(row_count, ACTION_SPACE)}")
+    if policy_logits is not None and policy_logits.shape != (row_count, ACTION_SPACE):
+        raise ValueError(f"expected policy_logits shape {(row_count, ACTION_SPACE)}")
     row_arrays: tuple[tuple[str, np.ndarray], ...] = (
         ("refreshed_values", refreshed_values),
         ("sample_weights", sample_weights),
@@ -445,6 +501,8 @@ def _validated_snapshot(snapshot: ReanalyzeTargetSnapshot) -> ReanalyzeTargetSna
             raise ValueError(f"{label} shape must match values")
     if not np.isfinite(features).all() or not np.isfinite(policies).all():
         raise ValueError("snapshot feature and policy arrays must be finite")
+    if policy_logits is not None and not np.isfinite(policy_logits).all():
+        raise ValueError("snapshot policy_logits must be finite")
     if not np.isfinite(values).all() or not np.isfinite(refreshed_values).all():
         raise ValueError("snapshot value arrays must be finite")
     if np.any(values < -1.0) or np.any(values > 1.0):
@@ -478,6 +536,7 @@ def _validated_snapshot(snapshot: ReanalyzeTargetSnapshot) -> ReanalyzeTargetSna
         bootstrap_td_steps=int(snapshot.bootstrap_td_steps),
         gamma=float(snapshot.gamma),
         checkpoint_path=str(snapshot.checkpoint_path),
+        policy_logits=None if policy_logits is None else policy_logits.copy(),
     )
 
 

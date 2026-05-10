@@ -19,6 +19,7 @@ from great_kingdom_ai.augmentation import (
     augment_samples_randomly,
 )
 from great_kingdom_ai.features import BOARD_CELLS, LEGAL_PLACE_FEATURE_CHANNEL, PASS_ACTION
+from great_kingdom_ai.priority_sampling import PrioritySamplingConfig
 from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
 
 if TYPE_CHECKING:
@@ -53,6 +54,13 @@ class TrainingConfig:
     amp: bool = False
     recent_sample_fraction: float = 0.0
     recent_sample_window: int = 0
+    priority_enabled: bool = False
+    priority_alpha: float = 0.6
+    priority_beta: float = 0.4
+    priority_value_error_weight: float = 1.0
+    priority_policy_kl_weight: float = 1.0
+    priority_target_age_weight: float = 0.25
+    priority_max_priority: float | None = 64.0
 
 
 @dataclass(frozen=True)
@@ -492,6 +500,20 @@ def _sample_training_replay(
     config: TrainingConfig,
     rng: random.Random,
 ) -> list[ReplaySample]:
+    if config.priority_enabled:
+        sampler = getattr(replay, "sample_priority_biased", None)
+        if sampler is None:
+            raise ValueError("replay dataset does not support priority-aware sampling")
+        return cast(
+            list[ReplaySample],
+            sampler(
+                config.batch_size,
+                rng,
+                priority_config=_priority_sampling_config(config),
+                recent_fraction=config.recent_sample_fraction,
+                recent_window=config.recent_sample_window,
+            ),
+        )
     if config.recent_sample_fraction <= 0.0:
         return replay.sample(config.batch_size, rng)
     if config.recent_sample_fraction > 1.0:
@@ -519,12 +541,21 @@ def _sample_training_batch(
 ) -> TrainingBatch:
     array_sampler = getattr(replay, "sample_arrays", None)
     if array_sampler is not None:
-        raw_arrays = array_sampler(
-            config.batch_size,
-            rng,
-            recent_fraction=config.recent_sample_fraction,
-            recent_window=config.recent_sample_window,
-        )
+        if config.priority_enabled:
+            raw_arrays = array_sampler(
+                config.batch_size,
+                rng,
+                recent_fraction=config.recent_sample_fraction,
+                recent_window=config.recent_sample_window,
+                priority_config=_priority_sampling_config(config),
+            )
+        else:
+            raw_arrays = array_sampler(
+                config.batch_size,
+                rng,
+                recent_fraction=config.recent_sample_fraction,
+                recent_window=config.recent_sample_window,
+            )
         arrays = TrainingArrays(
             features=np.asarray(raw_arrays.features, dtype=np.float32),
             policies=np.asarray(raw_arrays.policies, dtype=np.float32),
@@ -549,6 +580,18 @@ def _sample_training_batch(
     if config.symmetry_augmentation:
         samples = augment_samples_randomly(samples, rng)
     return samples_to_batch(samples, device=config.device)
+
+
+def _priority_sampling_config(config: TrainingConfig) -> PrioritySamplingConfig:
+    return PrioritySamplingConfig(
+        enabled=config.priority_enabled,
+        alpha=config.priority_alpha,
+        beta=config.priority_beta,
+        value_error_weight=config.priority_value_error_weight,
+        policy_kl_weight=config.priority_policy_kl_weight,
+        target_age_weight=config.priority_target_age_weight,
+        max_priority=config.priority_max_priority,
+    )
 
 
 def load_training_config(path: str | Path) -> TrainingConfig:

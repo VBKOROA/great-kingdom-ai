@@ -5,13 +5,14 @@ from __future__ import annotations
 import random
 from collections import deque
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
 
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
+from great_kingdom_ai.priority_sampling import PrioritySamplingConfig, sample_priority_indexes
 
 FEATURE_SHAPE = (FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
 
@@ -55,6 +56,41 @@ class ReplayBuffer:
         indexes = rng.sample(range(len(self._samples)), batch_size)
         samples = list(self._samples)
         return [samples[index] for index in indexes]
+
+    def sample_priority_biased(
+        self,
+        batch_size: int,
+        rng: random.Random,
+        *,
+        priority_config: PrioritySamplingConfig,
+        recent_fraction: float = 0.0,
+        recent_window: int = 0,
+    ) -> list[ReplaySample]:
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if batch_size > len(self._samples):
+            raise ValueError("batch_size exceeds replay buffer size")
+        samples = list(self._samples)
+        base_weights = np.asarray([sample.sample_weight for sample in samples], dtype=np.float32)
+        sampled = sample_priority_indexes(
+            priorities=base_weights ** np.float32(priority_config.alpha),
+            batch_size=batch_size,
+            rng=rng,
+            beta=priority_config.beta,
+            recent_fraction=recent_fraction,
+            recent_window=recent_window,
+        )
+        return [
+            replace(
+                samples[index],
+                sample_weight=float(samples[index].sample_weight * importance_weight),
+            )
+            for index, importance_weight in zip(
+                sampled.indexes,
+                sampled.importance_weights,
+                strict=True,
+            )
+        ]
 
     def save(self, path: str | Path, *, compressed: bool = True) -> None:
         destination = Path(path)

@@ -3,6 +3,7 @@ import random
 import numpy as np
 import pytest
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
+from great_kingdom_ai.priority_sampling import PrioritySamplingConfig
 from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
 
 
@@ -99,3 +100,19 @@ def test_replay_buffer_save_and_load_sample_weights(tmp_path) -> None:  # type: 
 def test_replay_buffer_rejects_invalid_sample_weight() -> None:
     with pytest.raises(ValueError, match="sample_weight"):
         ReplayBuffer(capacity=1).push(make_sample(sample_weight=0.0))
+
+
+def test_replay_buffer_can_sample_priority_biased_rows() -> None:
+    buffer = ReplayBuffer(capacity=3)
+    buffer.push(make_sample(value=1.0, action=1, sample_weight=1.0))
+    buffer.push(make_sample(value=1.0, action=2, sample_weight=1.0))
+    buffer.push(make_sample(value=1.0, action=3, sample_weight=1000.0))
+
+    batch = buffer.sample_priority_biased(
+        1,
+        random.Random(0),
+        priority_config=PrioritySamplingConfig(enabled=True, alpha=1.0, beta=0.4),
+    )
+
+    assert int(np.argmax(batch[0].policy)) == 3
+    assert 0.0 < batch[0].sample_weight <= 1000.0
