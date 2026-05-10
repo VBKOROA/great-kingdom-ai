@@ -714,7 +714,7 @@ def _log_every_from_args(args: argparse.Namespace, config: TrainingConfig) -> in
 def print_training_startup_config(
     *,
     config: TrainingConfig,
-    replay: ReplayBuffer,
+    replay: ReplayDataset,
     replay_path: Path,
     checkpoint_path: Path,
     resume_path: Path | None,
@@ -728,7 +728,8 @@ def print_training_startup_config(
                 "replay": {
                     "path": str(replay_path),
                     "samples": len(replay),
-                    "capacity": replay.capacity,
+                    "capacity": getattr(replay, "capacity", len(replay)),
+                    "type": type(replay).__name__,
                 },
                 "checkpoint": str(checkpoint_path),
                 "resume": str(resume_path) if resume_path is not None else None,
@@ -741,10 +742,21 @@ def print_training_startup_config(
     )
 
 
+def load_training_replay(path: str | Path) -> ReplayDataset:
+    from great_kingdom_ai.reanalyze import (
+        ReanalyzeTargetSnapshot,
+        is_reanalyze_target_snapshot,
+    )
+
+    if is_reanalyze_target_snapshot(path):
+        return ReanalyzeTargetSnapshot.load(path)
+    return ReplayBuffer.load(path)
+
+
 def main() -> NoReturn:
     args = build_parser().parse_args()
     config = _config_from_args(args)
-    replay = ReplayBuffer.load(args.replay)
+    replay = load_training_replay(args.replay)
     print_training_startup_config(
         config=config,
         replay=replay,
@@ -795,6 +807,7 @@ __all__ = [
     "load_checkpoint",
     "load_checkpoint_weights",
     "load_training_config",
+    "load_training_replay",
     "print_training_startup_config",
     "samples_to_batch",
     "save_checkpoint",
