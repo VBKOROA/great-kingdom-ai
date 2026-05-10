@@ -8,6 +8,8 @@
 learned dynamics를 게임 룰 모델로 다시 학습할 필요는 낮다. 대신 EfficientZero에서
 효과가 큰 아이디어 중 현재 구조에 맞는 부분만 가져온다.
 
+프로젝트를 뒤엎는 수준의 개선이기에 기존호환성을 과감히 포기한다.
+
 - trajectory 기반 replay
 - 최신 네트워크 기반 reanalyze
 - terminal-only value target 개선
