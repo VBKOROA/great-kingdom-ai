@@ -342,7 +342,7 @@ z_t = terminal_result
 - `V(s_{t+k})`는 `s_t`의 player perspective로 변환되어야 한다.
 - bootstrap target은 stop-gradient target이다.
 
-### Phase 3: Reanalyze v1
+### ~~Phase 3: Reanalyze v1~~
 
 목표:
 
