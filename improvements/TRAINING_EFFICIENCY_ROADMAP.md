@@ -289,6 +289,9 @@ loss = policy_loss
 - 같은 wall-clock에서 더 강한가
 - 같은 learner steps에서 loss/arena가 더 빠르게 개선되는가
 
+### 기존의 best 모델이 있기에 개선된 파이프라인으로 학습시킨 후, 간단히 arena 해보는 것으로 효율을 비교할 수 있다.
+### 고로 Phase 0 은 무시한다.
+
 ### Phase 1: Trajectory replay 도입
 
 목표:
