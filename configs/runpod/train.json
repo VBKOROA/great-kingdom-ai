@@ -10,7 +10,7 @@
   "lr_warmup_steps": 64,
   "seed": 20260506,
   "device": "cuda",
-  "model_preset": "large",
+  "model_preset": "large_policy",
   "symmetry_augmentation": true,
   "mask_policy_loss": true,
   "amp": true,

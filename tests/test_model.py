@@ -15,7 +15,10 @@ torch = importlib.import_module("torch") if _torch_spec is not None else None
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS  # noqa: E402
 
 
-@pytest.mark.parametrize("preset", ["small", "medium", "medium_plus", "strong"])
+@pytest.mark.parametrize(
+    "preset",
+    ["small", "medium", "medium_plus", "large", "large_policy", "large_plus", "strong"],
+)
 def test_model_presets_return_policy_logits_and_value_scalar(preset: str) -> None:
     from great_kingdom_ai.model import create_model
 
@@ -81,6 +84,54 @@ def test_strong_preset_uses_spatial_value_head_and_policy_context() -> None:
         for module in strong.value_head
     )
     assert not any(isinstance(module, torch.nn.AdaptiveAvgPool2d) for module in strong.value_head)
+
+
+def test_large_plus_preset_adds_context_heads_without_extra_backbone_depth() -> None:
+    from great_kingdom_ai.model import create_model
+
+    large = create_model("large")
+    large_plus = create_model("large_plus")
+    strong = create_model("strong")
+
+    assert large_plus.config.channels == 128
+    assert large_plus.config.residual_blocks == 8
+    assert large_plus.config.policy_channels == 16
+    assert large_plus.config.policy_kernel_size == 3
+    assert large_plus.config.spatial_value_head is True
+    assert sum(p.numel() for p in large.parameters()) < sum(
+        p.numel() for p in large_plus.parameters()
+    ) < sum(p.numel() for p in strong.parameters())
+    assert any(
+        isinstance(module, torch.nn.Linear)
+        and module.in_features == large_plus.config.channels * BOARD_SIZE * BOARD_SIZE
+        for module in large_plus.value_head
+    )
+    assert not any(
+        isinstance(module, torch.nn.AdaptiveAvgPool2d) for module in large_plus.value_head
+    )
+
+
+def test_large_policy_preset_adds_policy_context_without_spatial_value_head() -> None:
+    from great_kingdom_ai.model import create_model
+
+    large = create_model("large")
+    large_policy = create_model("large_policy")
+    large_plus = create_model("large_plus")
+
+    assert large_policy.config.channels == 128
+    assert large_policy.config.residual_blocks == 8
+    assert large_policy.config.policy_channels == 16
+    assert large_policy.config.policy_kernel_size == 3
+    assert large_policy.config.spatial_value_head is False
+    assert sum(p.numel() for p in large.parameters()) < sum(
+        p.numel() for p in large_policy.parameters()
+    ) < sum(p.numel() for p in large_plus.parameters())
+    assert any(isinstance(module, torch.nn.AdaptiveAvgPool2d) for module in large_policy.value_head)
+    assert not any(
+        isinstance(module, torch.nn.Linear)
+        and module.in_features == large_policy.config.channels * BOARD_SIZE * BOARD_SIZE
+        for module in large_policy.value_head
+    )
 
 
 def test_value_head_uses_global_pooling_without_flattening_board_cells() -> None:

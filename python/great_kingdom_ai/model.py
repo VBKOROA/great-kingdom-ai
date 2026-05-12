@@ -39,6 +39,21 @@ MODEL_PRESETS: dict[str, ModelConfig] = {
         spatial_value_head=True,
     ),
     "large": ModelConfig(channels=128, residual_blocks=8, value_hidden=256),
+    "large_policy": ModelConfig(
+        channels=128,
+        residual_blocks=8,
+        value_hidden=256,
+        policy_channels=16,
+        policy_kernel_size=3,
+    ),
+    "large_plus": ModelConfig(
+        channels=128,
+        residual_blocks=8,
+        value_hidden=256,
+        policy_channels=16,
+        policy_kernel_size=3,
+        spatial_value_head=True,
+    ),
 }
 
 

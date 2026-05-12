@@ -827,7 +827,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument(
         "--model-preset",
-        choices=["small", "medium", "medium_plus", "strong", "large"],
+        choices=[
+            "small",
+            "medium",
+            "medium_plus",
+            "strong",
+            "large",
+            "large_policy",
+            "large_plus",
+        ],
         default=None,
     )
     parser.add_argument(
