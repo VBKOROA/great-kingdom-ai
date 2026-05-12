@@ -7,7 +7,7 @@ import json
 import math
 import random
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, NoReturn, cast
 
@@ -22,6 +22,10 @@ from great_kingdom_ai.priority_sampling import (
     sample_priority_indexes,
 )
 from great_kingdom_ai.replay_buffer import FEATURE_SHAPE, ReplaySample
+from great_kingdom_ai.search_reanalyze import (
+    SearchReanalyzeConfig,
+    refresh_policies_with_search,
+)
 from great_kingdom_ai.self_play_data import value_target_for_player
 from great_kingdom_ai.trajectory_replay import TrajectoryEpisode, TrajectoryReplayBuffer
 
@@ -36,6 +40,7 @@ class ReanalyzeConfig:
     gamma: float = 1.0
     model_version: int | None = None
     compressed: bool = True
+    search: SearchReanalyzeConfig = field(default_factory=SearchReanalyzeConfig)
 
     def __post_init__(self) -> None:
         if self.batch_size <= 0:
@@ -66,6 +71,7 @@ class ReanalyzeSummary:
     model_version: int
     bootstrap_td_steps: int
     gamma: float
+    search_reanalyzed: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -76,6 +82,7 @@ class ReanalyzeSummary:
             "model_version": self.model_version,
             "bootstrap_td_steps": self.bootstrap_td_steps,
             "gamma": self.gamma,
+            "search_reanalyzed": self.search_reanalyzed,
         }
 
 
@@ -99,6 +106,7 @@ class ReanalyzeTargetSnapshot:
     gamma: float
     checkpoint_path: str = ""
     policy_logits: np.ndarray | None = None
+    search_reanalyzed: np.ndarray | None = None
 
     @property
     def capacity(self) -> int:
@@ -202,6 +210,8 @@ class ReanalyzeTargetSnapshot:
         }
         if snapshot.policy_logits is not None:
             payload["policy_logits"] = snapshot.policy_logits
+        if snapshot.search_reanalyzed is not None:
+            payload["search_reanalyzed"] = snapshot.search_reanalyzed
         save = np.savez_compressed if compressed else np.savez
         save(destination, **cast(dict[str, Any], payload))
 
@@ -231,6 +241,11 @@ class ReanalyzeTargetSnapshot:
                     if "policy_logits" in data
                     else None
                 ),
+                search_reanalyzed=(
+                    np.asarray(data["search_reanalyzed"], dtype=np.bool_)
+                    if "search_reanalyzed" in data
+                    else None
+                ),
             )
         return _validated_snapshot(snapshot)
 
@@ -258,6 +273,11 @@ def reanalyze_replay(
         model_version=snapshot.model_version,
         bootstrap_td_steps=snapshot.bootstrap_td_steps,
         gamma=snapshot.gamma,
+        search_reanalyzed=(
+            0
+            if snapshot.search_reanalyzed is None
+            else int(np.count_nonzero(snapshot.search_reanalyzed))
+        ),
     )
 
 
@@ -294,6 +314,22 @@ def build_reanalyze_snapshot(
         gamma=config.gamma,
     )
     source_model_versions = np.asarray([row.model_version for row in rows], dtype=np.int64)
+    target_ages = np.maximum(model_version - source_model_versions, 0).astype(np.int64)
+    search_reanalyzed: np.ndarray | None = None
+    if config.search.enabled:
+        search_result = refresh_policies_with_search(
+            episodes=episodes,
+            policies=policies,
+            values=values,
+            policy_logits=policy_logits,
+            refreshed_values=refreshed_values,
+            target_ages=target_ages,
+            model=state.model,
+            device=config.device,
+            config=config.search,
+        )
+        policies = search_result.policies
+        search_reanalyzed = search_result.search_reanalyzed
     return _validated_snapshot(
         ReanalyzeTargetSnapshot(
             features=features,
@@ -306,12 +342,13 @@ def build_reanalyze_snapshot(
             players=np.asarray([row.player for row in rows], dtype=np.int64),
             source_model_versions=source_model_versions,
             created_iterations=np.asarray([row.created_iteration for row in rows], dtype=np.int64),
-            target_ages=np.maximum(model_version - source_model_versions, 0).astype(np.int64),
+            target_ages=target_ages,
             model_version=model_version,
             bootstrap_td_steps=config.bootstrap_td_steps,
             gamma=config.gamma,
             checkpoint_path=str(checkpoint_path),
             policy_logits=policy_logits,
+            search_reanalyzed=search_reanalyzed,
         )
     )
 
@@ -342,6 +379,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override snapshot model version; defaults to checkpoint step",
     )
     parser.add_argument("--no-compress", action="store_true", help="Write an uncompressed npz")
+    parser.add_argument(
+        "--search-reanalyze-fraction",
+        type=float,
+        default=0.0,
+        help="Fraction of high-priority rows whose policy targets are refreshed with Rust search",
+    )
+    parser.add_argument(
+        "--search-reanalyze-budget",
+        type=int,
+        default=None,
+        help="Maximum number of rows to refresh with Rust search",
+    )
+    parser.add_argument("--search-reanalyze-simulations", type=int, default=32)
+    parser.add_argument("--search-reanalyze-max-considered-actions", type=int, default=16)
+    parser.add_argument("--search-reanalyze-leaf-batch-size", type=int, default=8)
+    parser.add_argument("--search-reanalyze-seed", type=int, default=0)
     return parser
 
 
@@ -354,6 +407,14 @@ def main() -> NoReturn:
         gamma=args.gamma,
         model_version=args.model_version,
         compressed=not args.no_compress,
+        search=SearchReanalyzeConfig(
+            fraction=args.search_reanalyze_fraction,
+            budget=args.search_reanalyze_budget,
+            simulations=args.search_reanalyze_simulations,
+            max_considered_actions=args.search_reanalyze_max_considered_actions,
+            leaf_batch_size=args.search_reanalyze_leaf_batch_size,
+            seed=args.search_reanalyze_seed,
+        ),
     )
     print(
         json.dumps(
@@ -487,6 +548,11 @@ def _validated_snapshot(snapshot: ReanalyzeTargetSnapshot) -> ReanalyzeTargetSna
         if snapshot.policy_logits is None
         else np.asarray(snapshot.policy_logits, dtype=np.float32)
     )
+    search_reanalyzed = (
+        None
+        if snapshot.search_reanalyzed is None
+        else np.asarray(snapshot.search_reanalyzed, dtype=np.bool_)
+    )
     row_count = values.shape[0]
 
     if features.shape != (row_count, *FEATURE_SHAPE):
@@ -495,6 +561,8 @@ def _validated_snapshot(snapshot: ReanalyzeTargetSnapshot) -> ReanalyzeTargetSna
         raise ValueError(f"expected policies shape {(row_count, ACTION_SPACE)}")
     if policy_logits is not None and policy_logits.shape != (row_count, ACTION_SPACE):
         raise ValueError(f"expected policy_logits shape {(row_count, ACTION_SPACE)}")
+    if search_reanalyzed is not None and search_reanalyzed.shape != (row_count,):
+        raise ValueError("search_reanalyzed shape must match values")
     row_arrays: tuple[tuple[str, np.ndarray], ...] = (
         ("refreshed_values", refreshed_values),
         ("sample_weights", sample_weights),
@@ -546,6 +614,7 @@ def _validated_snapshot(snapshot: ReanalyzeTargetSnapshot) -> ReanalyzeTargetSna
         gamma=float(snapshot.gamma),
         checkpoint_path=str(snapshot.checkpoint_path),
         policy_logits=None if policy_logits is None else policy_logits.copy(),
+        search_reanalyzed=None if search_reanalyzed is None else search_reanalyzed.copy(),
     )
 
 
@@ -558,6 +627,7 @@ __all__ = [
     "ReanalyzeSummary",
     "ReanalyzeTargetBatch",
     "ReanalyzeTargetSnapshot",
+    "SearchReanalyzeConfig",
     "build_parser",
     "build_reanalyze_snapshot",
     "is_reanalyze_target_snapshot",

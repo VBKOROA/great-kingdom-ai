@@ -12,10 +12,12 @@ from great_kingdom_ai.priority_sampling import PrioritySamplingConfig
 from great_kingdom_ai.reanalyze import (
     ReanalyzeConfig,
     ReanalyzeTargetSnapshot,
+    SearchReanalyzeConfig,
     build_parser,
     build_reanalyze_snapshot,
     is_reanalyze_target_snapshot,
 )
+from great_kingdom_ai.search_reanalyze import select_search_reanalyze_indexes
 from great_kingdom_ai.train import (
     TrainingConfig,
     create_train_state,
@@ -94,6 +96,7 @@ def test_reanalyze_target_snapshot_round_trips_and_samples_arrays(tmp_path: Path
         gamma=0.5,
         checkpoint_path="checkpoint.pt",
         policy_logits=np.stack([make_policy(1), make_policy(PASS_ACTION)], axis=0),
+        search_reanalyzed=np.asarray([True, False], dtype=np.bool_),
     )
     path = tmp_path / "targets.npz"
 
@@ -107,6 +110,8 @@ def test_reanalyze_target_snapshot_round_trips_and_samples_arrays(tmp_path: Path
     assert loaded.model_version == 8
     assert loaded.target_ages.tolist() == [5, 5]
     assert loaded.policy_logits is not None
+    assert loaded.search_reanalyzed is not None
+    assert loaded.search_reanalyzed.tolist() == [True, False]
     assert batch.features.shape == (2, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
     assert sorted(batch.sample_weights.tolist()) == pytest.approx([1.0, 2.0])
     assert load_training_replay(path).__class__ is ReanalyzeTargetSnapshot
@@ -187,7 +192,102 @@ def test_build_reanalyze_snapshot_refreshes_values_and_bootstrap_targets(
     assert snapshot.values.tolist() == pytest.approx([-0.0, -1.0, 1.0])
 
 
-def test_reanalyze_parser_exposes_phase3_cli_options() -> None:
+@pytest.mark.skipif(_torch_spec is None, reason="torch is not installed")
+def test_build_reanalyze_snapshot_can_refresh_policy_targets_with_search(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import great_kingdom_ai.search_reanalyze as search_reanalyze
+
+    class FakeResult:
+        def policy_target(self) -> list[float]:
+            return make_policy(PASS_ACTION).tolist()
+
+    class FakeSearch:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+        def search_with_logits_and_evaluator(
+            self,
+            state: object,
+            policy_logits: list[float],
+            evaluator: object,
+            root_value: float,
+            leaf_batch_size: int,
+        ) -> FakeResult:
+            assert len(policy_logits) == ACTION_SPACE
+            assert -1.0 <= root_value <= 1.0
+            assert leaf_batch_size == 3
+            return FakeResult()
+
+    class FakeGameState:
+        def __init__(self) -> None:
+            self.actions: list[int] = []
+
+        def current_player(self) -> int:
+            return 1 if len(self.actions) % 2 == 0 else 2
+
+        def is_terminal(self) -> bool:
+            return False
+
+        def apply_action(self, action: int) -> None:
+            self.actions.append(action)
+
+        def feature_planes(self) -> list[float]:
+            action = [1, 2, PASS_ACTION][len(self.actions)]
+            return make_features(action).reshape(-1).tolist()
+
+    class FakeCore:
+        GameState = FakeGameState
+        GumbelSearch = FakeSearch
+
+    monkeypatch.setattr(search_reanalyze, "_import_core", lambda: FakeCore)
+    replay = TrajectoryReplayBuffer(capacity=8)
+    replay.push_episode(make_episode())
+    state = create_train_state(TrainingConfig(batch_size=2, seed=9))
+    checkpoint = save_checkpoint(state, tmp_path / "checkpoint.pt")
+
+    snapshot = build_reanalyze_snapshot(
+        replay,
+        checkpoint_path=checkpoint,
+        config=ReanalyzeConfig(
+            batch_size=2,
+            search=SearchReanalyzeConfig(fraction=1.0, simulations=4, leaf_batch_size=3),
+        ),
+    )
+
+    assert snapshot.search_reanalyzed is not None
+    assert snapshot.search_reanalyzed.tolist() == [True, True, True]
+    assert snapshot.policies[0].tolist() == pytest.approx(make_policy(PASS_ACTION).tolist())
+
+
+def test_select_search_reanalyze_indexes_uses_fraction_budget_and_priority() -> None:
+    episode = make_episode()
+    policies = np.stack([transition.policy_target for transition in episode.transitions], axis=0)
+    logits = np.zeros_like(policies)
+    logits[2, 0] = 10.0
+
+    indexes = select_search_reanalyze_indexes(
+        episodes=(episode,),
+        policies=policies,
+        values=np.asarray([0.0, 0.0, 1.0], dtype=np.float32),
+        policy_logits=logits,
+        refreshed_values=np.asarray([0.0, 0.0, -1.0], dtype=np.float32),
+        target_ages=np.asarray([0, 1, 9], dtype=np.int64),
+        config=SearchReanalyzeConfig(
+            fraction=1.0,
+            budget=1,
+            opening_weight=0.0,
+            value_error_weight=1.0,
+            policy_kl_weight=1.0,
+            target_age_weight=1.0,
+        ),
+    )
+
+    assert indexes == (2,)
+
+
+def test_reanalyze_parser_exposes_phase7_cli_options() -> None:
     args = build_parser().parse_args(
         [
             "--replay",
@@ -200,8 +300,20 @@ def test_reanalyze_parser_exposes_phase3_cli_options() -> None:
             "16",
             "--bootstrap-td-steps",
             "4",
+            "--search-reanalyze-fraction",
+            "0.25",
+            "--search-reanalyze-budget",
+            "7",
+            "--search-reanalyze-simulations",
+            "8",
+            "--search-reanalyze-leaf-batch-size",
+            "3",
         ]
     )
 
     assert args.batch_size == 16
     assert args.bootstrap_td_steps == 4
+    assert args.search_reanalyze_fraction == pytest.approx(0.25)
+    assert args.search_reanalyze_budget == 7
+    assert args.search_reanalyze_simulations == 8
+    assert args.search_reanalyze_leaf_batch_size == 3
