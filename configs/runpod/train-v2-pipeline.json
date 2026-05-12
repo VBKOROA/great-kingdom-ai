@@ -8,7 +8,7 @@
   "seed_start": 1000000,
   "onnx_device": "cuda",
   "onnx_max_batch_size": 4096,
-  "rust_self_play_batch_size": 512,
+  "rust_self_play_batch_size": 1024,
   "skip_arena": true,
   "promote": true,
   "always_promote": true,
