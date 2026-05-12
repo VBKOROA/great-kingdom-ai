@@ -1,5 +1,5 @@
 {
-  "work_dir": "data/runpod/train-v2-recommended-medium-plus",
+  "work_dir": "data/runpod/train-v2-large",
   "iterations": 50,
   "replay_capacity": 500000,
   "self_play_games": 500,
