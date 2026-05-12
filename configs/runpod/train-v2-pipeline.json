@@ -16,7 +16,7 @@
   "train_checkpoint_mode": "resume",
   "train_reuse_factor": 1.5,
   "min_train_steps": 64,
-  "max_train_steps": 192,
+  "max_train_steps": 512,
   "reanalyze_batch_size": 4096,
   "reanalyze_device": "cuda",
   "bootstrap_td_steps": 8,

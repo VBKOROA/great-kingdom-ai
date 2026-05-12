@@ -179,6 +179,8 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
                 "checkpoint_path": Path(checkpoint_path),
                 "output_path": Path(output_path),
                 "bootstrap_td_steps": config.bootstrap_td_steps,
+                "search_policy_target_c_visit": config.search.policy_target_c_visit,
+                "search_policy_target_c_scale": config.search.policy_target_c_scale,
             }
         )
         return ReanalyzeSummary(
@@ -228,7 +230,7 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
             max_train_steps=None,
             skip_arena=True,
             always_promote=True,
-            self_play=SelfPlayConfig(policy_target_c_visit=5.0, policy_target_c_scale=0.25),
+            self_play=SelfPlayConfig(policy_target_c_visit=50.0, policy_target_c_scale=1.0),
         ),
         train_config=TrainingConfig(batch_size=1, steps=3, device="cpu"),
         arena_config=ArenaConfig(games=1, device="cpu"),
@@ -247,6 +249,8 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
             "checkpoint_path": tmp_path / "checkpoints" / "best.pt",
             "output_path": tmp_path / "targets" / "targets-000001.npz",
             "bootstrap_td_steps": 4,
+            "search_policy_target_c_visit": 50.0,
+            "search_policy_target_c_scale": 1.0,
         }
     ]
     assert trained_replay_types == ["ReanalyzeTargetSnapshot"]

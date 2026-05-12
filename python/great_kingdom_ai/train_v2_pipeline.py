@@ -227,6 +227,8 @@ def run_train_v2_pipeline(
                     max_considered_actions=(
                         pipeline_config.search_reanalyze_max_considered_actions
                     ),
+                    policy_target_c_visit=pipeline_config.self_play.policy_target_c_visit,
+                    policy_target_c_scale=pipeline_config.self_play.policy_target_c_scale,
                     leaf_batch_size=pipeline_config.search_reanalyze_leaf_batch_size,
                     root_batch_size=pipeline_config.search_reanalyze_root_batch_size,
                     seed=pipeline_config.search_reanalyze_seed,
