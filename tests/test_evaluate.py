@@ -43,6 +43,25 @@ def test_arena_config_rejects_non_positive_batch_size() -> None:
         ArenaConfig(batch_size=0)
 
 
+def test_evaluate_parser_accepts_gumbel_max_considered_actions_alias() -> None:
+    args = evaluate_module.build_parser().parse_args(
+        [
+            "--candidate",
+            "test.pt",
+            "--best",
+            "test-best.pt",
+            "--report",
+            "arena.json",
+            "--gumbel-max-consider",
+            "8",
+        ]
+    )
+
+    config = evaluate_module._config_from_args(args)
+
+    assert config.gumbel_max_considered_actions == 8
+
+
 class OneMoveState:
     def __init__(self) -> None:
         self.applied_actions: list[int] = []

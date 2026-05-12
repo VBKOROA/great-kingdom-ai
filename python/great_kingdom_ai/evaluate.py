@@ -824,6 +824,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--games", type=int, default=None)
     parser.add_argument("--gumbel-simulations", type=int, default=None)
     parser.add_argument(
+        "--gumbel-max-considered-actions",
+        "--gumbel-max-consider",
+        dest="gumbel_max_considered_actions",
+        type=int,
+        default=None,
+    )
+    parser.add_argument(
         "--promote",
         action="store_true",
         help="Copy candidate over best if accepted",
@@ -837,6 +844,7 @@ def _config_from_args(args: argparse.Namespace) -> ArenaConfig:
         "device": args.device,
         "games": args.games,
         "gumbel_simulations": args.gumbel_simulations,
+        "gumbel_max_considered_actions": args.gumbel_max_considered_actions,
     }
     data = asdict(config)
     data.update({key: value for key, value in overrides.items() if value is not None})
