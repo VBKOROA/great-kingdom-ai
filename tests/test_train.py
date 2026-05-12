@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import random
+from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,7 @@ pytestmark = pytest.mark.skipif(
 )
 torch = importlib.import_module("torch") if _torch_spec is not None else None
 
+import great_kingdom_ai.train as train_module  # noqa: E402
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS  # noqa: E402
 from great_kingdom_ai.priority_sampling import PrioritySamplingConfig  # noqa: E402
 from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample  # noqa: E402
@@ -297,6 +299,59 @@ def test_amp_is_disabled_without_cuda_device() -> None:
     state = create_train_state(TrainingConfig(batch_size=2, amp=True, device="cpu"))
 
     assert state.scaler is None
+
+
+def test_train_step_skips_scheduler_when_amp_optimizer_step_is_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeScaledLoss:
+        def __init__(self, loss: torch.Tensor) -> None:
+            self.loss = loss
+
+        def backward(self) -> None:
+            self.loss.backward()
+
+    class SkippingScaler:
+        def __init__(self) -> None:
+            self.scale_value = 2.0
+
+        def get_scale(self) -> float:
+            return self.scale_value
+
+        def scale(self, loss: torch.Tensor) -> FakeScaledLoss:
+            return FakeScaledLoss(loss)
+
+        def step(self, optimizer: torch.optim.Optimizer) -> None:
+            del optimizer
+
+        def update(self) -> None:
+            self.scale_value = 1.0
+
+    config = TrainingConfig(
+        batch_size=2,
+        amp=True,
+        lr_schedule="step",
+        lr_decay_steps=1,
+        lr_decay_gamma=0.1,
+    )
+    state = create_train_state(config)
+    state = type(state)(
+        model=state.model,
+        optimizer=state.optimizer,
+        scheduler=state.scheduler,
+        scaler=SkippingScaler(),
+        step=state.step,
+        model_preset=state.model_preset,
+    )
+    batch = samples_to_batch(make_replay().sample(2, random.Random(3)))
+    monkeypatch.setattr(train_module, "_amp_enabled", lambda config: True)
+    monkeypatch.setattr(train_module, "_autocast_context", lambda torch, *, enabled: nullcontext())
+    learning_rate = state.optimizer.param_groups[0]["lr"]
+
+    train_step(state, batch, config)
+
+    assert state.optimizer.param_groups[0]["lr"] == pytest.approx(learning_rate)
+    assert state.scheduler.state_dict()["last_epoch"] == 0
 
 
 def test_checkpoint_round_trips_model_outputs_and_optimizer_state(tmp_path) -> None:

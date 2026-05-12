@@ -267,14 +267,18 @@ def train_step(state: TrainState, batch: TrainingBatch, config: TrainingConfig) 
             l2_loss_weight=config.l2_loss_weight,
             mask_policy_loss=config.mask_policy_loss,
         )
+    optimizer_stepped = True
     if amp_enabled and state.scaler is not None:
+        scale_before = float(state.scaler.get_scale())
         state.scaler.scale(losses.total).backward()
         state.scaler.step(state.optimizer)
         state.scaler.update()
+        optimizer_stepped = float(state.scaler.get_scale()) >= scale_before
     else:
         losses.total.backward()  # type: ignore[no-untyped-call]
         state.optimizer.step()
-    state.scheduler.step()
+    if optimizer_stepped:
+        state.scheduler.step()
     return losses
 
 
