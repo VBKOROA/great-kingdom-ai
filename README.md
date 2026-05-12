@@ -122,6 +122,18 @@ python scripts/run_m6_smoke.py --device cuda
 python scripts/run_m8_train_smoke.py --device cuda
 ```
 
+학습 중 CPU/RAM/GPU 상태를 watch로 확인:
+
+```bash
+watch -n 2 'free -h && echo && top -bn1 | head -n 12 && echo && nvidia-smi'
+```
+
+GPU만 가볍게 보려면:
+
+```bash
+watch -n 2 nvidia-smi
+```
+
 ## 용량 정리
 
 Runpod 30GB 디스크에서는 오래된 target snapshot과 checkpoint history를 주기적으로 정리하는
