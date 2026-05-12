@@ -13,6 +13,11 @@ from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.replay_buffer import ReplaySample
 from great_kingdom_ai.self_play import GameLog, MoveLog, SelfPlayConfig
 from great_kingdom_ai.self_play_data import value_target_for_player
+from great_kingdom_ai.trajectory_replay import (
+    TrajectoryEpisode,
+    TrajectoryTransition,
+    legal_mask_from_features,
+)
 
 
 @dataclass(frozen=True)
@@ -36,6 +41,7 @@ class RustSelfPlayRunSummary:
     onnx_device: str
     replay_samples: tuple[ReplaySample, ...] = ()
     game_logs: tuple[GameLog, ...] = ()
+    trajectory_episodes: tuple[TrajectoryEpisode, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -56,11 +62,12 @@ def run_rust_onnx_self_play(config: RustOnnxSelfPlayConfig) -> RustSelfPlayRunSu
     )
     logs: list[GameLog] = []
     samples: list[ReplaySample] = []
+    episodes: list[TrajectoryEpisode] = []
     remaining = config.games
     seed = config.seed_start
     while remaining > 0:
         batch_size = min(config.rust_self_play_batch_size, remaining)
-        batch_logs, batch_samples = _run_one_batch(
+        batch_logs, batch_samples, batch_episodes = _run_one_batch(
             config,
             core=core,
             evaluator=evaluator,
@@ -69,6 +76,7 @@ def run_rust_onnx_self_play(config: RustOnnxSelfPlayConfig) -> RustSelfPlayRunSu
         )
         logs.extend(batch_logs)
         samples.extend(batch_samples)
+        episodes.extend(batch_episodes)
         seed += batch_size
         remaining -= batch_size
 
@@ -80,6 +88,7 @@ def run_rust_onnx_self_play(config: RustOnnxSelfPlayConfig) -> RustSelfPlayRunSu
         onnx_device=config.onnx_device,
         replay_samples=tuple(samples),
         game_logs=tuple(logs),
+        trajectory_episodes=tuple(episodes),
     )
 
 
@@ -90,7 +99,7 @@ def _run_one_batch(
     evaluator: Any,
     seed_start: int,
     game_count: int,
-) -> tuple[list[GameLog], list[ReplaySample]]:
+) -> tuple[list[GameLog], list[ReplaySample], list[TrajectoryEpisode]]:
     batch = core.GumbelSelfPlayBatch(
         game_count=game_count,
         simulations=config.self_play.gumbel_simulations,
@@ -106,6 +115,9 @@ def _run_one_batch(
     rngs = [random.Random(seed) for seed in seeds]
     moves: list[list[MoveLog]] = [[] for _ in seeds]
     pending: list[list[tuple[int, np.ndarray, np.ndarray, np.ndarray | None]]] = [
+        [] for _ in seeds
+    ]
+    trajectory_rows: list[list[tuple[int, int, np.ndarray, int, np.ndarray, np.ndarray | None]]] = [
         [] for _ in seeds
     ]
 
@@ -177,6 +189,16 @@ def _run_one_batch(
                         root_policy_logits_by_game[game_index],
                     )
                 )
+            trajectory_rows[game_index].append(
+                (
+                    turn,
+                    players[game_index],
+                    features_by_game[game_index],
+                    action,
+                    policy,
+                    root_policy_logits_by_game[game_index],
+                )
+            )
             moves[game_index].append(
                 MoveLog(turn=turn, player=players[game_index], action=action)
             )
@@ -199,20 +221,20 @@ def _run_one_batch(
     territory_scores = batch.territory_scores()
     logs: list[GameLog] = []
     samples: list[ReplaySample] = []
+    episodes: list[TrajectoryEpisode] = []
     for game_index, seed in enumerate(seeds):
         winner = winners[game_index]
         end_reason = end_reasons[game_index]
         if winner is None or end_reason is None:
             raise RuntimeError("Rust ONNX self-play stopped before terminal outcome")
-        logs.append(
-            GameLog(
-                seed=seed,
-                moves=moves[game_index],
-                winner=int(winner),
-                end_reason=int(end_reason),
-                territory_scores=territory_scores[game_index],
-            )
+        log = GameLog(
+            seed=seed,
+            moves=moves[game_index],
+            winner=int(winner),
+            end_reason=int(end_reason),
+            territory_scores=territory_scores[game_index],
         )
+        logs.append(log)
         samples.extend(
             ReplaySample(
                 features=features,
@@ -222,7 +244,40 @@ def _run_one_batch(
             )
             for player, features, policy, root_policy_logits in pending[game_index]
         )
-    return logs, samples
+        transitions: list[TrajectoryTransition] = []
+        rows = trajectory_rows[game_index]
+        for index, (turn, player, features, action, policy, root_policy_logits) in enumerate(rows):
+            next_features = rows[index + 1][2] if index + 1 < len(rows) else None
+            transitions.append(
+                TrajectoryTransition(
+                    episode_id=seed,
+                    timestep=turn,
+                    player=player,
+                    features=features,
+                    legal_mask=legal_mask_from_features(features),
+                    action=action,
+                    policy_target=policy,
+                    root_policy_logits=root_policy_logits,
+                    root_value=None,
+                    next_features=next_features,
+                    winner=int(winner),
+                    terminal=index == len(rows) - 1,
+                    model_version=0,
+                    search_config_hash="",
+                    created_iteration=0,
+                )
+            )
+        episodes.append(
+            TrajectoryEpisode(
+                episode_id=seed,
+                seed=seed,
+                transitions=tuple(transitions),
+                winner=int(winner),
+                end_reason=int(end_reason),
+                territory_scores=territory_scores[game_index],
+            )
+        )
+    return logs, samples, episodes
 
 
 def _search_active_with_root_policy_logits(
