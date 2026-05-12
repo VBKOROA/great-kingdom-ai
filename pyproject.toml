@@ -40,6 +40,8 @@ great-kingdom-export-onnx = "great_kingdom_ai.onnx_export:main"
 great-kingdom-rust-onnx-pipeline = "great_kingdom_ai.rust_onnx_pipeline:main"
 great-kingdom-import-legacy-pipeline = "great_kingdom_ai.rust_onnx_replay:main"
 great-kingdom-gumbel-ablation = "great_kingdom_ai.gumbel_ablation:main"
+great-kingdom-actor = "great_kingdom_ai.actor_learner_processes:actor_main"
+great-kingdom-learner = "great_kingdom_ai.actor_learner_processes:learner_main"
 
 [tool.setuptools.packages.find]
 where = ["python"]

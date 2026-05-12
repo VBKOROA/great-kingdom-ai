@@ -64,6 +64,9 @@ class ReplayBuffer:
         for sample in samples:
             self.push(sample)
 
+    def to_samples(self) -> list[ReplaySample]:
+        return list(self._samples)
+
     def sample(self, batch_size: int, rng: random.Random) -> list[ReplaySample]:
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
