@@ -394,6 +394,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--search-reanalyze-simulations", type=int, default=32)
     parser.add_argument("--search-reanalyze-max-considered-actions", type=int, default=16)
     parser.add_argument("--search-reanalyze-leaf-batch-size", type=int, default=8)
+    parser.add_argument("--search-reanalyze-root-batch-size", type=int, default=128)
     parser.add_argument("--search-reanalyze-seed", type=int, default=0)
     return parser
 
@@ -413,6 +414,7 @@ def main() -> NoReturn:
             simulations=args.search_reanalyze_simulations,
             max_considered_actions=args.search_reanalyze_max_considered_actions,
             leaf_batch_size=args.search_reanalyze_leaf_batch_size,
+            root_batch_size=args.search_reanalyze_root_batch_size,
             seed=args.search_reanalyze_seed,
         ),
     )

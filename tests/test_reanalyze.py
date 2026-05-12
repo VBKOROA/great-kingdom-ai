@@ -203,23 +203,6 @@ def test_build_reanalyze_snapshot_can_refresh_policy_targets_with_search(
         def policy_target(self) -> list[float]:
             return make_policy(PASS_ACTION).tolist()
 
-    class FakeSearch:
-        def __init__(self, **kwargs: object) -> None:
-            self.kwargs = kwargs
-
-        def search_with_logits_and_evaluator(
-            self,
-            state: object,
-            policy_logits: list[float],
-            evaluator: object,
-            root_value: float,
-            leaf_batch_size: int,
-        ) -> FakeResult:
-            assert len(policy_logits) == ACTION_SPACE
-            assert -1.0 <= root_value <= 1.0
-            assert leaf_batch_size == 3
-            return FakeResult()
-
     class FakeGameState:
         def __init__(self) -> None:
             self.actions: list[int] = []
@@ -237,9 +220,47 @@ def test_build_reanalyze_snapshot_can_refresh_policy_targets_with_search(
             action = [1, 2, PASS_ACTION][len(self.actions)]
             return make_features(action).reshape(-1).tolist()
 
+    class FakeRequest:
+        def __init__(self, states: list[FakeGameState]) -> None:
+            self.states = states
+
+        def feature_planes(self) -> list[list[float]]:
+            return [state.feature_planes() for state in self.states]
+
+    class FakeBatch:
+        def __init__(self, game_count: int, **kwargs: object) -> None:
+            self.states = [FakeGameState() for _ in range(game_count)]
+            self.kwargs = kwargs
+
+        def apply_actions(self, actions: list[int | None]) -> None:
+            for state, action in zip(self.states, actions, strict=True):
+                if action is not None:
+                    state.apply_action(action)
+
+        def active_game_indexes(self) -> list[int]:
+            return list(range(len(self.states)))
+
+        def active_eval_request(self) -> FakeRequest:
+            return FakeRequest(self.states)
+
+        def search_active_with_logits_and_evaluator(
+            self,
+            policy_logits: list[list[float]],
+            evaluator: object,
+            root_values: list[float],
+            leaf_batch_size: int,
+        ) -> list[FakeResult]:
+            del evaluator
+            assert len(policy_logits) == len(self.states)
+            assert len(root_values) == len(self.states)
+            assert all(len(row) == ACTION_SPACE for row in policy_logits)
+            assert all(-1.0 <= value <= 1.0 for value in root_values)
+            assert leaf_batch_size == 3
+            return [FakeResult() for _ in self.states]
+
     class FakeCore:
         GameState = FakeGameState
-        GumbelSearch = FakeSearch
+        GumbelSelfPlayBatch = FakeBatch
 
     monkeypatch.setattr(search_reanalyze, "_import_core", lambda: FakeCore)
     replay = TrajectoryReplayBuffer(capacity=8)
@@ -308,6 +329,8 @@ def test_reanalyze_parser_exposes_phase7_cli_options() -> None:
             "8",
             "--search-reanalyze-leaf-batch-size",
             "3",
+            "--search-reanalyze-root-batch-size",
+            "5",
         ]
     )
 
@@ -317,3 +340,4 @@ def test_reanalyze_parser_exposes_phase7_cli_options() -> None:
     assert args.search_reanalyze_budget == 7
     assert args.search_reanalyze_simulations == 8
     assert args.search_reanalyze_leaf_batch_size == 3
+    assert args.search_reanalyze_root_batch_size == 5

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import shutil
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -67,6 +68,9 @@ class TrainV2PipelineConfig:
     always_promote: bool = False
     resume: bool = True
     train_checkpoint_mode: str = "resume"
+    train_reuse_factor: float | None = 1.5
+    min_train_steps: int = 1
+    max_train_steps: int | None = None
     reanalyze_batch_size: int = 1024
     reanalyze_device: str | None = None
     bootstrap_td_steps: int = 4
@@ -76,6 +80,7 @@ class TrainV2PipelineConfig:
     search_reanalyze_simulations: int = 32
     search_reanalyze_max_considered_actions: int = 16
     search_reanalyze_leaf_batch_size: int = 8
+    search_reanalyze_root_batch_size: int = 128
     search_reanalyze_seed: int = 0
     self_play: SelfPlayConfig = SelfPlayConfig()
 
@@ -223,6 +228,7 @@ def run_train_v2_pipeline(
                         pipeline_config.search_reanalyze_max_considered_actions
                     ),
                     leaf_batch_size=pipeline_config.search_reanalyze_leaf_batch_size,
+                    root_batch_size=pipeline_config.search_reanalyze_root_batch_size,
                     seed=pipeline_config.search_reanalyze_seed,
                 ),
             ),
@@ -230,18 +236,30 @@ def run_train_v2_pipeline(
         shutil.copy2(target_snapshot_path, paths["latest_target_snapshot_path"])
         printer.progress("iteration", 3, phase_total, detail="reanalyze complete")
 
+        effective_train_config = _train_config_for_iteration(
+            train_config,
+            new_transitions=new_transitions,
+            pipeline_config=pipeline_config,
+        )
         target_replay = _load_target_snapshot(target_snapshot_path)
         candidate_checkpoint = paths["candidate_dir"] / f"candidate-{iteration:06d}.pt"
+        printer.metric(
+            "train steps",
+            (
+                f"{effective_train_config.steps} "
+                f"(reuse={_effective_reuse_factor(effective_train_config, new_transitions):.2f})"
+            ),
+        )
         printer.step(f"training candidate -> {candidate_checkpoint}")
         train_summary = train_from_replay(
             target_replay,
-            train_config,
+            effective_train_config,
             checkpoint_path=candidate_checkpoint,
             **_train_checkpoint_kwargs(
                 _as_rust_config(pipeline_config),
                 _training_source_checkpoint(pipeline_config, paths),
             ),
-            log_every=max(1, train_config.steps // 10),
+            log_every=max(1, effective_train_config.steps // 10),
             progress_callback=lambda current, target, loss: printer.progress(
                 "train",
                 current,
@@ -363,6 +381,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-replay-transitions", type=int, default=None)
     parser.add_argument("--max-self-play-games", type=int, default=None)
     parser.add_argument("--bootstrap-td-steps", type=int, default=None)
+    parser.add_argument("--train-reuse-factor", type=float, default=None)
+    parser.add_argument("--min-train-steps", type=int, default=None)
+    parser.add_argument("--max-train-steps", type=int, default=None)
     parser.add_argument("--search-reanalyze-fraction", type=float, default=None)
     parser.add_argument("--search-reanalyze-budget", type=int, default=None)
     parser.add_argument("--skip-arena", action="store_true")
@@ -390,6 +411,9 @@ def main() -> NoReturn:
         "min_replay_transitions": args.min_replay_transitions,
         "max_self_play_games": args.max_self_play_games,
         "bootstrap_td_steps": args.bootstrap_td_steps,
+        "train_reuse_factor": args.train_reuse_factor,
+        "min_train_steps": args.min_train_steps,
+        "max_train_steps": args.max_train_steps,
         "search_reanalyze_fraction": args.search_reanalyze_fraction,
         "search_reanalyze_budget": args.search_reanalyze_budget,
         "skip_arena": True if args.skip_arena else None,
@@ -664,6 +688,13 @@ def _validate_config(config: TrainV2PipelineConfig) -> None:
         raise ValueError("reanalyze_batch_size must be positive")
     if config.train_checkpoint_mode not in {"resume", "bootstrap"}:
         raise ValueError("train_checkpoint_mode must be one of: resume, bootstrap")
+    if config.train_reuse_factor is not None:
+        if not math.isfinite(config.train_reuse_factor) or config.train_reuse_factor <= 0.0:
+            raise ValueError("train_reuse_factor must be finite and positive")
+    if config.min_train_steps <= 0:
+        raise ValueError("min_train_steps must be positive")
+    if config.max_train_steps is not None and config.max_train_steps < config.min_train_steps:
+        raise ValueError("max_train_steps must be at least min_train_steps")
 
 
 def _as_rust_config(config: TrainV2PipelineConfig) -> RustOnnxPipelineConfig:
@@ -690,6 +721,32 @@ def _as_rust_config(config: TrainV2PipelineConfig) -> RustOnnxPipelineConfig:
 
 def _search_config_hash(config: SelfPlayConfig) -> str:
     return json.dumps(asdict(config), sort_keys=True, separators=(",", ":"))
+
+
+def _train_config_for_iteration(
+    train_config: TrainingConfig,
+    *,
+    new_transitions: int,
+    pipeline_config: TrainV2PipelineConfig,
+) -> TrainingConfig:
+    if pipeline_config.train_reuse_factor is None:
+        return train_config
+    if new_transitions <= 0:
+        steps = pipeline_config.min_train_steps
+    else:
+        steps = math.ceil(
+            new_transitions * pipeline_config.train_reuse_factor / train_config.batch_size
+        )
+        steps = max(pipeline_config.min_train_steps, steps)
+    if pipeline_config.max_train_steps is not None:
+        steps = min(steps, pipeline_config.max_train_steps)
+    return TrainingConfig(**{**asdict(train_config), "steps": steps})
+
+
+def _effective_reuse_factor(train_config: TrainingConfig, new_transitions: int) -> float:
+    if new_transitions <= 0:
+        return 0.0
+    return train_config.steps * train_config.batch_size / new_transitions
 
 
 __all__ = [

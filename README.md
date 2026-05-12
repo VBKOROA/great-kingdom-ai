@@ -92,12 +92,13 @@ great-kingdom-train-v2 \
 현재 Runpod v2 권장 설정은 `configs/runpod/train-v2-pipeline.json`입니다. 3090 24GB에서
 장시간 재학습을 염두에 둔 균형형 설정입니다.
 
-- trajectory replay capacity: `500000`
+- trajectory replay capacity: `150000`
 - self-play: `1500` games/iteration
 - Gumbel full search: `96` simulations
 - playout-cap: full fraction `0.35`, fast simulations `24`
 - bootstrap target: `8` steps
-- search reanalyze: `2%`, 최대 `2048` states/iteration
+- search reanalyze: `0.5%`, 최대 `256` states/iteration
+- learner: batch `512`, reuse factor `1.5`, steps clamp `64..192`, priority sampling enabled
 - arena는 기본 skip, candidate는 자동 promote
 
 v2는 aggregate replay를 쓰지 않습니다. 중복 state 평균 대신 trajectory replay, reanalyze,

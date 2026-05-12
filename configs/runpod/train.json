@@ -15,5 +15,13 @@
   "mask_policy_loss": true,
   "amp": true,
   "recent_sample_fraction": 0.5,
-  "recent_sample_window": 30000
+  "recent_sample_window": 50000,
+  "priority_enabled": true,
+  "priority_alpha": 0.6,
+  "priority_beta": 0.4,
+  "priority_value_error_weight": 1.0,
+  "priority_policy_kl_weight": 1.0,
+  "priority_target_age_weight": 0.25,
+  "priority_max_priority": 64.0,
+  "prefetch_batches": 2
 }

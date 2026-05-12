@@ -109,6 +109,7 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
     exported: list[tuple[Path, Path]] = []
     reanalyze_calls: list[dict[str, Any]] = []
     trained_replay_types: list[str] = []
+    train_steps: list[int] = []
 
     def fake_save_checkpoint(state: object, path: str | Path) -> Path:
         del state
@@ -200,7 +201,8 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
         log_every: int,
         progress_callback: Any = None,
     ) -> FakeTrainSummary:
-        del config, resume_path, bootstrap_weights_path, log_every
+        del resume_path, bootstrap_weights_path, log_every
+        train_steps.append(config.steps)
         trained_replay_types.append(type(replay).__name__)
         if progress_callback is not None:
             progress_callback(3, 3, {"total": 0.5})
@@ -221,6 +223,9 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
             replay_capacity=8,
             self_play_games=1,
             min_replay_transitions=1,
+            train_reuse_factor=1.5,
+            min_train_steps=1,
+            max_train_steps=None,
             skip_arena=True,
             always_promote=True,
             self_play=SelfPlayConfig(policy_target_c_visit=5.0, policy_target_c_scale=0.25),
@@ -245,8 +250,27 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
         }
     ]
     assert trained_replay_types == ["ReanalyzeTargetSnapshot"]
+    assert train_steps == [3]
     assert (tmp_path / "checkpoints" / "best.pt").read_text(encoding="utf-8") == "candidate"
     assert (tmp_path / "replay" / "game_logs.jsonl").is_file()
+
+
+def test_train_config_for_iteration_scales_steps_from_new_transitions() -> None:
+    config = pipeline_module._train_config_for_iteration(
+        TrainingConfig(batch_size=512, steps=999),
+        new_transitions=52120,
+        pipeline_config=pipeline_module.TrainV2PipelineConfig(
+            train_reuse_factor=1.5,
+            min_train_steps=64,
+            max_train_steps=192,
+            self_play=SelfPlayConfig(policy_target_c_visit=5.0, policy_target_c_scale=0.25),
+        ),
+    )
+
+    assert config.steps == 153
+    assert pipeline_module._effective_reuse_factor(config, 52120) == pytest.approx(
+        153 * 512 / 52120
+    )
 
 
 def test_train_v2_pipeline_requires_trajectory_episodes(

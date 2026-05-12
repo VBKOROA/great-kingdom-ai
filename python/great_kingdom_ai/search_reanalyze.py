@@ -31,6 +31,7 @@ class SearchReanalyzeConfig:
     policy_target_c_scale: float = 0.25
     policy_target_temperature: float = 1.0
     leaf_batch_size: int = 8
+    root_batch_size: int = 128
     seed: int = 0
     value_error_weight: float = 1.0
     policy_kl_weight: float = 1.0
@@ -63,6 +64,8 @@ class SearchReanalyzeConfig:
                 raise ValueError(f"search reanalyze {label} must be finite and positive")
         if self.leaf_batch_size <= 0:
             raise ValueError("search reanalyze leaf_batch_size must be positive")
+        if self.root_batch_size <= 0:
+            raise ValueError("search reanalyze root_batch_size must be positive")
         for label, value in (
             ("value_error_weight", self.value_error_weight),
             ("policy_kl_weight", self.policy_kl_weight),
@@ -125,20 +128,28 @@ def refresh_policies_with_search(
     core = _import_core()
     refs = {ref.row_index: ref for ref in _transition_refs(episodes)}
     refreshed = policies.copy()
-    for row_index in selected_indexes:
-        ref = refs[row_index]
-        state = _reconstruct_state(core, ref.episode, ref.transition_index)
-        _validate_reconstructed_state(state, ref.episode.transitions[ref.transition_index])
-        search = _create_search(core, config, seed_offset=row_index)
-        result = search.search_with_logits_and_evaluator(
-            state,
-            policy_logits[row_index].astype(np.float32).tolist(),
-            _leaf_evaluator(model, device),
-            float(refreshed_values[row_index]),
+    evaluator = _leaf_evaluator(model, device)
+    for start in range(0, len(selected_indexes), config.root_batch_size):
+        chunk_indexes = selected_indexes[start : start + config.root_batch_size]
+        chunk_refs = [refs[row_index] for row_index in chunk_indexes]
+        batch = _reconstruct_batch(core, chunk_refs, config=config)
+        _validate_reconstructed_batch(batch, chunk_refs)
+        results = batch.search_active_with_logits_and_evaluator(
+            [
+                policy_logits[row_index].astype(np.float32).tolist()
+                for row_index in chunk_indexes
+            ],
+            evaluator,
+            [float(refreshed_values[row_index]) for row_index in chunk_indexes],
             config.leaf_batch_size,
         )
-        refreshed[row_index] = _policy_target_from_result(result)
-        search_reanalyzed[row_index] = True
+        if len(results) != len(chunk_indexes):
+            raise ValueError("batch search result length does not match selected rows")
+        for row_index, result in zip(chunk_indexes, results, strict=True):
+            if result is None:
+                raise ValueError("batch search did not return a result for selected row")
+            refreshed[row_index] = _policy_target_from_result(result)
+            search_reanalyzed[row_index] = True
 
     return SearchReanalyzeResult(
         policies=refreshed,
@@ -223,6 +234,57 @@ def _reconstruct_state(core: Any, episode: TrajectoryEpisode, transition_index: 
             raise ValueError("cannot reconstruct a transition after terminal state")
         state.apply_action(int(prior.action))
     return state
+
+
+def _reconstruct_batch(
+    core: Any,
+    refs: Sequence[_TransitionRef],
+    *,
+    config: SearchReanalyzeConfig,
+) -> Any:
+    batch = core.GumbelSelfPlayBatch(
+        game_count=len(refs),
+        simulations=config.simulations,
+        max_considered_actions=config.max_considered_actions,
+        c_visit=config.c_visit,
+        c_scale=config.c_scale,
+        seed=config.seed + min(ref.row_index for ref in refs),
+        policy_target_temperature=config.policy_target_temperature,
+        policy_target_c_visit=config.policy_target_c_visit,
+        policy_target_c_scale=config.policy_target_c_scale,
+    )
+    max_depth = max(ref.transition_index for ref in refs)
+    for depth in range(max_depth):
+        batch.apply_actions(
+            [
+                int(ref.episode.transitions[depth].action)
+                if depth < ref.transition_index
+                else None
+                for ref in refs
+            ]
+        )
+    return batch
+
+
+def _validate_reconstructed_batch(batch: Any, refs: Sequence[_TransitionRef]) -> None:
+    active_indexes = list(batch.active_game_indexes())
+    if active_indexes != list(range(len(refs))):
+        raise ValueError("reanalyze batch reconstructed terminal or inactive states")
+    request = batch.active_eval_request()
+    feature_rows = request.feature_planes()
+    if len(feature_rows) != len(refs):
+        raise ValueError("reanalyze batch feature count does not match selected rows")
+    expected = FEATURE_CHANNELS * BOARD_SIZE * BOARD_SIZE
+    for ref, feature_row in zip(refs, feature_rows, strict=True):
+        features = np.asarray(feature_row, dtype=np.float32)
+        if features.shape != (expected,):
+            raise ValueError(
+                f"expected reconstructed feature shape {(expected,)}, got {features.shape}"
+            )
+        transition = ref.episode.transitions[ref.transition_index]
+        features = features.reshape(FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
+        if not np.allclose(features, transition.features, atol=1e-6):
+            raise ValueError("reconstructed state features do not match trajectory transition")
 
 
 def _validate_reconstructed_state(state: Any, transition: TrajectoryTransition) -> None:
