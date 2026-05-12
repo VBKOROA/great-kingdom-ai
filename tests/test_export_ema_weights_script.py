@@ -92,10 +92,12 @@ def test_export_ema_onnx_can_write_only_quantized_onnx(
         *,
         per_channel: bool,
         reduce_range: bool,
+        preprocess: bool,
     ) -> None:
         assert Path(input_path).read_text(encoding="utf-8") == "fp32 onnx"
         assert per_channel is True
         assert reduce_range is False
+        assert preprocess is True
         Path(output_path).write_text("int8 onnx", encoding="utf-8")
 
     monkeypatch.setattr(module, "export_checkpoint_to_onnx", fake_export)

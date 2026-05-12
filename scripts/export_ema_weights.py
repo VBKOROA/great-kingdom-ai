@@ -26,6 +26,7 @@ def export_ema_onnx(
     dummy_batch_size: int = 1,
     quantize_per_channel: bool = True,
     quantize_reduce_range: bool = False,
+    quantize_preprocess: bool = True,
 ) -> dict[str, Any]:
     if onnx_output_path is None and quantized_onnx_output_path is None:
         raise ValueError("onnx_output_path or quantized_onnx_output_path is required")
@@ -56,6 +57,7 @@ def export_ema_onnx(
                 quantized_onnx_output_path,
                 per_channel=quantize_per_channel,
                 reduce_range=quantize_reduce_range,
+                preprocess=quantize_preprocess,
             )
             summary["quantized_onnx_output"] = str(quantized_onnx_output_path)
             return summary
@@ -74,6 +76,7 @@ def export_ema_onnx(
             quantized_onnx_output_path,
             per_channel=quantize_per_channel,
             reduce_range=quantize_reduce_range,
+            preprocess=quantize_preprocess,
         )
         summary["quantized_onnx_output"] = str(quantized_onnx_output_path)
 
@@ -105,6 +108,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="use a reduced INT8 range for older CPU compatibility",
     )
+    parser.add_argument(
+        "--skip-quantize-preprocess",
+        action="store_true",
+        help="skip ONNX Runtime quantization pre-processing",
+    )
     parser.add_argument("--opset-version", type=int, default=DEFAULT_OPSET_VERSION)
     parser.add_argument("--dummy-batch-size", type=int, default=1)
     return parser
@@ -121,6 +129,7 @@ def main() -> NoReturn:
         dummy_batch_size=args.dummy_batch_size,
         quantize_per_channel=not args.no_quantize_per_channel,
         quantize_reduce_range=args.quantize_reduce_range,
+        quantize_preprocess=not args.skip_quantize_preprocess,
     )
     print(json.dumps(summary, sort_keys=True))
     raise SystemExit(0)
@@ -170,16 +179,32 @@ def _quantize_onnx_dynamic(
     *,
     per_channel: bool,
     reduce_range: bool,
+    preprocess: bool,
 ) -> None:
     try:
-        from onnxruntime.quantization import QuantType, quantize_dynamic
+        from onnxruntime.quantization import QuantType, quant_pre_process, quantize_dynamic
     except ModuleNotFoundError as exc:
         raise RuntimeError("onnxruntime is required for ONNX quantization") from exc
 
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
+
+    source = Path(input_path)
+    if preprocess:
+        with tempfile.TemporaryDirectory(prefix="gka-onnx-quant-pre-") as temp_dir:
+            preprocessed = Path(temp_dir) / "preprocessed.onnx"
+            quant_pre_process(source, preprocessed)
+            quantize_dynamic(
+                preprocessed,
+                destination,
+                per_channel=per_channel,
+                reduce_range=reduce_range,
+                weight_type=QuantType.QInt8,
+            )
+            return
+
     quantize_dynamic(
-        input_path,
+        source,
         destination,
         per_channel=per_channel,
         reduce_range=reduce_range,
