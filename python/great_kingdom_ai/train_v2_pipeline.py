@@ -26,6 +26,7 @@ from great_kingdom_ai.reanalyze import (
     ReanalyzeSummary,
     reanalyze_replay_store,
 )
+from great_kingdom_ai.runpod_pruning import collect_prune_items, prune_items
 from great_kingdom_ai.rust_onnx_pipeline import (
     RustOnnxPipelineConfig,
     _arena_config_for_pipeline,
@@ -86,6 +87,10 @@ class TrainV2PipelineConfig:
     search_reanalyze_leaf_batch_size: int = 8
     search_reanalyze_root_batch_size: int = 128
     search_reanalyze_seed: int = 0
+    prune_artifacts: bool = False
+    prune_keep_targets: int = 2
+    prune_keep_candidates: int = 3
+    prune_keep_onnx: int = 1
     self_play: SelfPlayConfig = SelfPlayConfig()
 
 
@@ -181,7 +186,8 @@ def run_train_v2_pipeline(
     printer.metric("reanalyze device", _reanalyze_device(pipeline_config, train_config))
 
     for iteration in range(first_iteration, last_iteration + 1):
-        phase_total = 6 if not _should_run_arena(_as_rust_config(pipeline_config)) else 7
+        base_phase_total = 6 if not _should_run_arena(_as_rust_config(pipeline_config)) else 7
+        phase_total = base_phase_total + (1 if pipeline_config.prune_artifacts else 0)
         printer.title(f"Train V2 Iteration {iteration}/{last_iteration}")
         onnx_path = paths["onnx_checkpoint_dir"] / f"best-{iteration:06d}.onnx"
         printer.step(f"exporting best checkpoint -> {onnx_path}")
@@ -346,7 +352,13 @@ def run_train_v2_pipeline(
         )
         summaries.append(iteration_summary)
         _append_metrics(paths["metrics_path"], iteration_summary)
-        printer.progress("iteration", phase_total, phase_total, detail="metrics written")
+        printer.progress("iteration", base_phase_total, phase_total, detail="metrics written")
+        if pipeline_config.prune_artifacts:
+            _prune_pipeline_artifacts(
+                pipeline_config=pipeline_config,
+                printer=printer,
+            )
+            printer.progress("iteration", phase_total, phase_total, detail="pruning complete")
 
     return TrainV2PipelineSummary(
         iterations=summaries,
@@ -399,6 +411,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-train-steps", type=int, default=None)
     parser.add_argument("--search-reanalyze-fraction", type=float, default=None)
     parser.add_argument("--search-reanalyze-budget", type=int, default=None)
+    parser.add_argument("--prune-artifacts", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--prune-keep-targets", type=int, default=None)
+    parser.add_argument("--prune-keep-candidates", type=int, default=None)
+    parser.add_argument("--prune-keep-onnx", type=int, default=None)
     parser.add_argument("--skip-arena", action="store_true")
     parser.add_argument("--always-promote", action="store_true")
     parser.add_argument("--json", action="store_true")
@@ -429,6 +445,10 @@ def main() -> NoReturn:
         "max_train_steps": args.max_train_steps,
         "search_reanalyze_fraction": args.search_reanalyze_fraction,
         "search_reanalyze_budget": args.search_reanalyze_budget,
+        "prune_artifacts": args.prune_artifacts,
+        "prune_keep_targets": args.prune_keep_targets,
+        "prune_keep_candidates": args.prune_keep_candidates,
+        "prune_keep_onnx": args.prune_keep_onnx,
         "skip_arena": True if args.skip_arena else None,
         "always_promote": True if args.always_promote else None,
     }.items():
@@ -708,6 +728,13 @@ def _validate_config(config: TrainV2PipelineConfig) -> None:
         raise ValueError("min_train_steps must be positive")
     if config.max_train_steps is not None and config.max_train_steps < config.min_train_steps:
         raise ValueError("max_train_steps must be at least min_train_steps")
+    for label, value in (
+        ("prune_keep_targets", config.prune_keep_targets),
+        ("prune_keep_candidates", config.prune_keep_candidates),
+        ("prune_keep_onnx", config.prune_keep_onnx),
+    ):
+        if value < 0:
+            raise ValueError(f"{label} must be non-negative")
 
 
 def _as_rust_config(config: TrainV2PipelineConfig) -> RustOnnxPipelineConfig:
@@ -760,6 +787,25 @@ def _effective_reuse_factor(train_config: TrainingConfig, new_transitions: int) 
     if new_transitions <= 0:
         return 0.0
     return train_config.steps * train_config.batch_size / new_transitions
+
+
+def _prune_pipeline_artifacts(
+    *,
+    pipeline_config: TrainV2PipelineConfig,
+    printer: PipelinePrinter,
+) -> None:
+    items = collect_prune_items(
+        pipeline_config.work_dir,
+        keep_targets=pipeline_config.prune_keep_targets,
+        keep_candidates=pipeline_config.prune_keep_candidates,
+        keep_onnx=pipeline_config.prune_keep_onnx,
+    )
+    total_bytes = sum(item.size_bytes for item in items)
+    printer.step(
+        "pruning regenerable artifacts "
+        f"(items={len(items)}, bytes={total_bytes}, elapsed={printer.elapsed()})"
+    )
+    prune_items(items, delete=True)
 
 
 __all__ = [

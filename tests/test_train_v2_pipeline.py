@@ -34,6 +34,12 @@ def make_policy(action: int) -> np.ndarray:
     return policy
 
 
+def write_text(path: Path, text: str = "x") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
 def make_episode(seed: int) -> TrajectoryEpisode:
     actions = [seed % 10, PASS_ACTION]
     transitions = tuple(
@@ -204,6 +210,10 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
     monkeypatch.setattr(pipeline_module, "export_checkpoint_to_onnx", fake_export)
     monkeypatch.setattr(pipeline_module, "reanalyze_replay_store", fake_reanalyze_replay_store)
     monkeypatch.setattr(pipeline_module, "train_from_replay", fake_train_from_replay)
+    old_target = write_text(tmp_path / "targets" / "targets-000000.npz")
+    old_candidate = write_text(tmp_path / "checkpoints" / "candidates" / "candidate-000000.pt")
+    old_onnx = write_text(tmp_path / "checkpoints" / "onnx" / "best-000000.onnx")
+    old_self_play = write_text(tmp_path / "self-play" / "iteration-000000" / "marker.txt")
 
     summary = pipeline_module.run_train_v2_pipeline(
         pipeline_config=pipeline_module.TrainV2PipelineConfig(
@@ -217,6 +227,10 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
             max_train_steps=None,
             skip_arena=True,
             always_promote=True,
+            prune_artifacts=True,
+            prune_keep_targets=1,
+            prune_keep_candidates=1,
+            prune_keep_onnx=1,
             self_play=SelfPlayConfig(policy_target_c_visit=50.0, policy_target_c_scale=1.0),
         ),
         train_config=TrainingConfig(batch_size=1, steps=3, device="cpu"),
@@ -244,6 +258,13 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
     assert train_steps == [3]
     assert (tmp_path / "checkpoints" / "best.pt").read_text(encoding="utf-8") == "candidate"
     assert (tmp_path / "replay" / "game_logs.jsonl").is_file()
+    assert not old_target.exists()
+    assert not old_candidate.exists()
+    assert not old_onnx.exists()
+    assert not old_self_play.parent.exists()
+    assert (tmp_path / "targets" / "targets-000001.npz").exists()
+    assert (tmp_path / "checkpoints" / "candidates" / "candidate-000001.pt").exists()
+    assert (tmp_path / "checkpoints" / "onnx" / "best-000001.onnx").exists()
 
 
 def test_train_config_for_iteration_scales_steps_from_new_transitions() -> None:
