@@ -30,8 +30,8 @@
   "search_reanalyze_seed": 900000,
   "prune_artifacts": true,
   "prune_keep_targets": 2,
-  "prune_keep_candidates": 3,
-  "prune_keep_onnx": 1,
+  "prune_keep_candidates": 10,
+  "prune_keep_onnx": 10,
   "self_play": {
     "max_turns": 112,
     "gumbel_simulations": 96,
