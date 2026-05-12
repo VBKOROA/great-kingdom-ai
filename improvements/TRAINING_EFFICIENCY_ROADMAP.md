@@ -413,7 +413,7 @@ priority = 1
 - 로컬 CPU 테스트가 깨지면 안 된다.
 - DataLoader worker가 PyTorch/CUDA context와 충돌하지 않게 CPU preprocessing과 CUDA copy 경계를 분리한다.
 
-### Phase 6: Actor/Learner 프로세스 분리
+### ~~Phase 6: Actor/Learner 프로세스 분리~~
 
 목표:
 
