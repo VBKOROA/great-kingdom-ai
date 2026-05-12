@@ -5,6 +5,7 @@ import importlib.util
 import random
 from pathlib import Path
 
+import great_kingdom_ai.reanalyze as reanalyze_module
 import numpy as np
 import pytest
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS, PASS_ACTION
@@ -159,6 +160,50 @@ def test_reanalyze_target_snapshot_priority_sampling_uses_importance_weights() -
     assert scores[1] > scores[0]
     assert batch.sample_weights.shape == (1,)
     assert 0.0 < batch.sample_weights[0] <= 2.0
+
+
+def test_reanalyze_target_snapshot_caches_priority_scores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    features = np.stack(
+        [make_features(1), make_features(2), make_features(PASS_ACTION)],
+        axis=0,
+    )
+    policies = np.stack([make_policy(1), make_policy(2), make_policy(PASS_ACTION)], axis=0)
+    snapshot = ReanalyzeTargetSnapshot(
+        features=features,
+        policies=policies,
+        values=np.asarray([1.0, 0.0, -1.0], dtype=np.float32),
+        refreshed_values=np.asarray([1.0, -1.0, -1.0], dtype=np.float32),
+        sample_weights=np.ones((3,), dtype=np.float32),
+        episode_ids=np.asarray([7, 7, 7], dtype=np.int64),
+        timesteps=np.asarray([0, 1, 2], dtype=np.int64),
+        players=np.asarray([1, 2, 1], dtype=np.int64),
+        source_model_versions=np.asarray([3, 3, 3], dtype=np.int64),
+        created_iterations=np.asarray([2, 2, 2], dtype=np.int64),
+        target_ages=np.asarray([0, 5, 1], dtype=np.int64),
+        model_version=8,
+        bootstrap_td_steps=0,
+        gamma=1.0,
+        policy_logits=policies,
+    )
+    calls = 0
+
+    def fake_priority_scores(**kwargs: object) -> np.ndarray:
+        nonlocal calls
+        calls += 1
+        del kwargs
+        return np.asarray([1.0, 4.0, 2.0], dtype=np.float32)
+
+    monkeypatch.setattr(reanalyze_module, "priority_scores", fake_priority_scores)
+    config = PrioritySamplingConfig(enabled=True, alpha=1.0, beta=0.4)
+
+    snapshot.sample_arrays(1, random.Random(0), priority_config=config)
+    snapshot.sample_arrays(1, random.Random(1), priority_config=config)
+    scores = snapshot.priority_scores(config)
+
+    assert calls == 1
+    assert scores.tolist() == pytest.approx([1.0, 4.0, 2.0])
 
 
 @pytest.mark.skipif(_torch_spec is None, reason="torch is not installed")

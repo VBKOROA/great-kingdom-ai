@@ -112,6 +112,11 @@ class ReanalyzeTargetSnapshot:
     checkpoint_path: str = ""
     policy_logits: np.ndarray | None = None
     search_reanalyzed: np.ndarray | None = None
+    _priority_score_cache: dict[PrioritySamplingConfig, np.ndarray] = field(
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )
 
     @property
     def capacity(self) -> int:
@@ -142,7 +147,7 @@ class ReanalyzeTargetSnapshot:
         priority_config: PrioritySamplingConfig | None = None,
     ) -> ReanalyzeTargetBatch:
         if priority_config is not None and priority_config.enabled:
-            priorities = self.priority_scores(priority_config)
+            priorities = self._cached_priority_scores(priority_config)
             sampled = sample_priority_indexes(
                 priorities=priorities ** np.float32(priority_config.alpha),
                 batch_size=batch_size,
@@ -181,7 +186,13 @@ class ReanalyzeTargetSnapshot:
         )
 
     def priority_scores(self, config: PrioritySamplingConfig) -> np.ndarray:
-        return priority_scores(
+        return self._cached_priority_scores(config).copy()
+
+    def _cached_priority_scores(self, config: PrioritySamplingConfig) -> np.ndarray:
+        cached = self._priority_score_cache.get(config)
+        if cached is not None:
+            return cached
+        scores = priority_scores(
             values=self.values,
             value_predictions=self.refreshed_values,
             policies=self.policies,
@@ -190,6 +201,8 @@ class ReanalyzeTargetSnapshot:
             target_ages=self.target_ages,
             config=config,
         )
+        self._priority_score_cache[config] = scores
+        return scores
 
     def save(self, path: str | Path, *, compressed: bool = True) -> None:
         snapshot = _validated_snapshot(self)
