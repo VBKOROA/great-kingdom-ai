@@ -14,6 +14,15 @@ class PruneItem:
     size_bytes: int
 
 
+ACTIVE_CHECKPOINT_NAMES = frozenset(
+    {
+        "best.pt",
+        "training-latest.pt",
+        "candidate.pt",
+    }
+)
+
+
 def collect_prune_items(
     work_dir: Path,
     *,
@@ -70,7 +79,10 @@ def collect_prune_items(
             if path.exists()
         )
 
-    return _dedupe_items(items)
+    return _filter_protected_items(
+        _dedupe_items(items),
+        protected_paths=_active_checkpoint_paths(work_dir),
+    )
 
 
 def prune_items(items: list[PruneItem], *, delete: bool) -> None:
@@ -145,6 +157,42 @@ def _dedupe_items(items: list[PruneItem]) -> list[PruneItem]:
         seen.add(resolved)
         deduped.append(item)
     return deduped
+
+
+def _active_checkpoint_paths(work_dir: Path) -> set[Path]:
+    checkpoint_dir = work_dir / "checkpoints"
+    return {
+        checkpoint_dir / name
+        for name in ACTIVE_CHECKPOINT_NAMES
+        if (checkpoint_dir / name).exists()
+    }
+
+
+def _filter_protected_items(
+    items: list[PruneItem],
+    *,
+    protected_paths: set[Path],
+) -> list[PruneItem]:
+    if not protected_paths:
+        return items
+    resolved_protected = {path.resolve() for path in protected_paths}
+    return [
+        item
+        for item in items
+        if not _path_contains_any(item.path.resolve(), resolved_protected)
+    ]
+
+
+def _path_contains_any(path: Path, protected_paths: set[Path]) -> bool:
+    for protected in protected_paths:
+        if path == protected:
+            return True
+        try:
+            protected.relative_to(path)
+        except ValueError:
+            continue
+        return True
+    return False
 
 
 def _human_size(size: int) -> str:

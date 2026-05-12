@@ -2,7 +2,9 @@
 
 The script is dry-run by default. Pass ``--delete`` to actually remove files.
 It deliberately keeps trajectory replay and active checkpoints because those are
-the expensive state needed to resume v2 training.
+the expensive state needed to resume v2 training. EMA weights live inside those
+checkpoints, so best.pt, training-latest.pt, and candidate.pt are always treated
+as protected state.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from great_kingdom_ai.runpod_pruning import (
     prune_items,
 )
 
-DEFAULT_WORK_DIR = Path("data/runpod/train-v2-recommended-medium-plus")
+DEFAULT_WORK_DIR = Path("data/runpod/train-v2-large-policy")
 __all__ = ["PruneItem", "collect_prune_items", "format_summary", "prune_items"]
 
 
@@ -27,8 +29,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--work-dir", type=Path, default=DEFAULT_WORK_DIR)
     parser.add_argument("--delete", action="store_true", help="actually delete selected paths")
     parser.add_argument("--keep-targets", type=int, default=2)
-    parser.add_argument("--keep-candidates", type=int, default=3)
-    parser.add_argument("--keep-onnx", type=int, default=1)
+    parser.add_argument("--keep-candidates", type=int, default=10)
+    parser.add_argument("--keep-onnx", type=int, default=11)
     parser.add_argument(
         "--include-build-cache",
         action="store_true",

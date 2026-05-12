@@ -25,6 +25,7 @@ def test_collect_prune_items_keeps_active_v2_training_state(tmp_path: Path) -> N
     latest = _write(work_dir / "targets" / "latest.npz")
     best = _write(work_dir / "checkpoints" / "best.pt")
     training_latest = _write(work_dir / "checkpoints" / "training-latest.pt")
+    active_candidate = _write(work_dir / "checkpoints" / "candidate.pt")
     _write(work_dir / "targets" / "targets-000001.npz")
     _write(work_dir / "targets" / "targets-000002.npz")
     _write(work_dir / "targets" / "targets-000003.npz")
@@ -46,6 +47,7 @@ def test_collect_prune_items_keeps_active_v2_training_state(tmp_path: Path) -> N
     assert latest not in selected
     assert best not in selected
     assert training_latest not in selected
+    assert active_candidate not in selected
     assert work_dir / "targets" / "targets-000001.npz" in selected
     assert work_dir / "targets" / "targets-000002.npz" in selected
     assert work_dir / "targets" / "targets-000003.npz" not in selected
@@ -54,6 +56,14 @@ def test_collect_prune_items_keeps_active_v2_training_state(tmp_path: Path) -> N
     assert work_dir / "checkpoints" / "onnx" / "best-000001.onnx" in selected
     assert work_dir / "checkpoints" / "onnx" / "best-000002.onnx" not in selected
     assert work_dir / "self-play" / "iteration-000001" in selected
+
+
+def test_parser_defaults_match_current_runpod_training_layout() -> None:
+    args = module.build_parser().parse_args([])
+
+    assert args.work_dir == Path("data/runpod/train-v2-large-policy")
+    assert args.keep_candidates == 10
+    assert args.keep_onnx == 11
 
 
 def test_prune_items_is_dry_run_unless_delete_is_true(tmp_path: Path) -> None:
