@@ -125,8 +125,9 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
         Path(output_path).write_text("onnx", encoding="utf-8")
         return object()
 
-    def fake_reanalyze_replay(
+    def fake_reanalyze_replay_store(
         *,
+        replay: Any,
         replay_path: str | Path,
         checkpoint_path: str | Path,
         output_path: str | Path,
@@ -135,12 +136,8 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
     ) -> ReanalyzeSummary:
         if progress_callback is not None:
             progress_callback("fake", 1, 1, "done")
-        replay = TrajectoryReplayBuffer.load(replay_path)
-        features = np.stack([transition.features for transition in replay.transitions()], axis=0)
-        policies = np.stack(
-            [transition.policy_target for transition in replay.transitions()],
-            axis=0,
-        )
+        features = replay.features.copy()
+        policies = replay.policy_targets.copy()
         values = np.ones((len(replay),), dtype=np.float32)
         snapshot = ReanalyzeTargetSnapshot(
             features=features,
@@ -148,26 +145,13 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
             values=values,
             refreshed_values=np.zeros_like(values),
             sample_weights=np.ones_like(values),
-            episode_ids=np.asarray(
-                [transition.episode_id for transition in replay.transitions()],
-                dtype=np.int64,
+            episode_ids=np.repeat(replay.episode_ids, np.diff(replay.episode_offsets)).astype(
+                np.int64
             ),
-            timesteps=np.asarray(
-                [transition.timestep for transition in replay.transitions()],
-                dtype=np.int64,
-            ),
-            players=np.asarray(
-                [transition.player for transition in replay.transitions()],
-                dtype=np.int64,
-            ),
-            source_model_versions=np.asarray(
-                [transition.model_version for transition in replay.transitions()],
-                dtype=np.int64,
-            ),
-            created_iterations=np.asarray(
-                [transition.created_iteration for transition in replay.transitions()],
-                dtype=np.int64,
-            ),
+            timesteps=replay.timesteps.copy(),
+            players=replay.players.copy(),
+            source_model_versions=replay.model_versions.copy(),
+            created_iterations=replay.created_iterations.copy(),
             target_ages=np.zeros((len(replay),), dtype=np.int64),
             model_version=config.model_version or 0,
             bootstrap_td_steps=config.bootstrap_td_steps,
@@ -218,7 +202,7 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
     monkeypatch.setattr(pipeline_module, "create_train_state", lambda config: object())
     monkeypatch.setattr(pipeline_module, "save_checkpoint", fake_save_checkpoint)
     monkeypatch.setattr(pipeline_module, "export_checkpoint_to_onnx", fake_export)
-    monkeypatch.setattr(pipeline_module, "reanalyze_replay", fake_reanalyze_replay)
+    monkeypatch.setattr(pipeline_module, "reanalyze_replay_store", fake_reanalyze_replay_store)
     monkeypatch.setattr(pipeline_module, "train_from_replay", fake_train_from_replay)
 
     summary = pipeline_module.run_train_v2_pipeline(

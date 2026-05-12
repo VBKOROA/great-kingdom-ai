@@ -73,6 +73,217 @@ class TrajectoryEpisode:
     territory_scores: tuple[int, int]
 
 
+@dataclass
+class TrajectoryReplayStore:
+    """Array-backed trajectory replay store for training-scale replay operations."""
+
+    capacity: int
+    episode_ids: np.ndarray
+    episode_seeds: np.ndarray
+    episode_winners: np.ndarray
+    episode_end_reasons: np.ndarray
+    territory_scores: np.ndarray
+    episode_offsets: np.ndarray
+    timesteps: np.ndarray
+    players: np.ndarray
+    actions: np.ndarray
+    features: np.ndarray
+    legal_masks: np.ndarray
+    policy_targets: np.ndarray
+    winners: np.ndarray
+    terminals: np.ndarray
+    root_values: np.ndarray
+    model_versions: np.ndarray
+    created_iterations: np.ndarray
+    sample_weights: np.ndarray
+    search_config_hash_table: np.ndarray
+    search_config_hash_ids: np.ndarray
+    root_policy_logits: np.ndarray | None = None
+    root_policy_logits_present: np.ndarray | None = None
+    next_features: np.ndarray | None = None
+    next_features_present: np.ndarray | None = None
+
+    @classmethod
+    def empty(cls, capacity: int) -> TrajectoryReplayStore:
+        if capacity <= 0:
+            raise ValueError("capacity must be positive")
+        return cls.from_episodes(capacity, ())
+
+    @classmethod
+    def from_episodes(
+        cls,
+        capacity: int,
+        episodes: Sequence[TrajectoryEpisode],
+    ) -> TrajectoryReplayStore:
+        return cls.from_payload(_episodes_to_payload(capacity, episodes))
+
+    @classmethod
+    def load(cls, path: str | Path) -> TrajectoryReplayStore:
+        with np.load(Path(path)) as data:
+            return cls.from_payload(data)
+
+    @classmethod
+    def from_payload(cls, data: Any) -> TrajectoryReplayStore:
+        capacity = int(data["capacity"])
+        if capacity <= 0:
+            raise ValueError("capacity must be positive")
+        features = np.asarray(data["features"], dtype=np.float32)
+        transition_count = features.shape[0]
+        _validate_payload_lengths(data, transition_count)
+        root_policy_logits, root_policy_logits_present = _load_optional_array(
+            data,
+            key="root_policy_logits",
+            shape=(transition_count, ACTION_SPACE),
+        )
+        next_features, next_features_present = _load_optional_array(
+            data,
+            key="next_features",
+            shape=(transition_count, *FEATURE_SHAPE),
+        )
+        table, ids = _load_search_config_hash_encoding(data, transition_count)
+        store = cls(
+            capacity=capacity,
+            episode_ids=np.asarray(data["episode_ids"], dtype=np.int64),
+            episode_seeds=np.asarray(data["episode_seeds"], dtype=np.int64),
+            episode_winners=np.asarray(data["episode_winners"], dtype=np.int64),
+            episode_end_reasons=np.asarray(data["episode_end_reasons"], dtype=np.int64),
+            territory_scores=np.asarray(data["territory_scores"], dtype=np.int64),
+            episode_offsets=np.asarray(data["episode_offsets"], dtype=np.int64),
+            timesteps=np.asarray(data["timesteps"], dtype=np.int64),
+            players=np.asarray(data["players"], dtype=np.int64),
+            actions=np.asarray(data["actions"], dtype=np.int64),
+            features=features,
+            legal_masks=np.asarray(data["legal_masks"], dtype=np.bool_),
+            policy_targets=np.asarray(data["policy_targets"], dtype=np.float32),
+            winners=np.asarray(data["winners"], dtype=np.int64),
+            terminals=np.asarray(data["terminals"], dtype=np.bool_),
+            root_values=np.asarray(data["root_values"], dtype=np.float32),
+            model_versions=np.asarray(data["model_versions"], dtype=np.int64),
+            created_iterations=np.asarray(data["created_iterations"], dtype=np.int64),
+            sample_weights=np.asarray(data["sample_weights"], dtype=np.float32),
+            search_config_hash_table=table,
+            search_config_hash_ids=ids,
+            root_policy_logits=root_policy_logits if root_policy_logits_present.any() else None,
+            root_policy_logits_present=(
+                root_policy_logits_present if root_policy_logits_present.any() else None
+            ),
+            next_features=next_features if next_features_present.any() else None,
+            next_features_present=next_features_present if next_features_present.any() else None,
+        )
+        store.validate()
+        return store
+
+    @property
+    def episode_count(self) -> int:
+        return int(self.episode_ids.shape[0])
+
+    @property
+    def episodes(self) -> tuple[TrajectoryEpisode, ...]:
+        return tuple(_episodes_from_store(self))
+
+    def __len__(self) -> int:
+        return int(self.features.shape[0])
+
+    def validate(self) -> None:
+        if self.features.shape != (len(self), *FEATURE_SHAPE):
+            raise ValueError("trajectory replay features shape mismatch")
+        if self.legal_masks.shape != (len(self), ACTION_SPACE):
+            raise ValueError("trajectory replay legal_masks shape mismatch")
+        if self.policy_targets.shape != (len(self), ACTION_SPACE):
+            raise ValueError("trajectory replay policy_targets shape mismatch")
+        if self.territory_scores.shape != (self.episode_count, 2):
+            raise ValueError("trajectory replay territory_scores shape mismatch")
+        if self.episode_offsets.shape != (self.episode_count + 1,):
+            raise ValueError("trajectory replay episode_offsets length mismatch")
+        if self.episode_offsets.size == 0 or int(self.episode_offsets[0]) != 0:
+            raise ValueError("trajectory replay episode_offsets must start at zero")
+        if int(self.episode_offsets[-1]) != len(self):
+            raise ValueError("trajectory replay episode_offsets must end at transition count")
+        per_transition = (
+            self.timesteps,
+            self.players,
+            self.actions,
+            self.winners,
+            self.terminals,
+            self.root_values,
+            self.model_versions,
+            self.created_iterations,
+            self.sample_weights,
+            self.search_config_hash_ids,
+        )
+        for array in per_transition:
+            if array.shape != (len(self),):
+                raise ValueError("trajectory replay per-transition array length mismatch")
+        if self.root_policy_logits is not None:
+            if self.root_policy_logits.shape != (len(self), ACTION_SPACE):
+                raise ValueError("trajectory replay root_policy_logits shape mismatch")
+            if self.root_policy_logits_present is None:
+                raise ValueError("trajectory replay root_policy_logits_present missing")
+        if self.next_features is not None:
+            if self.next_features.shape != (len(self), *FEATURE_SHAPE):
+                raise ValueError("trajectory replay next_features shape mismatch")
+            if self.next_features_present is None:
+                raise ValueError("trajectory replay next_features_present missing")
+        if self.search_config_hash_ids.shape != (len(self),):
+            raise ValueError("trajectory replay search_config_hash_ids length mismatch")
+        if np.any(self.search_config_hash_ids < 0) or np.any(
+            self.search_config_hash_ids >= len(self.search_config_hash_table)
+        ):
+            raise ValueError("trajectory replay search_config_hash_ids contain invalid indexes")
+
+    def extend_episodes(self, episodes: Sequence[TrajectoryEpisode]) -> None:
+        if not episodes:
+            return
+        incoming = TrajectoryReplayStore.from_episodes(self.capacity, episodes)
+        if len(incoming) > self.capacity:
+            raise ValueError("episode transition count exceeds replay capacity")
+        combined = _concat_stores(self, incoming)
+        kept = _evict_to_capacity(combined)
+        self.__dict__.update(kept.__dict__)
+
+    def save(self, path: str | Path, *, compressed: bool = True) -> None:
+        destination = Path(path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        payload = self.to_payload()
+        save = np.savez_compressed if compressed else np.savez
+        save(destination, **cast(dict[str, Any], payload))
+
+    def to_payload(self) -> dict[str, np.ndarray]:
+        payload: dict[str, np.ndarray] = {
+            "capacity": np.asarray(self.capacity, dtype=np.int64),
+            "episode_ids": self.episode_ids,
+            "episode_seeds": self.episode_seeds,
+            "episode_winners": self.episode_winners,
+            "episode_end_reasons": self.episode_end_reasons,
+            "territory_scores": self.territory_scores,
+            "episode_offsets": self.episode_offsets,
+            "timesteps": self.timesteps,
+            "players": self.players,
+            "actions": self.actions,
+            "features": self.features,
+            "legal_masks": self.legal_masks,
+            "policy_targets": self.policy_targets,
+            "winners": self.winners,
+            "terminals": self.terminals,
+            "root_values": self.root_values,
+            "model_versions": self.model_versions,
+            "created_iterations": self.created_iterations,
+            "sample_weights": self.sample_weights,
+            "search_config_hash_table": self.search_config_hash_table,
+            "search_config_hash_ids": self.search_config_hash_ids,
+        }
+        if self.root_policy_logits is not None and self.root_policy_logits_present is not None:
+            payload["root_policy_logits"] = self.root_policy_logits
+            payload["root_policy_logits_present"] = self.root_policy_logits_present
+        if self.next_features is not None and self.next_features_present is not None:
+            payload["next_features"] = self.next_features
+            payload["next_features_present"] = self.next_features_present
+        return payload
+
+    def transitions(self) -> list[TrajectoryTransition]:
+        return [transition for episode in self.episodes for transition in episode.transitions]
+
+
 class TrajectoryReplayBuffer:
     """Fixed-capacity in-memory trajectory replay buffer.
 
@@ -493,80 +704,186 @@ def _episodes_to_payload(
 
 
 def _episodes_from_payload(data: Any) -> list[TrajectoryEpisode]:
-    offsets = np.asarray(data["episode_offsets"], dtype=np.int64)
-    episode_ids = np.asarray(data["episode_ids"], dtype=np.int64)
-    episode_seeds = np.asarray(data["episode_seeds"], dtype=np.int64)
-    episode_winners = np.asarray(data["episode_winners"], dtype=np.int64)
-    episode_end_reasons = np.asarray(data["episode_end_reasons"], dtype=np.int64)
-    territory_scores = np.asarray(data["territory_scores"], dtype=np.int64)
-    timesteps = np.asarray(data["timesteps"], dtype=np.int64)
-    players = np.asarray(data["players"], dtype=np.int64)
-    actions = np.asarray(data["actions"], dtype=np.int64)
-    features = np.asarray(data["features"], dtype=np.float32)
-    legal_masks = np.asarray(data["legal_masks"], dtype=np.bool_)
-    policy_targets = np.asarray(data["policy_targets"], dtype=np.float32)
-    winners = np.asarray(data["winners"], dtype=np.int64)
-    terminals = np.asarray(data["terminals"], dtype=np.bool_)
-    root_values = np.asarray(data["root_values"], dtype=np.float32)
-    model_versions = np.asarray(data["model_versions"], dtype=np.int64)
-    created_iterations = np.asarray(data["created_iterations"], dtype=np.int64)
-    sample_weights = np.asarray(data["sample_weights"], dtype=np.float32)
-    transition_count = features.shape[0]
-    _validate_payload_lengths(data, transition_count)
+    return _episodes_from_store(TrajectoryReplayStore.from_payload(data))
 
-    root_policy_logits, root_policy_present = _load_optional_array(
-        data,
-        key="root_policy_logits",
-        shape=(transition_count, ACTION_SPACE),
-    )
-    next_features, next_features_present = _load_optional_array(
-        data,
-        key="next_features",
-        shape=(transition_count, *FEATURE_SHAPE),
-    )
-    search_config_hashes = _load_search_config_hashes(data, transition_count)
 
+def _episodes_from_store(store: TrajectoryReplayStore) -> list[TrajectoryEpisode]:
+    search_config_hashes = _decode_search_config_hashes(
+        store.search_config_hash_table,
+        store.search_config_hash_ids,
+    )
     episodes: list[TrajectoryEpisode] = []
-    for episode_index in range(len(offsets) - 1):
-        start = int(offsets[episode_index])
-        end = int(offsets[episode_index + 1])
+    for episode_index in range(len(store.episode_offsets) - 1):
+        start = int(store.episode_offsets[episode_index])
+        end = int(store.episode_offsets[episode_index + 1])
         transitions = []
         for row in range(start, end):
-            winner = int(winners[row])
+            winner = int(store.winners[row])
             transitions.append(
                 TrajectoryTransition(
-                    episode_id=int(episode_ids[episode_index]),
-                    timestep=int(timesteps[row]),
-                    player=int(players[row]),
-                    features=features[row],
-                    legal_mask=legal_masks[row],
-                    action=int(actions[row]),
-                    policy_target=policy_targets[row],
+                    episode_id=int(store.episode_ids[episode_index]),
+                    timestep=int(store.timesteps[row]),
+                    player=int(store.players[row]),
+                    features=store.features[row],
+                    legal_mask=store.legal_masks[row],
+                    action=int(store.actions[row]),
+                    policy_target=store.policy_targets[row],
                     root_policy_logits=(
-                        root_policy_logits[row] if root_policy_present[row] else None
+                        store.root_policy_logits[row]
+                        if store.root_policy_logits is not None
+                        and store.root_policy_logits_present is not None
+                        and store.root_policy_logits_present[row]
+                        else None
                     ),
-                    root_value=_none_if_nan(float(root_values[row])),
-                    next_features=next_features[row] if next_features_present[row] else None,
+                    root_value=_none_if_nan(float(store.root_values[row])),
+                    next_features=(
+                        store.next_features[row]
+                        if store.next_features is not None
+                        and store.next_features_present is not None
+                        and store.next_features_present[row]
+                        else None
+                    ),
                     winner=None if winner < 0 else winner,
-                    terminal=bool(terminals[row]),
-                    model_version=int(model_versions[row]),
+                    terminal=bool(store.terminals[row]),
+                    model_version=int(store.model_versions[row]),
                     search_config_hash=search_config_hashes[row],
-                    created_iteration=int(created_iterations[row]),
-                    sample_weight=float(sample_weights[row]),
+                    created_iteration=int(store.created_iterations[row]),
+                    sample_weight=float(store.sample_weights[row]),
                 )
             )
-        territory_score_row = territory_scores[episode_index]
+        territory_score_row = store.territory_scores[episode_index]
         episodes.append(
             TrajectoryEpisode(
-                episode_id=int(episode_ids[episode_index]),
-                seed=int(episode_seeds[episode_index]),
+                episode_id=int(store.episode_ids[episode_index]),
+                seed=int(store.episode_seeds[episode_index]),
                 transitions=tuple(transitions),
-                winner=int(episode_winners[episode_index]),
-                end_reason=int(episode_end_reasons[episode_index]),
+                winner=int(store.episode_winners[episode_index]),
+                end_reason=int(store.episode_end_reasons[episode_index]),
                 territory_scores=(int(territory_score_row[0]), int(territory_score_row[1])),
             )
         )
     return episodes
+
+
+def _concat_stores(
+    left: TrajectoryReplayStore,
+    right: TrajectoryReplayStore,
+) -> TrajectoryReplayStore:
+    left_hashes = _decode_search_config_hashes(
+        left.search_config_hash_table,
+        left.search_config_hash_ids,
+    )
+    right_hashes = _decode_search_config_hashes(
+        right.search_config_hash_table,
+        right.search_config_hash_ids,
+    )
+    payload: dict[str, np.ndarray] = {
+        "capacity": np.asarray(left.capacity, dtype=np.int64),
+        "episode_ids": np.concatenate([left.episode_ids, right.episode_ids]),
+        "episode_seeds": np.concatenate([left.episode_seeds, right.episode_seeds]),
+        "episode_winners": np.concatenate([left.episode_winners, right.episode_winners]),
+        "episode_end_reasons": np.concatenate(
+            [left.episode_end_reasons, right.episode_end_reasons]
+        ),
+        "territory_scores": np.concatenate([left.territory_scores, right.territory_scores]),
+        "episode_offsets": _concat_offsets(left.episode_offsets, right.episode_offsets),
+        "timesteps": np.concatenate([left.timesteps, right.timesteps]),
+        "players": np.concatenate([left.players, right.players]),
+        "actions": np.concatenate([left.actions, right.actions]),
+        "features": np.concatenate([left.features, right.features]),
+        "legal_masks": np.concatenate([left.legal_masks, right.legal_masks]),
+        "policy_targets": np.concatenate([left.policy_targets, right.policy_targets]),
+        "winners": np.concatenate([left.winners, right.winners]),
+        "terminals": np.concatenate([left.terminals, right.terminals]),
+        "root_values": np.concatenate([left.root_values, right.root_values]),
+        "model_versions": np.concatenate([left.model_versions, right.model_versions]),
+        "created_iterations": np.concatenate(
+            [left.created_iterations, right.created_iterations]
+        ),
+        "sample_weights": np.concatenate([left.sample_weights, right.sample_weights]),
+    }
+    _add_search_config_hashes(payload, [*left_hashes, *right_hashes])
+    _add_optional_concat(payload, left, right, "root_policy_logits", (ACTION_SPACE,))
+    _add_optional_concat(payload, left, right, "next_features", FEATURE_SHAPE)
+    return TrajectoryReplayStore.from_payload(payload)
+
+
+def _concat_offsets(left_offsets: np.ndarray, right_offsets: np.ndarray) -> np.ndarray:
+    if right_offsets.shape == (1,):
+        return left_offsets.copy()
+    right_tail = right_offsets[1:] + int(left_offsets[-1])
+    return np.concatenate([left_offsets, right_tail.astype(np.int64)])
+
+
+def _add_optional_concat(
+    payload: dict[str, np.ndarray],
+    left: TrajectoryReplayStore,
+    right: TrajectoryReplayStore,
+    key: str,
+    shape: tuple[int, ...],
+) -> None:
+    left_values = getattr(left, key)
+    right_values = getattr(right, key)
+    left_present = getattr(left, f"{key}_present")
+    right_present = getattr(right, f"{key}_present")
+    if left_values is None and right_values is None:
+        return
+    values = np.full((len(left) + len(right), *shape), np.nan, dtype=np.float32)
+    present = np.zeros((len(left) + len(right),), dtype=np.bool_)
+    if left_values is not None and left_present is not None:
+        values[: len(left)] = left_values
+        present[: len(left)] = left_present
+    if right_values is not None and right_present is not None:
+        values[len(left) :] = right_values
+        present[len(left) :] = right_present
+    payload[key] = values
+    payload[f"{key}_present"] = present
+
+
+def _evict_to_capacity(store: TrajectoryReplayStore) -> TrajectoryReplayStore:
+    if len(store) <= store.capacity:
+        return store
+    drop_episodes = 0
+    while (
+        drop_episodes + 1 < store.episode_offsets.shape[0]
+        and len(store) - int(store.episode_offsets[drop_episodes]) > store.capacity
+    ):
+        drop_episodes += 1
+    if drop_episodes == 0:
+        return store
+    transition_start = int(store.episode_offsets[drop_episodes])
+    payload = store.to_payload()
+    for key in (
+        "episode_ids",
+        "episode_seeds",
+        "episode_winners",
+        "episode_end_reasons",
+        "territory_scores",
+    ):
+        payload[key] = payload[key][drop_episodes:]
+    payload["episode_offsets"] = payload["episode_offsets"][drop_episodes:] - transition_start
+    for key in (
+        "timesteps",
+        "players",
+        "actions",
+        "features",
+        "legal_masks",
+        "policy_targets",
+        "winners",
+        "terminals",
+        "root_values",
+        "model_versions",
+        "created_iterations",
+        "sample_weights",
+        "search_config_hash_ids",
+        "root_policy_logits",
+        "root_policy_logits_present",
+        "next_features",
+        "next_features_present",
+    ):
+        if key in payload:
+            payload[key] = payload[key][transition_start:]
+    return TrajectoryReplayStore.from_payload(payload)
 
 
 def _add_search_config_hashes(
@@ -589,6 +906,14 @@ def _add_search_config_hashes(
 
 
 def _load_search_config_hashes(data: Any, transition_count: int) -> list[str]:
+    table, ids = _load_search_config_hash_encoding(data, transition_count)
+    return _decode_search_config_hashes(table, ids)
+
+
+def _load_search_config_hash_encoding(
+    data: Any,
+    transition_count: int,
+) -> tuple[np.ndarray, np.ndarray]:
     if "search_config_hash_ids" in data and "search_config_hash_table" in data:
         table = np.asarray(data["search_config_hash_table"], dtype=np.str_)
         ids = np.asarray(data["search_config_hash_ids"], dtype=np.int64)
@@ -596,8 +921,24 @@ def _load_search_config_hashes(data: Any, transition_count: int) -> list[str]:
             raise ValueError("trajectory replay search_config_hash_ids length mismatch")
         if np.any(ids < 0) or np.any(ids >= len(table)):
             raise ValueError("trajectory replay search_config_hash_ids contain invalid indexes")
-        return [str(table[index]) for index in ids]
-    return [str(value) for value in np.asarray(data["search_config_hashes"], dtype=np.str_)]
+        return table, ids
+    hashes = np.asarray(data["search_config_hashes"], dtype=np.str_)
+    table: list[str] = []
+    indexes: dict[str, int] = {}
+    ids = np.empty((transition_count,), dtype=np.int64)
+    for row, value in enumerate(hashes):
+        key = str(value)
+        index = indexes.get(key)
+        if index is None:
+            index = len(table)
+            indexes[key] = index
+            table.append(key)
+        ids[row] = index
+    return np.asarray(table, dtype=np.str_), ids
+
+
+def _decode_search_config_hashes(table: np.ndarray, ids: np.ndarray) -> list[str]:
+    return [str(table[index]) for index in ids]
 
 
 def _stack_or_empty(

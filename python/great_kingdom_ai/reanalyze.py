@@ -27,7 +27,11 @@ from great_kingdom_ai.search_reanalyze import (
     refresh_policies_with_search,
 )
 from great_kingdom_ai.self_play_data import value_target_for_player
-from great_kingdom_ai.trajectory_replay import TrajectoryEpisode, TrajectoryReplayBuffer
+from great_kingdom_ai.trajectory_replay import (
+    TrajectoryEpisode,
+    TrajectoryReplayBuffer,
+    TrajectoryReplayStore,
+)
 
 SNAPSHOT_FORMAT = "reanalyze-target-v1"
 ReanalyzeProgressCallback = Callable[[str, int, int, str], None]
@@ -288,8 +292,43 @@ def reanalyze_replay(
     )
 
 
-def build_reanalyze_snapshot(
-    replay: TrajectoryReplayBuffer,
+def reanalyze_replay_store(
+    *,
+    replay: TrajectoryReplayStore,
+    checkpoint_path: str | Path,
+    output_path: str | Path,
+    replay_path: str | Path,
+    config: ReanalyzeConfig | None = None,
+    progress_callback: ReanalyzeProgressCallback | None = None,
+) -> ReanalyzeSummary:
+    resolved_config = config if config is not None else ReanalyzeConfig()
+    snapshot = build_reanalyze_snapshot_from_store(
+        replay,
+        checkpoint_path=checkpoint_path,
+        config=resolved_config,
+        progress_callback=progress_callback,
+    )
+    _report_progress(progress_callback, "save", 0, 1, f"output={output_path}")
+    snapshot.save(output_path, compressed=resolved_config.compressed)
+    _report_progress(progress_callback, "save", 1, 1, f"rows={len(snapshot)}")
+    return ReanalyzeSummary(
+        replay_path=Path(replay_path),
+        checkpoint_path=Path(checkpoint_path),
+        output_path=Path(output_path),
+        transitions=len(snapshot),
+        model_version=snapshot.model_version,
+        bootstrap_td_steps=snapshot.bootstrap_td_steps,
+        gamma=snapshot.gamma,
+        search_reanalyzed=(
+            0
+            if snapshot.search_reanalyzed is None
+            else int(np.count_nonzero(snapshot.search_reanalyzed))
+        ),
+    )
+
+
+def build_reanalyze_snapshot_from_store(
+    replay: TrajectoryReplayStore,
     *,
     checkpoint_path: str | Path,
     config: ReanalyzeConfig,
@@ -297,20 +336,17 @@ def build_reanalyze_snapshot(
 ) -> ReanalyzeTargetSnapshot:
     from great_kingdom_ai.train import load_checkpoint
 
+    if len(replay) == 0:
+        raise ValueError("trajectory replay must contain at least one transition")
     _report_progress(progress_callback, "checkpoint", 0, 1, f"loading {checkpoint_path}")
     state = load_checkpoint(checkpoint_path, device=config.device)
     state.model.eval()
     _report_progress(progress_callback, "checkpoint", 1, 1, f"device={config.device}")
     model_version = state.step if config.model_version is None else config.model_version
-    episodes = replay.episodes
-    rows = _flatten_episodes(episodes)
-    if not rows:
-        raise ValueError("trajectory replay must contain at least one transition")
 
-    _report_progress(progress_callback, "arrays", 0, 1, f"stacking rows={len(rows)}")
-    features = np.stack([row.features for row in rows], axis=0).astype(np.float32)
-    legal_masks = np.stack([row.legal_mask for row in rows], axis=0).astype(np.bool_)
-    policies = np.stack([row.policy_target for row in rows], axis=0).astype(np.float32)
+    features = np.ascontiguousarray(replay.features, dtype=np.float32)
+    legal_masks = np.ascontiguousarray(replay.legal_masks, dtype=np.bool_)
+    policies = np.ascontiguousarray(replay.policy_targets, dtype=np.float32)
     _report_progress(progress_callback, "arrays", 1, 1, f"rows={features.shape[0]}")
     policy_logits, refreshed_values = _evaluate_policy_logits_values(
         state.model,
@@ -327,17 +363,18 @@ def build_reanalyze_snapshot(
         1,
         f"td_steps={config.bootstrap_td_steps}, gamma={config.gamma:g}",
     )
-    values = _bootstrap_targets_from_refreshed_values(
-        episodes,
+    values = _bootstrap_targets_from_store(
+        replay,
         refreshed_values,
         td_steps=config.bootstrap_td_steps,
         gamma=config.gamma,
     )
     _report_progress(progress_callback, "bootstrap", 1, 1, f"rows={values.shape[0]}")
-    source_model_versions = np.asarray([row.model_version for row in rows], dtype=np.int64)
+    source_model_versions = np.asarray(replay.model_versions, dtype=np.int64)
     target_ages = np.maximum(model_version - source_model_versions, 0).astype(np.int64)
     search_reanalyzed: np.ndarray | None = None
     if config.search.enabled:
+        episodes = replay.episodes
         search_result = refresh_policies_with_search(
             episodes=episodes,
             policies=policies,
@@ -354,18 +391,19 @@ def build_reanalyze_snapshot(
         search_reanalyzed = search_result.search_reanalyzed
     else:
         _report_progress(progress_callback, "search", 0, 0, "disabled")
+
     return _validated_snapshot(
         ReanalyzeTargetSnapshot(
             features=features,
             policies=policies,
             values=values,
             refreshed_values=refreshed_values,
-            sample_weights=np.asarray([row.sample_weight for row in rows], dtype=np.float32),
-            episode_ids=np.asarray([row.episode_id for row in rows], dtype=np.int64),
-            timesteps=np.asarray([row.timestep for row in rows], dtype=np.int64),
-            players=np.asarray([row.player for row in rows], dtype=np.int64),
+            sample_weights=np.asarray(replay.sample_weights, dtype=np.float32),
+            episode_ids=_transition_episode_values(replay, replay.episode_ids),
+            timesteps=np.asarray(replay.timesteps, dtype=np.int64),
+            players=np.asarray(replay.players, dtype=np.int64),
             source_model_versions=source_model_versions,
-            created_iterations=np.asarray([row.created_iteration for row in rows], dtype=np.int64),
+            created_iterations=np.asarray(replay.created_iterations, dtype=np.int64),
             target_ages=target_ages,
             model_version=model_version,
             bootstrap_td_steps=config.bootstrap_td_steps,
@@ -374,6 +412,21 @@ def build_reanalyze_snapshot(
             policy_logits=policy_logits,
             search_reanalyzed=search_reanalyzed,
         )
+    )
+
+
+def build_reanalyze_snapshot(
+    replay: TrajectoryReplayBuffer,
+    *,
+    checkpoint_path: str | Path,
+    config: ReanalyzeConfig,
+    progress_callback: ReanalyzeProgressCallback | None = None,
+) -> ReanalyzeTargetSnapshot:
+    return build_reanalyze_snapshot_from_store(
+        TrajectoryReplayStore.from_episodes(replay.capacity, replay.episodes),
+        checkpoint_path=checkpoint_path,
+        config=config,
+        progress_callback=progress_callback,
     )
 
 
@@ -537,6 +590,43 @@ def _bootstrap_targets_from_refreshed_values(
     return targets
 
 
+def _bootstrap_targets_from_store(
+    replay: TrajectoryReplayStore,
+    refreshed_values: np.ndarray,
+    *,
+    td_steps: int,
+    gamma: float,
+) -> np.ndarray:
+    targets = np.empty((refreshed_values.shape[0],), dtype=np.float32)
+    for episode_index in range(replay.episode_count):
+        start = int(replay.episode_offsets[episode_index])
+        end = int(replay.episode_offsets[episode_index + 1])
+        terminal_index = end - 1
+        winner = int(replay.episode_winners[episode_index])
+        for row in range(start, end):
+            target_index = row + td_steps
+            if td_steps == 0 or bool(replay.terminals[row]) or target_index >= terminal_index:
+                targets[row] = value_target_for_player(
+                    player=int(replay.players[row]),
+                    winner=winner,
+                )
+                continue
+
+            bootstrap = float(refreshed_values[target_index])
+            if int(replay.players[target_index]) != int(replay.players[row]):
+                bootstrap = -bootstrap
+            targets[row] = np.float32((gamma**td_steps) * bootstrap)
+    return targets
+
+
+def _transition_episode_values(
+    replay: TrajectoryReplayStore,
+    episode_values: np.ndarray,
+) -> np.ndarray:
+    counts = np.diff(replay.episode_offsets)
+    return np.repeat(np.asarray(episode_values, dtype=np.int64), counts).astype(np.int64)
+
+
 def _flatten_episodes(episodes: Sequence[TrajectoryEpisode]) -> list[Any]:
     return [transition for episode in episodes for transition in episode.transitions]
 
@@ -685,6 +775,8 @@ __all__ = [
     "SearchReanalyzeConfig",
     "build_parser",
     "build_reanalyze_snapshot",
+    "build_reanalyze_snapshot_from_store",
     "is_reanalyze_target_snapshot",
     "reanalyze_replay",
+    "reanalyze_replay_store",
 ]

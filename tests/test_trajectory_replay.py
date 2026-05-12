@@ -10,6 +10,7 @@ from great_kingdom_ai.replay_buffer import ReplaySample
 from great_kingdom_ai.trajectory_replay import (
     TrajectoryEpisode,
     TrajectoryReplayBuffer,
+    TrajectoryReplayStore,
     TrajectoryTransition,
     legal_mask_from_features,
     trajectory_episode_from_self_play_result,
@@ -194,6 +195,25 @@ def test_trajectory_replay_payload_loader_reads_arrays_once_per_key() -> None:
     assert data.counts["policy_targets"] == 2
     assert data.counts["legal_masks"] == 2
     assert data.counts["timesteps"] == 2
+
+
+def test_trajectory_replay_store_extends_evicts_and_remains_buffer_compatible(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "trajectory-replay.npz"
+    store = TrajectoryReplayStore.empty(capacity=3)
+
+    store.extend_episodes([make_episode(0, actions=[1, 2])])
+    store.extend_episodes([make_episode(1, actions=[3, PASS_ACTION], winner=2)])
+    store.save(path, compressed=False)
+    loaded_store = TrajectoryReplayStore.load(path)
+    loaded_buffer = TrajectoryReplayBuffer.load(path)
+
+    assert len(loaded_store) == 2
+    assert loaded_store.episode_ids.tolist() == [1]
+    assert loaded_store.features.shape == (2, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
+    assert loaded_buffer.episode_count == 1
+    assert [episode.episode_id for episode in loaded_buffer.episodes] == [1]
 
 
 def test_trajectory_replay_capacity_evicts_whole_old_episodes() -> None:

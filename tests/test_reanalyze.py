@@ -15,6 +15,7 @@ from great_kingdom_ai.reanalyze import (
     SearchReanalyzeConfig,
     build_parser,
     build_reanalyze_snapshot,
+    build_reanalyze_snapshot_from_store,
     is_reanalyze_target_snapshot,
 )
 from great_kingdom_ai.search_reanalyze import select_search_reanalyze_indexes
@@ -27,6 +28,7 @@ from great_kingdom_ai.train import (
 from great_kingdom_ai.trajectory_replay import (
     TrajectoryEpisode,
     TrajectoryReplayBuffer,
+    TrajectoryReplayStore,
     TrajectoryTransition,
     legal_mask_from_features,
 )
@@ -183,6 +185,11 @@ def test_build_reanalyze_snapshot_refreshes_values_and_bootstrap_targets(
         checkpoint_path=checkpoint,
         config=ReanalyzeConfig(batch_size=2, bootstrap_td_steps=1, gamma=1.0),
     )
+    store_snapshot = build_reanalyze_snapshot_from_store(
+        TrajectoryReplayStore.from_episodes(replay.capacity, replay.episodes),
+        checkpoint_path=checkpoint,
+        config=ReanalyzeConfig(batch_size=2, bootstrap_td_steps=1, gamma=1.0),
+    )
 
     assert snapshot.model_version == 9
     assert snapshot.target_ages.tolist() == [5, 5, 5]
@@ -190,6 +197,8 @@ def test_build_reanalyze_snapshot_refreshes_values_and_bootstrap_targets(
     assert snapshot.policy_logits.shape == (3, ACTION_SPACE)
     assert snapshot.refreshed_values.tolist() == pytest.approx([0.0, 0.0, 0.0])
     assert snapshot.values.tolist() == pytest.approx([-0.0, -1.0, 1.0])
+    assert store_snapshot.values.tolist() == pytest.approx(snapshot.values.tolist())
+    assert store_snapshot.episode_ids.tolist() == snapshot.episode_ids.tolist()
 
 
 @pytest.mark.skipif(_torch_spec is None, reason="torch is not installed")

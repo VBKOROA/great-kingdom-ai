@@ -21,7 +21,11 @@ from great_kingdom_ai.evaluate import (
 )
 from great_kingdom_ai.onnx_export import export_checkpoint_to_onnx
 from great_kingdom_ai.pipeline import PipelinePrinter
-from great_kingdom_ai.reanalyze import ReanalyzeConfig, ReanalyzeSummary, reanalyze_replay
+from great_kingdom_ai.reanalyze import (
+    ReanalyzeConfig,
+    ReanalyzeSummary,
+    reanalyze_replay_store,
+)
 from great_kingdom_ai.rust_onnx_pipeline import (
     RustOnnxPipelineConfig,
     _arena_config_for_pipeline,
@@ -46,7 +50,7 @@ from great_kingdom_ai.train import (
 )
 from great_kingdom_ai.trajectory_replay import (
     TrajectoryEpisode,
-    TrajectoryReplayBuffer,
+    TrajectoryReplayStore,
     TrajectoryTransition,
 )
 
@@ -209,7 +213,8 @@ def run_train_v2_pipeline(
         target_snapshot_path = paths["target_dir"] / f"targets-{iteration:06d}.npz"
         reanalyze_checkpoint = _training_source_checkpoint(pipeline_config, paths)
         printer.step(f"reanalyzing targets -> {target_snapshot_path}")
-        reanalyze_summary = reanalyze_replay(
+        reanalyze_summary = reanalyze_replay_store(
+            replay=replay,
             replay_path=paths["trajectory_replay_path"],
             checkpoint_path=reanalyze_checkpoint,
             output_path=target_snapshot_path,
@@ -455,7 +460,7 @@ def _generate_trajectory_self_play(
     seed_cursor: int,
     iteration: int,
     runner: Callable[[RustOnnxSelfPlayConfig], RustSelfPlayRunSummary],
-    replay: TrajectoryReplayBuffer,
+    replay: TrajectoryReplayStore,
     printer: PipelinePrinter,
 ) -> RustSelfPlayRunSummary:
     del replay
@@ -613,10 +618,10 @@ def _ensure_dirs(paths: dict[str, Path], config: TrainV2PipelineConfig) -> None:
 def _load_or_create_trajectory_replay(
     path: Path,
     config: TrainV2PipelineConfig,
-) -> TrajectoryReplayBuffer:
+) -> TrajectoryReplayStore:
     if config.resume and path.exists():
-        return TrajectoryReplayBuffer.load(path)
-    return TrajectoryReplayBuffer(config.replay_capacity)
+        return TrajectoryReplayStore.load(path)
+    return TrajectoryReplayStore.empty(config.replay_capacity)
 
 
 def _load_target_snapshot(path: Path) -> Any:
