@@ -235,6 +235,26 @@ def test_train_step_updates_model_parameters() -> None:
     assert not torch.equal(before, after)
 
 
+def test_train_step_updates_ema_model_after_optimizer_step() -> None:
+    config = TrainingConfig(batch_size=2, steps=1, seed=3, ema_decay=0.5)
+    state = create_train_state(config)
+    assert state.ema_model is not None
+    batch = samples_to_batch(make_replay().sample(2, random.Random(3)))
+    before_model_state = {
+        key: value.detach().clone()
+        for key, value in state.model.state_dict().items()
+        if value.is_floating_point()
+    }
+
+    train_step(state, batch, config)
+
+    model_state = state.model.state_dict()
+    ema_state = state.ema_model.state_dict()
+    first_key = next(iter(before_model_state))
+    expected = before_model_state[first_key] * 0.5 + model_state[first_key] * 0.5
+    assert torch.allclose(ema_state[first_key], expected)
+
+
 def test_warmup_cosine_scheduler_changes_learning_rate(tmp_path) -> None:
     config = TrainingConfig(
         batch_size=2,
@@ -382,6 +402,34 @@ def test_checkpoint_round_trips_model_outputs_and_optimizer_state(tmp_path) -> N
     assert torch.allclose(actual_policy, expected_policy)
     assert torch.allclose(actual_value, expected_value)
     assert loaded.optimizer.state_dict()["state"]
+
+
+def test_checkpoint_preserves_ema_and_can_prefer_ema_weights(tmp_path) -> None:
+    config = TrainingConfig(ema_decay=0.9)
+    state = create_train_state(config)
+    assert state.ema_model is not None
+    with torch.no_grad():
+        for tensor in state.model.state_dict().values():
+            if tensor.is_floating_point():
+                tensor.fill_(3.0)
+        for tensor in state.ema_model.state_dict().values():
+            if tensor.is_floating_point():
+                tensor.fill_(1.0)
+
+    checkpoint_path = save_checkpoint(state, tmp_path / "ema.pt")
+    loaded = load_checkpoint(checkpoint_path)
+    preferred = load_checkpoint(checkpoint_path, prefer_ema=True)
+
+    assert loaded.ema_model is not None
+    assert loaded.ema_decay == pytest.approx(0.9)
+    loaded_first = next(
+        tensor for tensor in loaded.model.state_dict().values() if tensor.is_floating_point()
+    )
+    preferred_first = next(
+        tensor for tensor in preferred.model.state_dict().values() if tensor.is_floating_point()
+    )
+    assert torch.allclose(loaded_first, torch.full_like(loaded_first, 3.0))
+    assert torch.allclose(preferred_first, torch.full_like(preferred_first, 1.0))
 
 
 def test_checkpoint_weight_bootstrap_keeps_model_and_resets_training_state(tmp_path) -> None:
@@ -557,6 +605,21 @@ def test_train_parser_accepts_weight_bootstrap_checkpoint() -> None:
     )
 
     assert args.bootstrap_weights == Path("best.pt")
+
+
+def test_train_parser_accepts_ema_decay() -> None:
+    args = build_parser().parse_args(
+        [
+            "--replay",
+            "replay.npz",
+            "--checkpoint",
+            "checkpoint.pt",
+            "--ema-decay",
+            "0.99",
+        ]
+    )
+
+    assert args.ema_decay == pytest.approx(0.99)
 
 
 def test_masked_policy_loss_rejects_illegal_target_mass() -> None:

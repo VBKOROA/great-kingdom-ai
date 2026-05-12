@@ -353,7 +353,7 @@ def build_reanalyze_snapshot_from_store(
     if len(replay) == 0:
         raise ValueError("trajectory replay must contain at least one transition")
     _report_progress(progress_callback, "checkpoint", 0, 1, f"loading {checkpoint_path}")
-    state = load_checkpoint(checkpoint_path, device=config.device)
+    state = load_checkpoint(checkpoint_path, device=config.device, prefer_ema=True)
     state.model.eval()
     _report_progress(progress_callback, "checkpoint", 1, 1, f"device={config.device}")
     model_version = state.step if config.model_version is None else config.model_version

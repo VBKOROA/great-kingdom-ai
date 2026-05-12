@@ -68,6 +68,7 @@ def export_checkpoint_to_onnx(
     device: str = "cpu",
     opset_version: int = DEFAULT_OPSET_VERSION,
     dummy_batch_size: int = 2,
+    prefer_ema: bool = True,
 ) -> OnnxExportSummary:
     """Export a training checkpoint to FP32 ONNX with a dynamic batch axis."""
     if dummy_batch_size < 1:
@@ -78,7 +79,7 @@ def export_checkpoint_to_onnx(
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
 
-    state = load_checkpoint(checkpoint, device=device)
+    state = load_checkpoint(checkpoint, device=device, prefer_ema=prefer_ema)
     model = state.model.float()
     model.eval()
 
@@ -118,6 +119,7 @@ def compare_checkpoint_to_onnx(
     batch_size: int = 3,
     seed: int = 0,
     tolerance: float = DEFAULT_PARITY_TOLERANCE,
+    prefer_ema: bool = True,
 ) -> OnnxParitySummary:
     """Compare PyTorch checkpoint inference against ONNX Runtime CPU inference."""
     if batch_size < 1:
@@ -128,7 +130,7 @@ def compare_checkpoint_to_onnx(
     torch = _import_torch()
     ort = _import_onnxruntime()
 
-    state = load_checkpoint(checkpoint_path, device="cpu")
+    state = load_checkpoint(checkpoint_path, device="cpu", prefer_ema=prefer_ema)
     model = state.model.float()
     model.eval()
 
@@ -173,6 +175,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="compare exported ONNX CPU output against the PyTorch checkpoint",
     )
+    parser.add_argument(
+        "--no-ema",
+        action="store_true",
+        help="export raw training weights even when EMA weights are available",
+    )
     parser.add_argument("--parity-batch-size", type=int, default=3)
     parser.add_argument("--parity-seed", type=int, default=0)
     parser.add_argument("--tolerance", type=float, default=DEFAULT_PARITY_TOLERANCE)
@@ -187,6 +194,7 @@ def main() -> NoReturn:
         device=args.device,
         opset_version=args.opset_version,
         dummy_batch_size=args.dummy_batch_size,
+        prefer_ema=not args.no_ema,
     )
     print(json.dumps({"event": "onnx_export", **export_summary.to_json_dict()}, sort_keys=True))
 
@@ -197,6 +205,7 @@ def main() -> NoReturn:
             batch_size=args.parity_batch_size,
             seed=args.parity_seed,
             tolerance=args.tolerance,
+            prefer_ema=not args.no_ema,
         )
         print(json.dumps({"event": "onnx_parity", **parity_summary.to_json_dict()}, sort_keys=True))
         if not parity_summary.passed:

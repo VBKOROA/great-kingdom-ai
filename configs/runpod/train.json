@@ -24,5 +24,6 @@
   "priority_target_age_weight": 0.25,
   "priority_search_reanalyzed_boost": 1.0,
   "priority_max_priority": 64.0,
-  "prefetch_batches": 2
+  "prefetch_batches": 2,
+  "ema_decay": 0.99
 }

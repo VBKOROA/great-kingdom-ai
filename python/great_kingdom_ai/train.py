@@ -64,6 +64,7 @@ class TrainingConfig:
     priority_search_reanalyzed_boost: float = 1.0
     priority_max_priority: float | None = 64.0
     prefetch_batches: int = 1
+    ema_decay: float | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +111,8 @@ class TrainState:
     optimizer: Optimizer
     scheduler: LRScheduler
     scaler: Any | None = None
+    ema_model: PolicyValueNetwork | None = None
+    ema_decay: float | None = None
     step: int = 0
     model_preset: str = "small"
 
@@ -237,6 +240,7 @@ def create_train_state(config: TrainingConfig) -> TrainState:
     torch = _import_torch()
     from great_kingdom_ai.model import create_model
 
+    _validate_ema_decay(config.ema_decay)
     model = create_model(config.model_preset).to(config.device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -244,11 +248,14 @@ def create_train_state(config: TrainingConfig) -> TrainState:
         weight_decay=config.weight_decay,
     )
     scheduler = create_lr_scheduler(torch, optimizer, config)
+    ema_model = _create_ema_model(model) if config.ema_decay is not None else None
     return TrainState(
         model=model,
         optimizer=optimizer,
         scheduler=scheduler,
         scaler=_create_grad_scaler(config),
+        ema_model=ema_model,
+        ema_decay=config.ema_decay,
         step=0,
         model_preset=config.model_preset,
     )
@@ -280,6 +287,7 @@ def train_step(state: TrainState, batch: TrainingBatch, config: TrainingConfig) 
         state.optimizer.step()
     if optimizer_stepped:
         state.scheduler.step()
+        _update_ema_model(state)
     return losses
 
 
@@ -296,6 +304,10 @@ def save_checkpoint(state: TrainState, path: str | Path) -> Path:
             "optimizer_state": state.optimizer.state_dict(),
             "scheduler_state": state.scheduler.state_dict(),
             "scaler_state": None if state.scaler is None else state.scaler.state_dict(),
+            "ema_model_state": (
+                None if state.ema_model is None else state.ema_model.state_dict()
+            ),
+            "ema_decay": state.ema_decay,
         },
         destination,
     )
@@ -316,14 +328,21 @@ def load_checkpoint(
     lr_cosine_steps: int = 0,
     steps: int = 1000,
     amp: bool = False,
+    ema_decay: float | None = None,
+    prefer_ema: bool = False,
 ) -> TrainState:
     torch = _import_torch()
     from great_kingdom_ai.model import ModelConfig, PolicyValueNetwork
 
+    _validate_ema_decay(ema_decay)
     checkpoint = torch.load(Path(path), map_location=device or "cpu", weights_only=False)
     config = ModelConfig(**checkpoint["model_config"])
     model = PolicyValueNetwork(config).to(device=device)
-    model.load_state_dict(checkpoint["model_state"])
+    model_state = checkpoint["model_state"]
+    ema_model_state = checkpoint.get("ema_model_state")
+    if prefer_ema and ema_model_state is not None:
+        model_state = ema_model_state
+    model.load_state_dict(model_state)
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     optimizer.load_state_dict(checkpoint["optimizer_state"])
     scheduler = create_lr_scheduler(
@@ -348,11 +367,24 @@ def load_checkpoint(
     scaler_state = checkpoint.get("scaler_state")
     if scaler is not None and scaler_state is not None:
         scaler.load_state_dict(scaler_state)
+    resolved_ema_decay = ema_decay if ema_decay is not None else checkpoint.get("ema_decay")
+    _validate_ema_decay(resolved_ema_decay)
+    ema_model = None
+    if resolved_ema_decay is not None:
+        ema_model = PolicyValueNetwork(config).to(device=device)
+        ema_model.load_state_dict(
+            ema_model_state if ema_model_state is not None else checkpoint["model_state"]
+        )
+        ema_model.eval()
+        for parameter in ema_model.parameters():
+            parameter.requires_grad_(False)
     return TrainState(
         model=model,
         optimizer=optimizer,
         scheduler=scheduler,
         scaler=scaler,
+        ema_model=ema_model,
+        ema_decay=resolved_ema_decay,
         step=int(checkpoint["step"]),
         model_preset=str(checkpoint.get("model_preset", "custom")),
     )
@@ -366,6 +398,7 @@ def load_checkpoint_weights(
     torch = _import_torch()
     from great_kingdom_ai.model import ModelConfig, PolicyValueNetwork
 
+    _validate_ema_decay(config.ema_decay)
     checkpoint = torch.load(Path(path), map_location=config.device, weights_only=False)
     model_config = ModelConfig(**checkpoint["model_config"])
     model = PolicyValueNetwork(model_config).to(device=config.device)
@@ -376,11 +409,20 @@ def load_checkpoint_weights(
         weight_decay=config.weight_decay,
     )
     scheduler = create_lr_scheduler(torch, optimizer, config)
+    ema_model = None
+    if config.ema_decay is not None:
+        ema_model = PolicyValueNetwork(model_config).to(device=config.device)
+        ema_model.load_state_dict(checkpoint.get("ema_model_state") or checkpoint["model_state"])
+        ema_model.eval()
+        for parameter in ema_model.parameters():
+            parameter.requires_grad_(False)
     return TrainState(
         model=model,
         optimizer=optimizer,
         scheduler=scheduler,
         scaler=_create_grad_scaler(config),
+        ema_model=ema_model,
+        ema_decay=config.ema_decay,
         step=0,
         model_preset=str(checkpoint.get("model_preset", "custom")),
     )
@@ -448,6 +490,41 @@ def _restore_optimizer_lrs_from_scheduler(
         group["lr"] = learning_rate
 
 
+def _create_ema_model(model: PolicyValueNetwork) -> PolicyValueNetwork:
+    import copy
+
+    ema_model = copy.deepcopy(model)
+    ema_model.eval()
+    for parameter in ema_model.parameters():
+        parameter.requires_grad_(False)
+    return ema_model
+
+
+def _update_ema_model(state: TrainState) -> None:
+    if state.ema_model is None or state.ema_decay is None:
+        return
+    torch = _import_torch()
+    model_state = state.model.state_dict()
+    ema_state = state.ema_model.state_dict()
+    with torch.no_grad():
+        for key, ema_tensor in ema_state.items():
+            model_tensor = model_state[key].detach().to(
+                device=ema_tensor.device,
+                dtype=ema_tensor.dtype,
+            )
+            if ema_tensor.is_floating_point() and model_tensor.is_floating_point():
+                ema_tensor.mul_(state.ema_decay).add_(model_tensor, alpha=1.0 - state.ema_decay)
+            else:
+                ema_tensor.copy_(model_tensor)
+
+
+def _validate_ema_decay(decay: float | None) -> None:
+    if decay is None:
+        return
+    if not math.isfinite(decay) or not 0.0 <= decay < 1.0:
+        raise ValueError("ema_decay must be in [0, 1)")
+
+
 def train_from_replay(
     replay: ReplayDataset,
     config: TrainingConfig,
@@ -487,6 +564,7 @@ def train_from_replay(
             lr_cosine_steps=config.lr_cosine_steps,
             steps=config.steps,
             amp=config.amp,
+            ema_decay=config.ema_decay,
         )
 
     start_step = state.step
@@ -502,6 +580,8 @@ def train_from_replay(
             optimizer=state.optimizer,
             scheduler=state.scheduler,
             scaler=state.scaler,
+            ema_model=state.ema_model,
+            ema_decay=state.ema_decay,
             step=step + 1,
             model_preset=state.model_preset,
         )
@@ -849,6 +929,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="disable random board symmetry augmentation during batch sampling",
     )
+    parser.add_argument(
+        "--ema-decay",
+        type=float,
+        default=None,
+        help="enable exponential moving average weights with the given decay",
+    )
     return parser
 
 
@@ -860,6 +946,7 @@ def _config_from_args(args: argparse.Namespace) -> TrainingConfig:
         "batch_size": args.batch_size,
         "model_preset": args.model_preset,
         "symmetry_augmentation": False if args.no_symmetry_augmentation else None,
+        "ema_decay": args.ema_decay,
     }
     data = asdict(config)
     data.update({key: value for key, value in overrides.items() if value is not None})
