@@ -154,6 +154,11 @@ def test_trajectory_replay_save_load_preserves_optional_transition_metadata(
     loaded = TrajectoryReplayBuffer.load(path)
     loaded_transition = loaded.transitions()[0]
 
+    with np.load(path) as data:
+        assert "search_config_hashes" not in data
+        assert data["search_config_hash_table"].tolist() == ["search-v1"]
+        assert data["search_config_hash_ids"].tolist() == [0]
+
     assert loaded_transition.root_policy_logits is not None
     assert loaded_transition.root_value == pytest.approx(0.25)
     assert loaded_transition.next_features is not None

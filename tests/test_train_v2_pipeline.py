@@ -131,7 +131,10 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
         checkpoint_path: str | Path,
         output_path: str | Path,
         config: Any,
+        progress_callback: Any = None,
     ) -> ReanalyzeSummary:
+        if progress_callback is not None:
+            progress_callback("fake", 1, 1, "done")
         replay = TrajectoryReplayBuffer.load(replay_path)
         features = np.stack([transition.features for transition in replay.transitions()], axis=0)
         policies = np.stack(

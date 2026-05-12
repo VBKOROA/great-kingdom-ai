@@ -6,7 +6,7 @@ import argparse
 import json
 import math
 import random
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, NoReturn, cast
@@ -30,6 +30,7 @@ from great_kingdom_ai.self_play_data import value_target_for_player
 from great_kingdom_ai.trajectory_replay import TrajectoryEpisode, TrajectoryReplayBuffer
 
 SNAPSHOT_FORMAT = "reanalyze-target-v1"
+ReanalyzeProgressCallback = Callable[[str, int, int, str], None]
 
 
 @dataclass(frozen=True)
@@ -256,15 +257,21 @@ def reanalyze_replay(
     checkpoint_path: str | Path,
     output_path: str | Path,
     config: ReanalyzeConfig | None = None,
+    progress_callback: ReanalyzeProgressCallback | None = None,
 ) -> ReanalyzeSummary:
     resolved_config = config if config is not None else ReanalyzeConfig()
+    _report_progress(progress_callback, "load", 0, 1, f"replay={replay_path}")
     replay = TrajectoryReplayBuffer.load(replay_path)
+    _report_progress(progress_callback, "load", 1, 1, f"transitions={len(replay)}")
     snapshot = build_reanalyze_snapshot(
         replay,
         checkpoint_path=checkpoint_path,
         config=resolved_config,
+        progress_callback=progress_callback,
     )
+    _report_progress(progress_callback, "save", 0, 1, f"output={output_path}")
     snapshot.save(output_path, compressed=resolved_config.compressed)
+    _report_progress(progress_callback, "save", 1, 1, f"rows={len(snapshot)}")
     return ReanalyzeSummary(
         replay_path=Path(replay_path),
         checkpoint_path=Path(checkpoint_path),
@@ -286,26 +293,39 @@ def build_reanalyze_snapshot(
     *,
     checkpoint_path: str | Path,
     config: ReanalyzeConfig,
+    progress_callback: ReanalyzeProgressCallback | None = None,
 ) -> ReanalyzeTargetSnapshot:
     from great_kingdom_ai.train import load_checkpoint
 
+    _report_progress(progress_callback, "checkpoint", 0, 1, f"loading {checkpoint_path}")
     state = load_checkpoint(checkpoint_path, device=config.device)
     state.model.eval()
+    _report_progress(progress_callback, "checkpoint", 1, 1, f"device={config.device}")
     model_version = state.step if config.model_version is None else config.model_version
     episodes = replay.episodes
     rows = _flatten_episodes(episodes)
     if not rows:
         raise ValueError("trajectory replay must contain at least one transition")
 
+    _report_progress(progress_callback, "arrays", 0, 1, f"stacking rows={len(rows)}")
     features = np.stack([row.features for row in rows], axis=0).astype(np.float32)
     legal_masks = np.stack([row.legal_mask for row in rows], axis=0).astype(np.bool_)
     policies = np.stack([row.policy_target for row in rows], axis=0).astype(np.float32)
+    _report_progress(progress_callback, "arrays", 1, 1, f"rows={features.shape[0]}")
     policy_logits, refreshed_values = _evaluate_policy_logits_values(
         state.model,
         features,
         legal_masks,
         batch_size=config.batch_size,
         device=config.device,
+        progress_callback=progress_callback,
+    )
+    _report_progress(
+        progress_callback,
+        "bootstrap",
+        0,
+        1,
+        f"td_steps={config.bootstrap_td_steps}, gamma={config.gamma:g}",
     )
     values = _bootstrap_targets_from_refreshed_values(
         episodes,
@@ -313,6 +333,7 @@ def build_reanalyze_snapshot(
         td_steps=config.bootstrap_td_steps,
         gamma=config.gamma,
     )
+    _report_progress(progress_callback, "bootstrap", 1, 1, f"rows={values.shape[0]}")
     source_model_versions = np.asarray([row.model_version for row in rows], dtype=np.int64)
     target_ages = np.maximum(model_version - source_model_versions, 0).astype(np.int64)
     search_reanalyzed: np.ndarray | None = None
@@ -327,9 +348,12 @@ def build_reanalyze_snapshot(
             model=state.model,
             device=config.device,
             config=config.search,
+            progress_callback=progress_callback,
         )
         policies = search_result.policies
         search_reanalyzed = search_result.search_reanalyzed
+    else:
+        _report_progress(progress_callback, "search", 0, 0, "disabled")
     return _validated_snapshot(
         ReanalyzeTargetSnapshot(
             features=features,
@@ -447,11 +471,21 @@ def _evaluate_policy_logits_values(
     *,
     batch_size: int,
     device: str,
+    progress_callback: ReanalyzeProgressCallback | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     policy_logits: list[np.ndarray] = []
     values: list[np.ndarray] = []
+    total_batches = math.ceil(features.shape[0] / batch_size)
+    _report_progress(
+        progress_callback,
+        "eval",
+        0,
+        total_batches,
+        f"rows={features.shape[0]}, batch_size={batch_size}, device={device}",
+    )
     for start in range(0, features.shape[0], batch_size):
         end = min(start + batch_size, features.shape[0])
+        batch_number = start // batch_size + 1
         evaluation = evaluate_feature_arrays_logits_values(
             model,
             features[start:end],
@@ -460,6 +494,13 @@ def _evaluate_policy_logits_values(
         )
         policy_logits.append(evaluation.policy_logits)
         values.append(evaluation.value)
+        _report_progress(
+            progress_callback,
+            "eval",
+            batch_number,
+            total_batches,
+            f"rows={start}:{end}",
+        )
     return (
         np.concatenate(policy_logits, axis=0).astype(np.float32),
         np.concatenate(values, axis=0).astype(np.float32),
@@ -620,12 +661,24 @@ def _validated_snapshot(snapshot: ReanalyzeTargetSnapshot) -> ReanalyzeTargetSna
     )
 
 
+def _report_progress(
+    progress_callback: ReanalyzeProgressCallback | None,
+    stage: str,
+    current: int,
+    total: int,
+    detail: str,
+) -> None:
+    if progress_callback is not None:
+        progress_callback(stage, current, total, detail)
+
+
 if __name__ == "__main__":
     main()
 
 
 __all__ = [
     "ReanalyzeConfig",
+    "ReanalyzeProgressCallback",
     "ReanalyzeSummary",
     "ReanalyzeTargetBatch",
     "ReanalyzeTargetSnapshot",

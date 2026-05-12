@@ -234,6 +234,12 @@ def run_train_v2_pipeline(
                     seed=pipeline_config.search_reanalyze_seed,
                 ),
             ),
+            progress_callback=lambda stage, current, target, detail: printer.progress(
+                f"reanalyze {stage}",
+                current,
+                target,
+                detail=detail,
+            ),
         )
         shutil.copy2(target_snapshot_path, paths["latest_target_snapshot_path"])
         printer.progress("iteration", 3, phase_total, detail="reanalyze complete")

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
@@ -13,6 +13,8 @@ from great_kingdom_ai.evaluator import evaluate_feature_batch_logits_values
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.priority_sampling import PrioritySamplingConfig, priority_scores
 from great_kingdom_ai.trajectory_replay import TrajectoryEpisode, TrajectoryTransition
+
+SearchReanalyzeProgressCallback = Callable[[str, int, int, str], None]
 
 
 class SearchReanalyzeModel(Protocol):
@@ -106,8 +108,16 @@ def refresh_policies_with_search(
     model: SearchReanalyzeModel,
     device: str,
     config: SearchReanalyzeConfig,
+    progress_callback: SearchReanalyzeProgressCallback | None = None,
 ) -> SearchReanalyzeResult:
     policies = np.asarray(policies, dtype=np.float32)
+    _report_progress(
+        progress_callback,
+        "search-select",
+        0,
+        1,
+        f"scoring rows={policies.shape[0]}",
+    )
     selected_indexes = select_search_reanalyze_indexes(
         episodes=episodes,
         policies=policies,
@@ -116,6 +126,13 @@ def refresh_policies_with_search(
         refreshed_values=refreshed_values,
         target_ages=target_ages,
         config=config,
+    )
+    _report_progress(
+        progress_callback,
+        "search-select",
+        1,
+        1,
+        f"selected={len(selected_indexes)}",
     )
     search_reanalyzed = np.zeros((policies.shape[0],), dtype=np.bool_)
     if not selected_indexes:
@@ -129,8 +146,27 @@ def refresh_policies_with_search(
     refs = {ref.row_index: ref for ref in _transition_refs(episodes)}
     refreshed = policies.copy()
     evaluator = _leaf_evaluator(model, device)
+    total_chunks = math.ceil(len(selected_indexes) / config.root_batch_size)
+    _report_progress(
+        progress_callback,
+        "search",
+        0,
+        total_chunks,
+        (
+            f"selected={len(selected_indexes)}, sims={config.simulations}, "
+            f"root_batch={config.root_batch_size}, leaf_batch={config.leaf_batch_size}"
+        ),
+    )
     for start in range(0, len(selected_indexes), config.root_batch_size):
+        chunk_number = start // config.root_batch_size + 1
         chunk_indexes = selected_indexes[start : start + config.root_batch_size]
+        _report_progress(
+            progress_callback,
+            "search",
+            chunk_number - 1,
+            total_chunks,
+            f"chunk={chunk_number}/{total_chunks}, rows={len(chunk_indexes)}",
+        )
         chunk_refs = [refs[row_index] for row_index in chunk_indexes]
         batch = _reconstruct_batch(core, chunk_refs, config=config)
         _validate_reconstructed_batch(batch, chunk_refs)
@@ -150,6 +186,13 @@ def refresh_policies_with_search(
                 raise ValueError("batch search did not return a result for selected row")
             refreshed[row_index] = _policy_target_from_result(result)
             search_reanalyzed[row_index] = True
+        _report_progress(
+            progress_callback,
+            "search",
+            chunk_number,
+            total_chunks,
+            f"chunk={chunk_number}/{total_chunks}, refreshed={np.count_nonzero(search_reanalyzed)}",
+        )
 
     return SearchReanalyzeResult(
         policies=refreshed,
@@ -338,6 +381,17 @@ def _policy_target_from_result(result: Any) -> np.ndarray:
     return policy
 
 
+def _report_progress(
+    progress_callback: SearchReanalyzeProgressCallback | None,
+    stage: str,
+    current: int,
+    total: int,
+    detail: str,
+) -> None:
+    if progress_callback is not None:
+        progress_callback(stage, current, total, detail)
+
+
 def _import_core() -> Any:
     try:
         import great_kingdom_core as core  # type: ignore[import-untyped]
@@ -350,6 +404,7 @@ def _import_core() -> Any:
 
 __all__ = [
     "SearchReanalyzeConfig",
+    "SearchReanalyzeProgressCallback",
     "SearchReanalyzeResult",
     "refresh_policies_with_search",
     "select_search_reanalyze_indexes",

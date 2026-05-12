@@ -470,10 +470,6 @@ def _episodes_to_payload(
             [transition.model_version for transition in transitions],
             dtype=np.int64,
         ),
-        "search_config_hashes": np.asarray(
-            [transition.search_config_hash for transition in transitions],
-            dtype=np.str_,
-        ),
         "created_iterations": np.asarray(
             [transition.created_iteration for transition in transitions],
             dtype=np.int64,
@@ -483,6 +479,10 @@ def _episodes_to_payload(
             dtype=np.float32,
         ),
     }
+    _add_search_config_hashes(
+        payload,
+        [transition.search_config_hash for transition in transitions],
+    )
     _add_optional_2d(payload, "root_policy_logits", [
         transition.root_policy_logits for transition in transitions
     ], (ACTION_SPACE,))
@@ -508,6 +508,7 @@ def _episodes_from_payload(data: Any) -> list[TrajectoryEpisode]:
         key="next_features",
         shape=(transition_count, *FEATURE_SHAPE),
     )
+    search_config_hashes = _load_search_config_hashes(data, transition_count)
 
     episodes: list[TrajectoryEpisode] = []
     for episode_index in range(len(offsets) - 1):
@@ -533,7 +534,7 @@ def _episodes_from_payload(data: Any) -> list[TrajectoryEpisode]:
                     winner=None if winner < 0 else winner,
                     terminal=bool(data["terminals"][row]),
                     model_version=int(data["model_versions"][row]),
-                    search_config_hash=str(data["search_config_hashes"][row]),
+                    search_config_hash=search_config_hashes[row],
                     created_iteration=int(data["created_iterations"][row]),
                     sample_weight=float(data["sample_weights"][row]),
                 )
@@ -550,6 +551,37 @@ def _episodes_from_payload(data: Any) -> list[TrajectoryEpisode]:
             )
         )
     return episodes
+
+
+def _add_search_config_hashes(
+    payload: dict[str, np.ndarray],
+    hashes: Sequence[str],
+) -> None:
+    table: list[str] = []
+    indexes: dict[str, int] = {}
+    ids = np.empty((len(hashes),), dtype=np.int32)
+    for row, value in enumerate(hashes):
+        key = str(value)
+        index = indexes.get(key)
+        if index is None:
+            index = len(table)
+            indexes[key] = index
+            table.append(key)
+        ids[row] = index
+    payload["search_config_hash_table"] = np.asarray(table, dtype=np.str_)
+    payload["search_config_hash_ids"] = ids
+
+
+def _load_search_config_hashes(data: Any, transition_count: int) -> list[str]:
+    if "search_config_hash_ids" in data and "search_config_hash_table" in data:
+        table = np.asarray(data["search_config_hash_table"], dtype=np.str_)
+        ids = np.asarray(data["search_config_hash_ids"], dtype=np.int64)
+        if ids.shape != (transition_count,):
+            raise ValueError("trajectory replay search_config_hash_ids length mismatch")
+        if np.any(ids < 0) or np.any(ids >= len(table)):
+            raise ValueError("trajectory replay search_config_hash_ids contain invalid indexes")
+        return [str(table[index]) for index in ids]
+    return [str(value) for value in np.asarray(data["search_config_hashes"], dtype=np.str_)]
 
 
 def _stack_or_empty(
@@ -628,7 +660,6 @@ def _validate_payload_lengths(data: Any, transition_count: int) -> None:
         "terminals",
         "root_values",
         "model_versions",
-        "search_config_hashes",
         "created_iterations",
         "sample_weights",
     )
@@ -638,6 +669,13 @@ def _validate_payload_lengths(data: Any, transition_count: int) -> None:
     offsets = np.asarray(data["episode_offsets"], dtype=np.int64)
     if offsets.size == 0 or int(offsets[0]) != 0 or int(offsets[-1]) != transition_count:
         raise ValueError("trajectory replay episode_offsets are inconsistent")
+    if "search_config_hash_ids" in data:
+        if np.asarray(data["search_config_hash_ids"]).shape[0] != transition_count:
+            raise ValueError("trajectory replay search_config_hash_ids length mismatch")
+        if "search_config_hash_table" not in data:
+            raise ValueError("trajectory replay missing search_config_hash_table")
+    elif np.asarray(data["search_config_hashes"]).shape[0] != transition_count:
+        raise ValueError("trajectory replay search_config_hashes length mismatch")
 
 
 def _none_if_nan(value: float) -> float | None:
