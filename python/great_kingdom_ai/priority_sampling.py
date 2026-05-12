@@ -23,6 +23,7 @@ class PrioritySamplingConfig:
     value_error_weight: float = 1.0
     policy_kl_weight: float = 1.0
     target_age_weight: float = 0.25
+    search_reanalyzed_boost: float = 1.0
     max_priority: float | None = 64.0
 
     def __post_init__(self) -> None:
@@ -38,6 +39,8 @@ class PrioritySamplingConfig:
         for label, value in weights:
             if not math.isfinite(value) or value < 0.0:
                 raise ValueError(f"{label} must be finite and non-negative")
+        if not math.isfinite(self.search_reanalyzed_boost) or self.search_reanalyzed_boost < 1.0:
+            raise ValueError("search_reanalyzed_boost must be finite and at least 1")
         if self.max_priority is not None:
             if not math.isfinite(self.max_priority) or self.max_priority <= 1.0:
                 raise ValueError("max_priority must be greater than 1")
@@ -58,6 +61,7 @@ def priority_scores(
     legal_masks: np.ndarray | None,
     target_ages: np.ndarray | None,
     config: PrioritySamplingConfig,
+    search_reanalyzed: np.ndarray | None = None,
 ) -> np.ndarray:
     values = np.asarray(values, dtype=np.float32)
     scores = np.ones(values.shape, dtype=np.float32)
@@ -82,6 +86,15 @@ def priority_scores(
         max_age = float(ages.max(initial=0.0))
         if max_age > 0.0:
             scores += np.float32(config.target_age_weight) * (ages / np.float32(max_age))
+
+    if config.search_reanalyzed_boost > 1.0 and search_reanalyzed is not None:
+        refreshed_by_search = np.asarray(search_reanalyzed, dtype=np.bool_)
+        _validate_row_vector("search_reanalyzed", refreshed_by_search, values.shape)
+        scores = np.where(
+            refreshed_by_search,
+            scores * np.float32(config.search_reanalyzed_boost),
+            scores,
+        )
 
     if config.max_priority is not None:
         scores = np.minimum(scores, np.float32(config.max_priority))

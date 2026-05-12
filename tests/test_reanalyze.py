@@ -162,6 +162,46 @@ def test_reanalyze_target_snapshot_priority_sampling_uses_importance_weights() -
     assert 0.0 < batch.sample_weights[0] <= 2.0
 
 
+def test_reanalyze_target_snapshot_priority_boosts_search_reanalyzed_rows() -> None:
+    features = np.stack(
+        [make_features(1), make_features(2), make_features(PASS_ACTION)],
+        axis=0,
+    )
+    policies = np.stack([make_policy(1), make_policy(2), make_policy(PASS_ACTION)], axis=0)
+    snapshot = ReanalyzeTargetSnapshot(
+        features=features,
+        policies=policies,
+        values=np.zeros((3,), dtype=np.float32),
+        refreshed_values=np.zeros((3,), dtype=np.float32),
+        sample_weights=np.ones((3,), dtype=np.float32),
+        episode_ids=np.asarray([7, 7, 7], dtype=np.int64),
+        timesteps=np.asarray([0, 1, 2], dtype=np.int64),
+        players=np.asarray([1, 2, 1], dtype=np.int64),
+        source_model_versions=np.asarray([3, 3, 3], dtype=np.int64),
+        created_iterations=np.asarray([2, 2, 2], dtype=np.int64),
+        target_ages=np.zeros((3,), dtype=np.int64),
+        model_version=8,
+        bootstrap_td_steps=0,
+        gamma=1.0,
+        policy_logits=policies,
+        search_reanalyzed=np.asarray([False, True, False], dtype=np.bool_),
+    )
+
+    scores = snapshot.priority_scores(
+        PrioritySamplingConfig(
+            enabled=True,
+            alpha=1.0,
+            beta=0.4,
+            value_error_weight=0.0,
+            policy_kl_weight=0.0,
+            target_age_weight=0.0,
+            search_reanalyzed_boost=2.0,
+        )
+    )
+
+    assert scores.tolist() == pytest.approx([1.0, 2.0, 1.0])
+
+
 def test_reanalyze_target_snapshot_caches_priority_scores(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -199,6 +199,7 @@ class ReanalyzeTargetSnapshot:
             policy_logits=self.policy_logits,
             legal_masks=legal_masks_from_features(self.features),
             target_ages=self.target_ages,
+            search_reanalyzed=self.search_reanalyzed,
             config=config,
         )
         self._priority_score_cache[config] = scores

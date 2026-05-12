@@ -61,6 +61,7 @@ class TrainingConfig:
     priority_value_error_weight: float = 1.0
     priority_policy_kl_weight: float = 1.0
     priority_target_age_weight: float = 0.25
+    priority_search_reanalyzed_boost: float = 1.0
     priority_max_priority: float | None = 64.0
     prefetch_batches: int = 1
 
@@ -661,6 +662,7 @@ def _priority_sampling_config(config: TrainingConfig) -> PrioritySamplingConfig:
         value_error_weight=config.priority_value_error_weight,
         policy_kl_weight=config.priority_policy_kl_weight,
         target_age_weight=config.priority_target_age_weight,
+        search_reanalyzed_boost=config.priority_search_reanalyzed_boost,
         max_priority=config.priority_max_priority,
     )
 

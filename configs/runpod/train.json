@@ -22,6 +22,7 @@
   "priority_value_error_weight": 1.0,
   "priority_policy_kl_weight": 1.0,
   "priority_target_age_weight": 0.25,
+  "priority_search_reanalyzed_boost": 2.0,
   "priority_max_priority": 64.0,
   "prefetch_batches": 2
 }
