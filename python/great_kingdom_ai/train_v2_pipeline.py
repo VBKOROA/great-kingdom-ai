@@ -317,6 +317,7 @@ def run_train_v2_pipeline(
             )
             save_arena_report(report, report_path)
             candidate_win_rate = report.summary.candidate_win_rate
+            printer.metric("candidate win rate", f"{candidate_win_rate:.3f}")
             promoted = (
                 promote_candidate_if_needed(
                     candidate_checkpoint=candidate_checkpoint,
@@ -326,14 +327,17 @@ def run_train_v2_pipeline(
                 if pipeline_config.promote
                 else False
             )
+            printer.metric("promoted", promoted)
             printer.progress("iteration", 5, phase_total, detail="arena complete")
         elif pipeline_config.always_promote:
             promoted = _promote_candidate_unconditionally(
                 candidate_checkpoint=candidate_checkpoint,
                 best_checkpoint=paths["best_checkpoint"],
             )
+            printer.metric("promoted", promoted)
             printer.progress("iteration", 5, phase_total, detail="always promoted")
         else:
+            printer.metric("promoted", promoted)
             printer.progress("iteration", 5, phase_total, detail="arena skipped")
 
         iteration_summary = TrainV2IterationSummary(
