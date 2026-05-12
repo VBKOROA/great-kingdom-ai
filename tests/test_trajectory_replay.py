@@ -2,6 +2,7 @@ import random
 from dataclasses import dataclass
 from pathlib import Path
 
+import great_kingdom_ai.trajectory_replay as trajectory_module
 import numpy as np
 import pytest
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS, PASS_ACTION
@@ -166,6 +167,33 @@ def test_trajectory_replay_save_load_preserves_optional_transition_metadata(
     assert loaded_transition.search_config_hash == "search-v1"
     assert loaded_transition.created_iteration == 11
     assert loaded_transition.sample_weight == pytest.approx(1.5)
+
+
+def test_trajectory_replay_payload_loader_reads_arrays_once_per_key() -> None:
+    replay = TrajectoryReplayBuffer(capacity=8)
+    replay.push_episode(make_episode(0, actions=[1, 2]))
+    replay.push_episode(make_episode(1, actions=[3, PASS_ACTION], winner=2))
+    payload = trajectory_module._episodes_to_payload(replay.capacity, replay.episodes)
+
+    class CountingPayload:
+        def __init__(self, arrays: dict[str, np.ndarray]) -> None:
+            self.arrays = arrays
+            self.counts = {key: 0 for key in arrays}
+
+        def __contains__(self, key: object) -> bool:
+            return key in self.arrays
+
+        def __getitem__(self, key: str) -> np.ndarray:
+            self.counts[key] += 1
+            return self.arrays[key]
+
+    data = CountingPayload(payload)
+    episodes = trajectory_module._episodes_from_payload(data)
+
+    assert sum(len(episode.transitions) for episode in episodes) == 4
+    assert data.counts["policy_targets"] == 2
+    assert data.counts["legal_masks"] == 2
+    assert data.counts["timesteps"] == 2
 
 
 def test_trajectory_replay_capacity_evicts_whole_old_episodes() -> None:

@@ -494,7 +494,23 @@ def _episodes_to_payload(
 
 def _episodes_from_payload(data: Any) -> list[TrajectoryEpisode]:
     offsets = np.asarray(data["episode_offsets"], dtype=np.int64)
+    episode_ids = np.asarray(data["episode_ids"], dtype=np.int64)
+    episode_seeds = np.asarray(data["episode_seeds"], dtype=np.int64)
+    episode_winners = np.asarray(data["episode_winners"], dtype=np.int64)
+    episode_end_reasons = np.asarray(data["episode_end_reasons"], dtype=np.int64)
+    territory_scores = np.asarray(data["territory_scores"], dtype=np.int64)
+    timesteps = np.asarray(data["timesteps"], dtype=np.int64)
+    players = np.asarray(data["players"], dtype=np.int64)
+    actions = np.asarray(data["actions"], dtype=np.int64)
     features = np.asarray(data["features"], dtype=np.float32)
+    legal_masks = np.asarray(data["legal_masks"], dtype=np.bool_)
+    policy_targets = np.asarray(data["policy_targets"], dtype=np.float32)
+    winners = np.asarray(data["winners"], dtype=np.int64)
+    terminals = np.asarray(data["terminals"], dtype=np.bool_)
+    root_values = np.asarray(data["root_values"], dtype=np.float32)
+    model_versions = np.asarray(data["model_versions"], dtype=np.int64)
+    created_iterations = np.asarray(data["created_iterations"], dtype=np.int64)
+    sample_weights = np.asarray(data["sample_weights"], dtype=np.float32)
     transition_count = features.shape[0]
     _validate_payload_lengths(data, transition_count)
 
@@ -516,37 +532,37 @@ def _episodes_from_payload(data: Any) -> list[TrajectoryEpisode]:
         end = int(offsets[episode_index + 1])
         transitions = []
         for row in range(start, end):
-            winner = int(data["winners"][row])
+            winner = int(winners[row])
             transitions.append(
                 TrajectoryTransition(
-                    episode_id=int(data["episode_ids"][episode_index]),
-                    timestep=int(data["timesteps"][row]),
-                    player=int(data["players"][row]),
+                    episode_id=int(episode_ids[episode_index]),
+                    timestep=int(timesteps[row]),
+                    player=int(players[row]),
                     features=features[row],
-                    legal_mask=np.asarray(data["legal_masks"][row], dtype=np.bool_),
-                    action=int(data["actions"][row]),
-                    policy_target=np.asarray(data["policy_targets"][row], dtype=np.float32),
+                    legal_mask=legal_masks[row],
+                    action=int(actions[row]),
+                    policy_target=policy_targets[row],
                     root_policy_logits=(
                         root_policy_logits[row] if root_policy_present[row] else None
                     ),
-                    root_value=_none_if_nan(float(data["root_values"][row])),
+                    root_value=_none_if_nan(float(root_values[row])),
                     next_features=next_features[row] if next_features_present[row] else None,
                     winner=None if winner < 0 else winner,
-                    terminal=bool(data["terminals"][row]),
-                    model_version=int(data["model_versions"][row]),
+                    terminal=bool(terminals[row]),
+                    model_version=int(model_versions[row]),
                     search_config_hash=search_config_hashes[row],
-                    created_iteration=int(data["created_iterations"][row]),
-                    sample_weight=float(data["sample_weights"][row]),
+                    created_iteration=int(created_iterations[row]),
+                    sample_weight=float(sample_weights[row]),
                 )
             )
-        territory_score_row = data["territory_scores"][episode_index]
+        territory_score_row = territory_scores[episode_index]
         episodes.append(
             TrajectoryEpisode(
-                episode_id=int(data["episode_ids"][episode_index]),
-                seed=int(data["episode_seeds"][episode_index]),
+                episode_id=int(episode_ids[episode_index]),
+                seed=int(episode_seeds[episode_index]),
                 transitions=tuple(transitions),
-                winner=int(data["episode_winners"][episode_index]),
-                end_reason=int(data["episode_end_reasons"][episode_index]),
+                winner=int(episode_winners[episode_index]),
+                end_reason=int(episode_end_reasons[episode_index]),
                 territory_scores=(int(territory_score_row[0]), int(territory_score_row[1])),
             )
         )
