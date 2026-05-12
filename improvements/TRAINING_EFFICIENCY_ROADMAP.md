@@ -470,7 +470,7 @@ coordinator process
 - replay 원본을 reanalyze가 직접 덮어쓰는 구조
 - GPU OOM이 날 때까지 actor batch와 learner batch를 동시에 키우는 구조
 
-### Phase 7: Reanalyze v2
+### ~~Phase 7: Reanalyze v2~~
 
 목표:
 
