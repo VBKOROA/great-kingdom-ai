@@ -171,8 +171,8 @@ def run_actor_v2_once(
     if not summary.trajectory_episodes:
         raise RuntimeError("actor runner did not return trajectory episodes")
     transitions = sum(len(episode.transitions) for episode in summary.trajectory_episodes)
-    if transitions != summary.samples:
-        raise RuntimeError("actor runner returned inconsistent trajectory transition count")
+    if len(summary.game_logs) != summary.games:
+        raise RuntimeError("actor runner returned inconsistent game log count")
 
     _save_trajectory_shard(
         shard_dir,
@@ -194,6 +194,8 @@ def run_actor_v2_once(
     )
     _append_event(paths["metadata_path"], {"event": "shard_completed", **record.to_dict()})
     average_length = transitions / max(1, record.games)
+    if summary.samples != transitions:
+        printer.metric("full-search samples", summary.samples)
     printer.metric("new games", record.games)
     printer.metric("new transitions", transitions)
     printer.metric("avg game length", f"{average_length:.1f}")
