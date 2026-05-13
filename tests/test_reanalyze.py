@@ -376,6 +376,90 @@ def test_build_reanalyze_snapshot_can_refresh_policy_targets_with_search(
     assert snapshot.policies[0].tolist() == pytest.approx(make_policy(PASS_ACTION).tolist())
 
 
+def test_refresh_policies_with_search_can_use_onnx_evaluator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import great_kingdom_ai.search_reanalyze as search_reanalyze
+
+    class FakeResult:
+        def policy_target(self) -> list[float]:
+            return make_policy(PASS_ACTION).tolist()
+
+    class FakeGameState:
+        def __init__(self) -> None:
+            self.actions: list[int] = []
+
+        def current_player(self) -> int:
+            return 1 if len(self.actions) % 2 == 0 else 2
+
+        def is_terminal(self) -> bool:
+            return False
+
+        def apply_action(self, action: int) -> None:
+            self.actions.append(action)
+
+        def feature_planes(self) -> list[float]:
+            action = [1, 2, PASS_ACTION][len(self.actions)]
+            return make_features(action).reshape(-1).tolist()
+
+    class FakeRequest:
+        def __init__(self, states: list[FakeGameState]) -> None:
+            self.states = states
+
+        def feature_planes(self) -> list[list[float]]:
+            return [state.feature_planes() for state in self.states]
+
+    class FakeBatch:
+        def __init__(self, game_count: int, **kwargs: object) -> None:
+            self.states = [FakeGameState() for _ in range(game_count)]
+            self.kwargs = kwargs
+
+        def apply_actions(self, actions: list[int | None]) -> None:
+            for state, action in zip(self.states, actions, strict=True):
+                if action is not None:
+                    state.apply_action(action)
+
+        def active_game_indexes(self) -> list[int]:
+            return list(range(len(self.states)))
+
+        def active_eval_request(self) -> FakeRequest:
+            return FakeRequest(self.states)
+
+        def search_active_with_onnx_evaluator(
+            self,
+            evaluator: object,
+            *,
+            leaf_batch_size: int,
+        ) -> list[FakeResult]:
+            assert evaluator == "onnx-evaluator"
+            assert leaf_batch_size == 5
+            return [FakeResult() for _ in self.states]
+
+    class FakeCore:
+        GameState = FakeGameState
+        GumbelSelfPlayBatch = FakeBatch
+
+    monkeypatch.setattr(search_reanalyze, "_import_core", lambda: FakeCore)
+    episode = make_episode()
+    policies = np.stack([transition.policy_target for transition in episode.transitions], axis=0)
+
+    result = search_reanalyze.refresh_policies_with_search(
+        episodes=(episode,),
+        policies=policies,
+        values=np.zeros((3,), dtype=np.float32),
+        policy_logits=np.zeros_like(policies),
+        refreshed_values=np.zeros((3,), dtype=np.float32),
+        target_ages=np.zeros((3,), dtype=np.int64),
+        model=None,
+        device="cpu",
+        onnx_evaluator="onnx-evaluator",
+        config=SearchReanalyzeConfig(fraction=1.0, leaf_batch_size=5),
+    )
+
+    assert result.search_reanalyzed.tolist() == [True, True, True]
+    assert result.policies[0].tolist() == pytest.approx(make_policy(PASS_ACTION).tolist())
+
+
 def test_select_search_reanalyze_indexes_uses_fraction_budget_and_priority() -> None:
     episode = make_episode()
     policies = np.stack([transition.policy_target for transition in episode.transitions], axis=0)
@@ -457,7 +541,7 @@ def test_evaluate_policy_logits_values_with_onnx_uses_core_evaluator(
             self.payload = payload
 
         @staticmethod
-        def from_feature_plane_bytes(row_count: int, payload: bytes) -> "FakeEvalRequest":
+        def from_feature_plane_bytes(row_count: int, payload: bytes) -> FakeEvalRequest:
             requests.append(payload)
             return FakeEvalRequest(row_count, payload)
 
@@ -482,13 +566,17 @@ def test_evaluate_policy_logits_values_with_onnx_uses_core_evaluator(
         [make_features(1), make_features(2), make_features(PASS_ACTION)],
         axis=0,
     )
+    evaluator = reanalyze_module._create_onnx_evaluator(
+        "model.onnx",
+        device="cuda",
+        max_batch_size=4,
+    )
 
     logits, values = reanalyze_module._evaluate_policy_logits_values_with_onnx(
-        "model.onnx",
+        evaluator,
         features,
         batch_size=2,
         device="cuda",
-        max_batch_size=4,
     )
 
     assert len(requests) == 2

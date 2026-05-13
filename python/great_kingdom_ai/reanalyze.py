@@ -375,7 +375,16 @@ def build_reanalyze_snapshot_from_store(
     legal_masks = np.ascontiguousarray(replay.legal_masks, dtype=np.bool_)
     policies = np.ascontiguousarray(replay.policy_targets, dtype=np.float32)
     _report_progress(progress_callback, "arrays", 1, 1, f"rows={features.shape[0]}")
-    if config.onnx_model_path is None:
+    onnx_evaluator = (
+        None
+        if config.onnx_model_path is None
+        else _create_onnx_evaluator(
+            config.onnx_model_path,
+            device=config.onnx_device or config.device,
+            max_batch_size=config.onnx_max_batch_size,
+        )
+    )
+    if onnx_evaluator is None:
         policy_logits, refreshed_values = _evaluate_policy_logits_values(
             state.model,
             features,
@@ -386,11 +395,10 @@ def build_reanalyze_snapshot_from_store(
         )
     else:
         policy_logits, refreshed_values = _evaluate_policy_logits_values_with_onnx(
-            config.onnx_model_path,
+            onnx_evaluator,
             features,
             batch_size=config.batch_size,
             device=config.onnx_device or config.device,
-            max_batch_size=config.onnx_max_batch_size,
             progress_callback=progress_callback,
         )
     _report_progress(
@@ -421,6 +429,7 @@ def build_reanalyze_snapshot_from_store(
             target_ages=target_ages,
             model=state.model,
             device=config.device,
+            onnx_evaluator=onnx_evaluator,
             config=config.search,
             progress_callback=progress_callback,
         )
@@ -608,21 +617,29 @@ def _evaluate_policy_logits_values(
     )
 
 
-def _evaluate_policy_logits_values_with_onnx(
+def _create_onnx_evaluator(
     onnx_model_path: str,
-    features: np.ndarray,
     *,
-    batch_size: int,
     device: str,
     max_batch_size: int,
-    progress_callback: ReanalyzeProgressCallback | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> Any:
     core = _import_core()
-    evaluator = core.OnnxEvaluator(
+    return core.OnnxEvaluator(
         str(onnx_model_path),
         device=device,
         max_batch_size=max_batch_size,
     )
+
+
+def _evaluate_policy_logits_values_with_onnx(
+    evaluator: Any,
+    features: np.ndarray,
+    *,
+    batch_size: int,
+    device: str,
+    progress_callback: ReanalyzeProgressCallback | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    core = _import_core()
     policy_logits: list[np.ndarray] = []
     values: list[np.ndarray] = []
     total_batches = math.ceil(features.shape[0] / batch_size)

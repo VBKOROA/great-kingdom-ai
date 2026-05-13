@@ -105,8 +105,9 @@ def refresh_policies_with_search(
     policy_logits: np.ndarray,
     refreshed_values: np.ndarray,
     target_ages: np.ndarray,
-    model: SearchReanalyzeModel,
+    model: SearchReanalyzeModel | None,
     device: str,
+    onnx_evaluator: Any | None = None,
     config: SearchReanalyzeConfig,
     progress_callback: SearchReanalyzeProgressCallback | None = None,
 ) -> SearchReanalyzeResult:
@@ -145,7 +146,12 @@ def refresh_policies_with_search(
     core = _import_core()
     refs = {ref.row_index: ref for ref in _transition_refs(episodes)}
     refreshed = policies.copy()
-    evaluator = _leaf_evaluator(model, device)
+    evaluator = (
+        None
+        if onnx_evaluator is not None
+        else _leaf_evaluator(_require_model(model), device)
+    )
+    backend = "onnx" if onnx_evaluator is not None else "pytorch"
     total_chunks = math.ceil(len(selected_indexes) / config.root_batch_size)
     _report_progress(
         progress_callback,
@@ -154,7 +160,8 @@ def refresh_policies_with_search(
         total_chunks,
         (
             f"selected={len(selected_indexes)}, sims={config.simulations}, "
-            f"root_batch={config.root_batch_size}, leaf_batch={config.leaf_batch_size}"
+            f"root_batch={config.root_batch_size}, leaf_batch={config.leaf_batch_size}, "
+            f"backend={backend}"
         ),
     )
     for start in range(0, len(selected_indexes), config.root_batch_size):
@@ -170,15 +177,27 @@ def refresh_policies_with_search(
         chunk_refs = [refs[row_index] for row_index in chunk_indexes]
         batch = _reconstruct_batch(core, chunk_refs, config=config)
         _validate_reconstructed_batch(batch, chunk_refs)
-        results = batch.search_active_with_logits_and_evaluator(
-            [
-                policy_logits[row_index].astype(np.float32).tolist()
-                for row_index in chunk_indexes
-            ],
-            evaluator,
-            [float(refreshed_values[row_index]) for row_index in chunk_indexes],
-            config.leaf_batch_size,
-        )
+        if onnx_evaluator is None:
+            assert evaluator is not None
+            results = batch.search_active_with_logits_and_evaluator(
+                [
+                    policy_logits[row_index].astype(np.float32).tolist()
+                    for row_index in chunk_indexes
+                ],
+                evaluator,
+                [float(refreshed_values[row_index]) for row_index in chunk_indexes],
+                config.leaf_batch_size,
+            )
+        else:
+            if not hasattr(batch, "search_active_with_onnx_evaluator"):
+                raise RuntimeError(
+                    "great_kingdom_core does not support ONNX search reanalyze. "
+                    "Rebuild the Rust extension."
+                )
+            results = batch.search_active_with_onnx_evaluator(
+                onnx_evaluator,
+                leaf_batch_size=config.leaf_batch_size,
+            )
         if len(results) != len(chunk_indexes):
             raise ValueError("batch search result length does not match selected rows")
         for row_index, result in zip(chunk_indexes, results, strict=True):
@@ -357,6 +376,12 @@ def _leaf_evaluator(model: SearchReanalyzeModel, device: str) -> Any:
         ]
 
     return evaluate
+
+
+def _require_model(model: SearchReanalyzeModel | None) -> SearchReanalyzeModel:
+    if model is None:
+        raise ValueError("model is required when search reanalyze does not use ONNX")
+    return model
 
 
 def _create_search(core: Any, config: SearchReanalyzeConfig, *, seed_offset: int) -> Any:
