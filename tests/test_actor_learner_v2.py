@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import great_kingdom_ai.actor_learner_v2 as actor_learner_v2_module
 import numpy as np
 from great_kingdom_ai.actor_learner_v2 import (
     ActorV2Config,
@@ -343,5 +344,30 @@ def test_learner_v2_waits_until_min_replay_transitions(tmp_path: Path) -> None:
     )
 
     assert summary.trained is False
-    assert summary.replay_transitions == 0
+    assert summary.replay_transitions is None
     assert summary.cycle_seconds >= 0.0
+
+
+def test_learner_v2_does_not_load_replay_when_no_pending_shards(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    def fail_load(path: Path) -> TrajectoryReplayStore:
+        raise AssertionError(f"unexpected replay load: {path}")
+
+    monkeypatch.setattr(actor_learner_v2_module.TrajectoryReplayStore, "load", fail_load)
+
+    summary = run_learner_v2_once(
+        LearnerV2Config(
+            work_dir=tmp_path,
+            replay_capacity=16,
+            min_replay_transitions=1,
+            export_onnx=False,
+        ),
+        TrainingConfig(batch_size=2, steps=1, device="cpu"),
+        trainer=lambda *args, **kwargs: None,
+        printer=PipelinePrinter(enabled=False),
+    )
+
+    assert summary.trained is False
+    assert summary.replay_transitions is None

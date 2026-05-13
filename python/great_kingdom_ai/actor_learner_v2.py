@@ -95,7 +95,7 @@ class LearnerV2Summary:
     imported_shards: list[str]
     imported_transitions: int
     imported_games: int
-    replay_transitions: int
+    replay_transitions: int | None
     trained: bool
     train_start_step: int | None
     train_end_step: int | None
@@ -239,6 +239,24 @@ def run_learner_v2_once(
     printer.metric("recent window", train_config.recent_sample_window)
     printer.metric("recent fraction", train_config.recent_sample_fraction)
     printer.metric("ema decay", train_config.ema_decay)
+    if not pending:
+        cycle_seconds = time.monotonic() - cycle_started_at
+        printer.done(f"waiting for shards: pending=0, cycle={cycle_seconds:.1f}s")
+        return LearnerV2Summary(
+            imported_shards=[],
+            imported_transitions=0,
+            imported_games=0,
+            replay_transitions=None,
+            trained=False,
+            train_start_step=None,
+            train_end_step=None,
+            candidate_checkpoint=None,
+            training_latest_checkpoint=None,
+            onnx_output_path=None,
+            pruned_artifacts=0,
+            pruned_bytes=0,
+            cycle_seconds=cycle_seconds,
+        )
     replay = _load_or_create_replay(paths["replay_path"], capacity=config.replay_capacity)
     imported_transitions = 0
     imported_games = 0
