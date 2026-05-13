@@ -6,12 +6,14 @@ import random
 from pathlib import Path
 
 import great_kingdom_ai.on_sample_reanalyze as on_sample_reanalyze_module
+import great_kingdom_ai.reanalyze as reanalyze_module
 import numpy as np
 import pytest
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS, PASS_ACTION
 from great_kingdom_ai.on_sample_reanalyze import OnSampleReanalyzeDataset
 from great_kingdom_ai.priority_sampling import PrioritySampleResult, PrioritySamplingConfig
-from great_kingdom_ai.reanalyze import ReanalyzeConfig
+from great_kingdom_ai.reanalyze import ReanalyzeConfig, build_reanalyze_snapshot_from_store
+from great_kingdom_ai.search_reanalyze import SearchReanalyzeResult
 from great_kingdom_ai.train import TrainingConfig, create_train_state, save_checkpoint
 from great_kingdom_ai.trajectory_replay import (
     TrajectoryEpisode,
@@ -42,6 +44,7 @@ def make_episode(
     *,
     sample_weights: tuple[float, ...] = (1.0, 1.0, 1.0),
     model_versions: tuple[int, ...] = (10, 10, 10),
+    created_iterations: tuple[int, ...] = (3, 3, 3),
     winner: int = 1,
 ) -> TrajectoryEpisode:
     actions = (1, 2, PASS_ACTION)
@@ -57,7 +60,7 @@ def make_episode(
             winner=winner,
             terminal=index == len(actions) - 1,
             model_version=model_versions[index],
-            created_iteration=3,
+            created_iteration=created_iterations[index],
             sample_weight=sample_weights[index],
         )
         for index, action in enumerate(actions)
@@ -76,9 +79,16 @@ def make_store(
     *,
     sample_weights: tuple[float, ...] = (1.0, 1.0, 1.0),
     model_versions: tuple[int, ...] = (10, 10, 10),
+    created_iterations: tuple[int, ...] = (3, 3, 3),
 ) -> TrajectoryReplayStore:
     replay = TrajectoryReplayBuffer(capacity=8)
-    replay.push_episode(make_episode(sample_weights=sample_weights, model_versions=model_versions))
+    replay.push_episode(
+        make_episode(
+            sample_weights=sample_weights,
+            model_versions=model_versions,
+            created_iterations=created_iterations,
+        )
+    )
     return TrajectoryReplayStore.from_episodes(replay.capacity, replay.episodes)
 
 
@@ -241,3 +251,84 @@ def test_on_sample_priority_sampling_combines_base_and_importance_weights(
 
     assert batch.indexes.tolist() == [1]
     assert batch.sample_weights.tolist() == pytest.approx([0.75])
+
+
+@pytest.mark.skipif(_torch_spec is None, reason="torch is not installed")
+def test_on_sample_dynamic_horizon_matches_snapshot_row_for_row(tmp_path: Path) -> None:
+    store = make_store(created_iterations=(10, 0, 10))
+    checkpoint = make_checkpoint(tmp_path)
+    config = ReanalyzeConfig(
+        batch_size=3,
+        bootstrap_td_steps=2,
+        gamma=0.5,
+        dynamic_horizon_enabled=True,
+        dynamic_horizon_tau=0.5,
+        dynamic_horizon_total_steps=10,
+        model_version=10,
+    )
+    snapshot = build_reanalyze_snapshot_from_store(
+        store,
+        checkpoint_path=checkpoint,
+        config=config,
+    )
+    dataset = OnSampleReanalyzeDataset(store, checkpoint_path=checkpoint, config=config)
+
+    batch = dataset.sample_arrays(len(store), random.Random(3))
+
+    for replay_index, value in zip(batch.indexes.tolist(), batch.values.tolist(), strict=True):
+        assert value == pytest.approx(float(snapshot.values[replay_index]))
+
+
+@pytest.mark.skipif(_torch_spec is None, reason="torch is not installed")
+def test_on_sample_mcts_root_bootstrap_matches_snapshot_row_for_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = make_store()
+    checkpoint = make_checkpoint(tmp_path)
+    config = ReanalyzeConfig(
+        batch_size=3,
+        bootstrap_td_steps=1,
+        gamma=0.5,
+        value_bootstrap_source="mcts_root",
+        model_version=10,
+    )
+
+    def fake_refresh_sampled_policies_with_search(**kwargs: object) -> SearchReanalyzeResult:
+        policies = np.asarray(kwargs["policies"], dtype=np.float32)
+        transitions = kwargs["transitions"]
+        root_values = np.asarray(
+            [
+                0.25 + 0.1 * ref[0].transitions[ref[1]].timestep
+                for ref in transitions
+            ],
+            dtype=np.float32,
+        )
+        return SearchReanalyzeResult(
+            policies=policies.copy(),
+            search_reanalyzed=np.ones((policies.shape[0],), dtype=np.bool_),
+            selected_indexes=tuple(range(policies.shape[0])),
+            root_values=root_values,
+        )
+
+    monkeypatch.setattr(
+        reanalyze_module,
+        "refresh_sampled_policies_with_search",
+        fake_refresh_sampled_policies_with_search,
+    )
+    monkeypatch.setattr(
+        on_sample_reanalyze_module,
+        "refresh_sampled_policies_with_search",
+        fake_refresh_sampled_policies_with_search,
+    )
+
+    snapshot = build_reanalyze_snapshot_from_store(
+        store,
+        checkpoint_path=checkpoint,
+        config=config,
+    )
+    dataset = OnSampleReanalyzeDataset(store, checkpoint_path=checkpoint, config=config)
+    batch = dataset.sample_arrays(len(store), random.Random(3))
+
+    for replay_index, value in zip(batch.indexes.tolist(), batch.values.tolist(), strict=True):
+        assert value == pytest.approx(float(snapshot.values[replay_index]))
