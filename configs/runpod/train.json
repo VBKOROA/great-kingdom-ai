@@ -1,6 +1,6 @@
 {
   "batch_size": 512,
-  "steps": 512,
+  "steps": 192,
   "learning_rate": 0.0001,
   "weight_decay": 0.0001,
   "value_loss_weight": 0.5,
@@ -15,7 +15,7 @@
   "mask_policy_loss": true,
   "amp": true,
   "recent_sample_fraction": 0.25,
-  "recent_sample_window": 80000,
+  "recent_sample_window": 32768,
   "priority_enabled": true,
   "priority_alpha": 0.6,
   "priority_beta": 0.4,
