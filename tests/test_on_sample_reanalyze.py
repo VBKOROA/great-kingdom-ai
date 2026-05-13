@@ -7,13 +7,14 @@ from pathlib import Path
 
 import great_kingdom_ai.on_sample_reanalyze as on_sample_reanalyze_module
 import great_kingdom_ai.reanalyze as reanalyze_module
+import great_kingdom_ai.search_reanalyze as search_reanalyze_module
 import numpy as np
 import pytest
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS, PASS_ACTION
 from great_kingdom_ai.on_sample_reanalyze import OnSampleReanalyzeDataset
 from great_kingdom_ai.priority_sampling import PrioritySampleResult, PrioritySamplingConfig
 from great_kingdom_ai.reanalyze import ReanalyzeConfig, build_reanalyze_snapshot_from_store
-from great_kingdom_ai.search_reanalyze import SearchReanalyzeResult
+from great_kingdom_ai.search_reanalyze import SearchReanalyzeConfig, SearchReanalyzeResult
 from great_kingdom_ai.train import TrainingConfig, create_train_state, save_checkpoint
 from great_kingdom_ai.trajectory_replay import (
     TrajectoryEpisode,
@@ -332,3 +333,93 @@ def test_on_sample_mcts_root_bootstrap_matches_snapshot_row_for_row(
 
     for replay_index, value in zip(batch.indexes.tolist(), batch.values.tolist(), strict=True):
         assert value == pytest.approx(float(snapshot.values[replay_index]))
+
+
+@pytest.mark.skipif(_torch_spec is None, reason="torch is not installed")
+def test_on_sample_sampled_search_uses_rust_core_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    search_histories: list[list[list[int]]] = []
+
+    class FakeResult:
+        def __init__(self, history: list[int]) -> None:
+            self.history = history
+
+        def policy_target(self) -> list[float]:
+            return make_policy(PASS_ACTION).tolist()
+
+        def root_value(self) -> float:
+            return 0.25 + 0.1 * len(self.history)
+
+    class FakeGameState:
+        def __init__(self) -> None:
+            self.actions: list[int] = []
+
+        def is_terminal(self) -> bool:
+            return False
+
+        def apply_action(self, action: int) -> None:
+            self.actions.append(action)
+
+    class FakeBatch:
+        def __init__(self, histories: list[list[int]], **kwargs: object) -> None:
+            self.histories = histories
+            self.kwargs = kwargs
+
+        @classmethod
+        def from_action_histories(
+            cls,
+            histories: list[list[int]],
+            **kwargs: object,
+        ) -> FakeBatch:
+            captured = [list(history) for history in histories]
+            search_histories.append(captured)
+            return cls(captured, **kwargs)
+
+        def search_active_with_logits_and_evaluator(
+            self,
+            policy_logits: list[list[float]],
+            evaluator: object,
+            root_values: list[float],
+            leaf_batch_size: int,
+        ) -> list[FakeResult]:
+            del evaluator, root_values
+            assert leaf_batch_size == 7
+            assert len(policy_logits) == len(self.histories)
+            assert all(len(row) == ACTION_SPACE for row in policy_logits)
+            return [FakeResult(history) for history in self.histories]
+
+    class FakeCore:
+        GameState = FakeGameState
+        GumbelSelfPlayBatch = FakeBatch
+
+    monkeypatch.setattr(search_reanalyze_module, "_import_core", lambda: FakeCore)
+    store = make_store()
+    checkpoint = make_checkpoint(tmp_path)
+    config = ReanalyzeConfig(
+        batch_size=3,
+        bootstrap_td_steps=1,
+        value_bootstrap_source="mcts_root",
+        policy_reanalyze_ratio=1.0,
+        model_version=10,
+        search=SearchReanalyzeConfig(root_batch_size=2, leaf_batch_size=7),
+    )
+    dataset = OnSampleReanalyzeDataset(store, checkpoint_path=checkpoint, config=config)
+
+    batch = dataset.sample_arrays(len(store), random.Random(3))
+
+    policy_refresh_histories = [
+        history for chunk in search_histories[:2] for history in chunk
+    ]
+    assert sorted(policy_refresh_histories) == [[], [1], [1, 2]]
+    assert search_histories[2:] == [[[1]]]
+    assert batch.search_reanalyzed.tolist() == [True, True, True]
+    assert batch.policies.shape == (3, ACTION_SPACE)
+    assert all(
+        row.tolist() == pytest.approx(make_policy(PASS_ACTION).tolist())
+        for row in batch.policies
+    )
+    expected_values = {0: -0.35, 1: -1.0, 2: 1.0}
+    for replay_index, value in zip(batch.indexes.tolist(), batch.values.tolist(), strict=True):
+        assert value == pytest.approx(expected_values[replay_index])
