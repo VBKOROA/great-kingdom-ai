@@ -227,6 +227,9 @@ def run_train_v2_pipeline(
             config=ReanalyzeConfig(
                 batch_size=pipeline_config.reanalyze_batch_size,
                 device=_reanalyze_device(pipeline_config, train_config),
+                onnx_model_path=str(onnx_path),
+                onnx_device=pipeline_config.onnx_device,
+                onnx_max_batch_size=pipeline_config.onnx_max_batch_size,
                 bootstrap_td_steps=pipeline_config.bootstrap_td_steps,
                 gamma=pipeline_config.gamma,
                 model_version=iteration,
