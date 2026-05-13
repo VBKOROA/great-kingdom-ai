@@ -136,6 +136,65 @@ def refresh_policies_with_search(
         1,
         f"selected={len(selected_indexes)}",
     )
+    refs = {ref.row_index: ref for ref in _transition_refs(episodes)}
+    return _refresh_selected_policies_with_search(
+        refs=refs,
+        selected_indexes=selected_indexes,
+        policies=policies,
+        policy_logits=policy_logits,
+        refreshed_values=refreshed_values,
+        model=model,
+        device=device,
+        onnx_evaluator=onnx_evaluator,
+        config=config,
+        progress_callback=progress_callback,
+    )
+
+
+def refresh_sampled_policies_with_search(
+    *,
+    transitions: Sequence[tuple[TrajectoryEpisode, int]],
+    policies: np.ndarray,
+    policy_logits: np.ndarray,
+    refreshed_values: np.ndarray,
+    model: SearchReanalyzeModel | None,
+    device: str,
+    onnx_evaluator: Any | None = None,
+    config: SearchReanalyzeConfig,
+    progress_callback: SearchReanalyzeProgressCallback | None = None,
+) -> SearchReanalyzeResult:
+    row_count = len(transitions)
+    refs = {
+        row_index: _TransitionRef(episode, transition_index, row_index)
+        for row_index, (episode, transition_index) in enumerate(transitions)
+    }
+    return _refresh_selected_policies_with_search(
+        refs=refs,
+        selected_indexes=tuple(range(row_count)),
+        policies=np.asarray(policies, dtype=np.float32),
+        policy_logits=policy_logits,
+        refreshed_values=refreshed_values,
+        model=model,
+        device=device,
+        onnx_evaluator=onnx_evaluator,
+        config=config,
+        progress_callback=progress_callback,
+    )
+
+
+def _refresh_selected_policies_with_search(
+    *,
+    refs: dict[int, _TransitionRef],
+    selected_indexes: tuple[int, ...],
+    policies: np.ndarray,
+    policy_logits: np.ndarray,
+    refreshed_values: np.ndarray,
+    model: SearchReanalyzeModel | None,
+    device: str,
+    onnx_evaluator: Any | None,
+    config: SearchReanalyzeConfig,
+    progress_callback: SearchReanalyzeProgressCallback | None,
+) -> SearchReanalyzeResult:
     search_reanalyzed = np.zeros((policies.shape[0],), dtype=np.bool_)
     if not selected_indexes:
         return SearchReanalyzeResult(
@@ -145,7 +204,6 @@ def refresh_policies_with_search(
         )
 
     core = _import_core()
-    refs = {ref.row_index: ref for ref in _transition_refs(episodes)}
     refreshed = policies.copy()
     evaluator = (
         None
@@ -463,5 +521,6 @@ __all__ = [
     "SearchReanalyzeProgressCallback",
     "SearchReanalyzeResult",
     "refresh_policies_with_search",
+    "refresh_sampled_policies_with_search",
     "select_search_reanalyze_indexes",
 ]

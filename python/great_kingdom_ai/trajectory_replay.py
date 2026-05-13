@@ -283,6 +283,36 @@ class TrajectoryReplayStore:
     def transitions(self) -> list[TrajectoryTransition]:
         return [transition for episode in self.episodes for transition in episode.transitions]
 
+    def transition_refs(
+        self,
+        row_indexes: Sequence[int],
+    ) -> list[tuple[TrajectoryEpisode, int]]:
+        if not row_indexes:
+            return []
+        search_config_hashes = _decode_search_config_hashes(
+            self.search_config_hash_table,
+            self.search_config_hash_ids,
+        )
+        episodes: dict[int, TrajectoryEpisode] = {}
+        refs: list[tuple[TrajectoryEpisode, int]] = []
+        for row_index in row_indexes:
+            if row_index < 0 or row_index >= len(self):
+                raise IndexError("row_index is out of range")
+            episode_index = int(
+                np.searchsorted(self.episode_offsets, row_index, side="right") - 1
+            )
+            episode = episodes.get(episode_index)
+            if episode is None:
+                episode = _episode_from_store(
+                    self,
+                    episode_index,
+                    search_config_hashes=search_config_hashes,
+                )
+                episodes[episode_index] = episode
+            transition_index = row_index - int(self.episode_offsets[episode_index])
+            refs.append((episode, transition_index))
+        return refs
+
 
 class TrajectoryReplayBuffer:
     """Fixed-capacity in-memory trajectory replay buffer.
@@ -712,57 +742,68 @@ def _episodes_from_store(store: TrajectoryReplayStore) -> list[TrajectoryEpisode
         store.search_config_hash_table,
         store.search_config_hash_ids,
     )
-    episodes: list[TrajectoryEpisode] = []
-    for episode_index in range(len(store.episode_offsets) - 1):
-        start = int(store.episode_offsets[episode_index])
-        end = int(store.episode_offsets[episode_index + 1])
-        transitions = []
-        for row in range(start, end):
-            winner = int(store.winners[row])
-            transitions.append(
-                TrajectoryTransition(
-                    episode_id=int(store.episode_ids[episode_index]),
-                    timestep=int(store.timesteps[row]),
-                    player=int(store.players[row]),
-                    features=store.features[row],
-                    legal_mask=store.legal_masks[row],
-                    action=int(store.actions[row]),
-                    policy_target=store.policy_targets[row],
-                    root_policy_logits=(
-                        store.root_policy_logits[row]
-                        if store.root_policy_logits is not None
-                        and store.root_policy_logits_present is not None
-                        and store.root_policy_logits_present[row]
-                        else None
-                    ),
-                    root_value=_none_if_nan(float(store.root_values[row])),
-                    next_features=(
-                        store.next_features[row]
-                        if store.next_features is not None
-                        and store.next_features_present is not None
-                        and store.next_features_present[row]
-                        else None
-                    ),
-                    winner=None if winner < 0 else winner,
-                    terminal=bool(store.terminals[row]),
-                    model_version=int(store.model_versions[row]),
-                    search_config_hash=search_config_hashes[row],
-                    created_iteration=int(store.created_iterations[row]),
-                    sample_weight=float(store.sample_weights[row]),
-                )
-            )
-        territory_score_row = store.territory_scores[episode_index]
-        episodes.append(
-            TrajectoryEpisode(
+    return [
+        _episode_from_store(
+            store,
+            episode_index,
+            search_config_hashes=search_config_hashes,
+        )
+        for episode_index in range(len(store.episode_offsets) - 1)
+    ]
+
+
+def _episode_from_store(
+    store: TrajectoryReplayStore,
+    episode_index: int,
+    *,
+    search_config_hashes: Sequence[str],
+) -> TrajectoryEpisode:
+    start = int(store.episode_offsets[episode_index])
+    end = int(store.episode_offsets[episode_index + 1])
+    transitions = []
+    for row in range(start, end):
+        winner = int(store.winners[row])
+        transitions.append(
+            TrajectoryTransition(
                 episode_id=int(store.episode_ids[episode_index]),
-                seed=int(store.episode_seeds[episode_index]),
-                transitions=tuple(transitions),
-                winner=int(store.episode_winners[episode_index]),
-                end_reason=int(store.episode_end_reasons[episode_index]),
-                territory_scores=(int(territory_score_row[0]), int(territory_score_row[1])),
+                timestep=int(store.timesteps[row]),
+                player=int(store.players[row]),
+                features=store.features[row],
+                legal_mask=store.legal_masks[row],
+                action=int(store.actions[row]),
+                policy_target=store.policy_targets[row],
+                root_policy_logits=(
+                    store.root_policy_logits[row]
+                    if store.root_policy_logits is not None
+                    and store.root_policy_logits_present is not None
+                    and store.root_policy_logits_present[row]
+                    else None
+                ),
+                root_value=_none_if_nan(float(store.root_values[row])),
+                next_features=(
+                    store.next_features[row]
+                    if store.next_features is not None
+                    and store.next_features_present is not None
+                    and store.next_features_present[row]
+                    else None
+                ),
+                winner=None if winner < 0 else winner,
+                terminal=bool(store.terminals[row]),
+                model_version=int(store.model_versions[row]),
+                search_config_hash=search_config_hashes[row],
+                created_iteration=int(store.created_iterations[row]),
+                sample_weight=float(store.sample_weights[row]),
             )
         )
-    return episodes
+    territory_score_row = store.territory_scores[episode_index]
+    return TrajectoryEpisode(
+        episode_id=int(store.episode_ids[episode_index]),
+        seed=int(store.episode_seeds[episode_index]),
+        transitions=tuple(transitions),
+        winner=int(store.episode_winners[episode_index]),
+        end_reason=int(store.episode_end_reasons[episode_index]),
+        territory_scores=(int(territory_score_row[0]), int(territory_score_row[1])),
+    )
 
 
 def _concat_stores(

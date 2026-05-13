@@ -292,6 +292,7 @@ def test_train_v2_pipeline_uses_on_sample_reanalyze_dataset(
                     "rows": len(replay),
                     "checkpoint_path": Path(checkpoint_path),
                     "bootstrap_td_steps": config.bootstrap_td_steps,
+                    "policy_reanalyze_ratio": config.policy_reanalyze_ratio,
                 }
             )
 
@@ -341,6 +342,7 @@ def test_train_v2_pipeline_uses_on_sample_reanalyze_dataset(
             self_play_games=1,
             min_replay_transitions=1,
             reanalyze_mode="on_sample",
+            policy_reanalyze_ratio=0.99,
             save_target_snapshots=False,
             skip_arena=True,
             always_promote=True,
@@ -357,6 +359,7 @@ def test_train_v2_pipeline_uses_on_sample_reanalyze_dataset(
             "rows": 2,
             "checkpoint_path": tmp_path / "checkpoints" / "best.pt",
             "bootstrap_td_steps": 4,
+            "policy_reanalyze_ratio": 0.99,
         }
     ]
     assert trained_replay_types == ["FakeOnSampleDataset"]
@@ -383,9 +386,12 @@ def test_train_config_for_iteration_scales_steps_from_new_transitions() -> None:
 
 
 def test_train_v2_parser_exposes_reanalyze_mode() -> None:
-    args = pipeline_module.build_parser().parse_args(["--reanalyze-mode", "on_sample"])
+    args = pipeline_module.build_parser().parse_args(
+        ["--reanalyze-mode", "on_sample", "--policy-reanalyze-ratio", "0.99"]
+    )
 
     assert args.reanalyze_mode == "on_sample"
+    assert args.policy_reanalyze_ratio == pytest.approx(0.99)
 
 
 def test_train_v2_pipeline_rejects_unknown_reanalyze_mode() -> None:
@@ -393,6 +399,16 @@ def test_train_v2_pipeline_rejects_unknown_reanalyze_mode() -> None:
         pipeline_module._validate_config(
             pipeline_module.TrainV2PipelineConfig(
                 reanalyze_mode="invalid",
+                self_play=SelfPlayConfig(policy_target_c_visit=5.0, policy_target_c_scale=0.25),
+            )
+        )
+
+
+def test_train_v2_pipeline_rejects_invalid_policy_reanalyze_ratio() -> None:
+    with pytest.raises(ValueError, match="policy_reanalyze_ratio"):
+        pipeline_module._validate_config(
+            pipeline_module.TrainV2PipelineConfig(
+                policy_reanalyze_ratio=1.1,
                 self_play=SelfPlayConfig(policy_target_c_visit=5.0, policy_target_c_scale=0.25),
             )
         )

@@ -5,6 +5,7 @@ import importlib.util
 import random
 from pathlib import Path
 
+import great_kingdom_ai.on_sample_reanalyze as on_sample_reanalyze_module
 import great_kingdom_ai.reanalyze as reanalyze_module
 import numpy as np
 import pytest
@@ -146,6 +147,48 @@ def test_on_sample_reanalyze_matches_snapshot_bootstrap_values(tmp_path: Path) -
     sampled_rows = zip(batch.indexes.tolist(), batch.values.tolist(), strict=True)
     for replay_index, sampled_value in sampled_rows:
         assert sampled_value == pytest.approx(float(snapshot.values[replay_index]))
+
+
+@pytest.mark.skipif(_torch_spec is None, reason="torch is not installed")
+def test_on_sample_reanalyze_refreshes_policy_targets_by_batch_ratio(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from great_kingdom_ai.search_reanalyze import SearchReanalyzeResult
+
+    replay = TrajectoryReplayBuffer(capacity=8)
+    replay.push_episode(make_episode())
+    store = TrajectoryReplayStore.from_episodes(replay.capacity, replay.episodes)
+    state = create_train_state(TrainingConfig(batch_size=2, seed=9))
+    checkpoint = save_checkpoint(state, tmp_path / "checkpoint.pt")
+
+    def fake_refresh_sampled_policies_with_search(**kwargs: object) -> SearchReanalyzeResult:
+        policies = np.asarray(kwargs["policies"], dtype=np.float32)
+        refreshed = np.stack([make_policy(PASS_ACTION) for _ in range(policies.shape[0])], axis=0)
+        return SearchReanalyzeResult(
+            policies=refreshed,
+            search_reanalyzed=np.ones((policies.shape[0],), dtype=np.bool_),
+            selected_indexes=tuple(range(policies.shape[0])),
+        )
+
+    monkeypatch.setattr(
+        on_sample_reanalyze_module,
+        "refresh_sampled_policies_with_search",
+        fake_refresh_sampled_policies_with_search,
+    )
+    dataset = OnSampleReanalyzeDataset(
+        store,
+        checkpoint_path=checkpoint,
+        config=ReanalyzeConfig(batch_size=2, policy_reanalyze_ratio=0.5),
+    )
+    batch = dataset.sample_arrays(len(store), random.Random(3))
+
+    assert int(batch.search_reanalyzed.sum()) == 2
+    for position, was_refreshed in enumerate(batch.search_reanalyzed.tolist()):
+        if was_refreshed:
+            assert batch.policies[position].tolist() == pytest.approx(
+                make_policy(PASS_ACTION).tolist()
+            )
 
 
 def test_reanalyze_target_snapshot_priority_sampling_uses_importance_weights() -> None:
@@ -486,6 +529,22 @@ def test_refresh_policies_with_search_can_use_onnx_evaluator(
 
     assert result.search_reanalyzed.tolist() == [True, True, True]
     assert result.policies[0].tolist() == pytest.approx(make_policy(PASS_ACTION).tolist())
+
+    sampled_result = search_reanalyze.refresh_sampled_policies_with_search(
+        transitions=((episode, 0), (episode, 2)),
+        policies=policies[[0, 2]],
+        policy_logits=np.zeros_like(policies[[0, 2]]),
+        refreshed_values=np.zeros((2,), dtype=np.float32),
+        model=None,
+        device="cpu",
+        onnx_evaluator="onnx-evaluator",
+        config=SearchReanalyzeConfig(fraction=1.0, leaf_batch_size=5),
+    )
+
+    assert sampled_result.search_reanalyzed.tolist() == [True, True]
+    assert sampled_result.policies[1].tolist() == pytest.approx(
+        make_policy(PASS_ACTION).tolist()
+    )
 
 
 def test_search_reanalyze_reconstruction_validation_is_opt_in(

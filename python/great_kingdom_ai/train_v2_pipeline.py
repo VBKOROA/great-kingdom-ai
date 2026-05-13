@@ -76,6 +76,7 @@ class TrainV2PipelineConfig:
     bootstrap_td_steps: int = 4
     gamma: float = 1.0
     reanalyze_mode: str = "snapshot"
+    policy_reanalyze_ratio: float = 0.0
     search_reanalyze_fraction: float = 0.0
     search_reanalyze_budget: int | None = None
     search_reanalyze_simulations: int = 32
@@ -231,6 +232,7 @@ def run_train_v2_pipeline(
             onnx_max_batch_size=pipeline_config.onnx_max_batch_size,
             bootstrap_td_steps=pipeline_config.bootstrap_td_steps,
             gamma=pipeline_config.gamma,
+            policy_reanalyze_ratio=pipeline_config.policy_reanalyze_ratio,
             model_version=iteration,
             compressed=False,
             search=SearchReanalyzeConfig(
@@ -443,6 +445,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["snapshot", "on_sample"],
         default=None,
     )
+    parser.add_argument("--policy-reanalyze-ratio", type=float, default=None)
     parser.add_argument("--train-reuse-factor", type=float, default=None)
     parser.add_argument("--min-train-steps", type=int, default=None)
     parser.add_argument("--max-train-steps", type=int, default=None)
@@ -484,6 +487,7 @@ def main() -> NoReturn:
         "max_self_play_games": args.max_self_play_games,
         "bootstrap_td_steps": args.bootstrap_td_steps,
         "reanalyze_mode": args.reanalyze_mode,
+        "policy_reanalyze_ratio": args.policy_reanalyze_ratio,
         "train_reuse_factor": args.train_reuse_factor,
         "min_train_steps": args.min_train_steps,
         "max_train_steps": args.max_train_steps,
@@ -809,6 +813,10 @@ def _validate_config(config: TrainV2PipelineConfig) -> None:
         raise ValueError("reanalyze_batch_size must be positive")
     if config.reanalyze_mode not in {"snapshot", "on_sample"}:
         raise ValueError("reanalyze_mode must be one of: snapshot, on_sample")
+    if not math.isfinite(config.policy_reanalyze_ratio) or not 0.0 <= (
+        config.policy_reanalyze_ratio
+    ) <= 1.0:
+        raise ValueError("policy_reanalyze_ratio must be finite and in [0, 1]")
     if config.train_checkpoint_mode not in {"resume", "bootstrap"}:
         raise ValueError("train_checkpoint_mode must be one of: resume, bootstrap")
     if config.train_reuse_factor is not None:

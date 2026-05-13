@@ -47,6 +47,7 @@ class ReanalyzeConfig:
     onnx_max_batch_size: int = 1024
     bootstrap_td_steps: int = 0
     gamma: float = 1.0
+    policy_reanalyze_ratio: float = 0.0
     model_version: int | None = None
     compressed: bool = True
     search: SearchReanalyzeConfig = field(default_factory=SearchReanalyzeConfig)
@@ -60,6 +61,10 @@ class ReanalyzeConfig:
             raise ValueError("bootstrap_td_steps must be non-negative")
         if not math.isfinite(self.gamma) or not 0.0 <= self.gamma <= 1.0:
             raise ValueError("gamma must be finite and in [0, 1]")
+        if not math.isfinite(self.policy_reanalyze_ratio) or not 0.0 <= (
+            self.policy_reanalyze_ratio
+        ) <= 1.0:
+            raise ValueError("policy_reanalyze_ratio must be finite and in [0, 1]")
         if self.model_version is not None and self.model_version < 0:
             raise ValueError("model_version must be non-negative")
 

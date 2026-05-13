@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,7 @@ from great_kingdom_ai.reanalyze import (
     _evaluate_policy_logits_values_with_onnx,
     _sample_indexes,
 )
+from great_kingdom_ai.search_reanalyze import refresh_sampled_policies_with_search
 from great_kingdom_ai.self_play_data import value_target_for_player
 from great_kingdom_ai.trajectory_replay import TrajectoryReplayStore
 
@@ -33,6 +35,7 @@ class OnSampleReanalyzeBatch:
     values: np.ndarray
     sample_weights: np.ndarray
     legal_masks: np.ndarray
+    search_reanalyzed: np.ndarray
 
 
 class OnSampleReanalyzeDataset:
@@ -104,6 +107,16 @@ class OnSampleReanalyzeDataset:
             priority_config=priority_config,
         )
         features = np.ascontiguousarray(self._replay.features[indexes], dtype=np.float32)
+        policies = np.ascontiguousarray(
+            self._replay.policy_targets[indexes].astype(np.float32, copy=True),
+            dtype=np.float32,
+        )
+        policies, search_reanalyzed = self._refresh_sampled_policies(
+            indexes,
+            features,
+            policies,
+            rng,
+        )
         sample_weights = np.ascontiguousarray(
             self._replay.sample_weights[indexes].astype(np.float32, copy=True)
             * importance_weights,
@@ -112,13 +125,11 @@ class OnSampleReanalyzeDataset:
         return OnSampleReanalyzeBatch(
             indexes=np.asarray(indexes, dtype=np.int64),
             features=features,
-            policies=np.ascontiguousarray(
-                self._replay.policy_targets[indexes].astype(np.float32, copy=True),
-                dtype=np.float32,
-            ),
+            policies=policies,
             values=self._sampled_bootstrap_targets(indexes),
             sample_weights=sample_weights,
             legal_masks=legal_masks_from_features(features),
+            search_reanalyzed=search_reanalyzed,
         )
 
     def _sample_indexes(
@@ -198,6 +209,46 @@ class OnSampleReanalyzeDataset:
                 bootstrap = -bootstrap
             targets[batch_row] = np.float32((gamma**td_steps) * bootstrap)
         return np.ascontiguousarray(targets, dtype=np.float32)
+
+    def _refresh_sampled_policies(
+        self,
+        indexes: list[int],
+        features: np.ndarray,
+        policies: np.ndarray,
+        rng: random.Random,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        row_count = len(indexes)
+        ratio = self._config.policy_reanalyze_ratio
+        search_reanalyzed = np.zeros((row_count,), dtype=np.bool_)
+        if row_count == 0 or ratio <= 0.0:
+            return policies, search_reanalyzed
+
+        reanalyze_count = min(row_count, math.ceil(row_count * ratio))
+        selected_positions = sorted(rng.sample(range(row_count), reanalyze_count))
+        selected_replay_rows = [indexes[position] for position in selected_positions]
+        selected_features = np.ascontiguousarray(features[selected_positions], dtype=np.float32)
+        selected_legal_masks = np.ascontiguousarray(
+            self._replay.legal_masks[selected_replay_rows],
+            dtype=np.bool_,
+        )
+        policy_logits, refreshed_values = self._evaluate_logits_values(
+            selected_features,
+            selected_legal_masks,
+        )
+        search_result = refresh_sampled_policies_with_search(
+            transitions=self._replay.transition_refs(selected_replay_rows),
+            policies=np.ascontiguousarray(policies[selected_positions], dtype=np.float32),
+            policy_logits=policy_logits,
+            refreshed_values=refreshed_values,
+            model=self._model,
+            device=self._config.device,
+            onnx_evaluator=self._onnx_evaluator,
+            config=self._config.search,
+        )
+        refreshed = policies.copy()
+        refreshed[selected_positions] = search_result.policies
+        search_reanalyzed[selected_positions] = search_result.search_reanalyzed
+        return np.ascontiguousarray(refreshed, dtype=np.float32), search_reanalyzed
 
     def _evaluate_logits_values(
         self,
