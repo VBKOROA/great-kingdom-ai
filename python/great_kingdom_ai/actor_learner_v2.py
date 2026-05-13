@@ -104,6 +104,7 @@ class LearnerV2Summary:
     onnx_output_path: Path | None
     pruned_artifacts: int = 0
     pruned_bytes: int = 0
+    cycle_seconds: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -127,6 +128,7 @@ class LearnerV2Summary:
             ),
             "pruned_artifacts": self.pruned_artifacts,
             "pruned_bytes": self.pruned_bytes,
+            "cycle_seconds": self.cycle_seconds,
         }
 
 
@@ -218,6 +220,7 @@ def run_learner_v2_once(
     onnx_exporter: Callable[..., Any] | None = None,
     printer: PipelinePrinter | None = None,
 ) -> LearnerV2Summary:
+    cycle_started_at = time.monotonic()
     _validate_learner_config(config)
     printer = printer if printer is not None else PipelinePrinter()
     train = trainer if trainer is not None else train_from_replay
@@ -262,8 +265,10 @@ def run_learner_v2_once(
     printer.metric("replay transitions", len(replay))
 
     if len(replay) < config.min_replay_transitions:
+        cycle_seconds = time.monotonic() - cycle_started_at
         printer.done(
-            f"waiting for replay: {len(replay)}/{config.min_replay_transitions} transitions"
+            f"waiting for replay: {len(replay)}/{config.min_replay_transitions} "
+            f"transitions, cycle={cycle_seconds:.1f}s"
         )
         return LearnerV2Summary(
             imported_shards=[shard.shard_id for shard in pending],
@@ -278,6 +283,7 @@ def run_learner_v2_once(
             onnx_output_path=None,
             pruned_artifacts=0,
             pruned_bytes=0,
+            cycle_seconds=cycle_seconds,
         )
 
     dataset = TrajectoryReplayDataset(replay)
@@ -329,6 +335,8 @@ def run_learner_v2_once(
         pruned_artifacts = prune_summary["items"]
         pruned_bytes = prune_summary["bytes"]
 
+    cycle_seconds = time.monotonic() - cycle_started_at
+    printer.done(f"learner cycle complete in {cycle_seconds:.1f}s")
     return LearnerV2Summary(
         imported_shards=[shard.shard_id for shard in pending],
         imported_transitions=imported_transitions,
@@ -342,6 +350,7 @@ def run_learner_v2_once(
         onnx_output_path=onnx_path,
         pruned_artifacts=pruned_artifacts,
         pruned_bytes=pruned_bytes,
+        cycle_seconds=cycle_seconds,
     )
 
 

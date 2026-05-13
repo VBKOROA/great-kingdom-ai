@@ -237,6 +237,8 @@ def test_learner_v2_imports_pending_shards_trains_and_exports(tmp_path: Path) ->
     assert summary.trained is True
     assert summary.imported_transitions == 4
     assert summary.replay_transitions == 4
+    assert summary.cycle_seconds >= 0.0
+    assert summary.to_dict()["cycle_seconds"] >= 0.0
     assert train_calls == [
         {
             "replay_rows": 4,
@@ -342,3 +344,4 @@ def test_learner_v2_waits_until_min_replay_transitions(tmp_path: Path) -> None:
 
     assert summary.trained is False
     assert summary.replay_transitions == 0
+    assert summary.cycle_seconds >= 0.0
