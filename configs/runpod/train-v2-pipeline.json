@@ -49,6 +49,6 @@
     "playout_cap_fast_simulations": 16,
     "playout_cap_full_max_considered_actions": 16,
     "playout_cap_fast_max_considered_actions": 4,
-    "leaf_batch_size": 1024
+    "leaf_batch_size": 2048
   }
 }
