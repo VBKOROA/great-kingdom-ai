@@ -1,7 +1,8 @@
 #!/bin/bash
 INTERVAL=${1:-10}
+
+clear
 while true; do
-    clear
     echo "=== 시스템 모니터링 ($(date +%H:%M:%S)) ==="
     
     # CPU 사용량
