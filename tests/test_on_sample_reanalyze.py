@@ -220,6 +220,64 @@ def test_on_sample_priority_update_uses_config_and_next_priority_sample(
 
 
 @pytest.mark.skipif(_torch_spec is None, reason="torch is not installed")
+def test_on_sample_reuses_sampled_eval_for_policy_refresh_and_priority_update(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = make_store()
+    dataset = OnSampleReanalyzeDataset(
+        store,
+        checkpoint_path=make_checkpoint(tmp_path),
+        config=ReanalyzeConfig(
+            batch_size=3,
+            bootstrap_td_steps=0,
+            policy_reanalyze_ratio=1.0,
+            model_version=10,
+        ),
+    )
+    eval_shapes: list[tuple[int, ...]] = []
+
+    def fake_evaluate_logits_values(
+        features: np.ndarray,
+        legal_masks: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        del legal_masks
+        eval_shapes.append(features.shape)
+        return (
+            np.stack([make_policy(PASS_ACTION) for _ in range(features.shape[0])], axis=0),
+            np.zeros((features.shape[0],), dtype=np.float32),
+        )
+
+    def fake_refresh_sampled_policies_with_search(**kwargs: object) -> SearchReanalyzeResult:
+        policies = np.asarray(kwargs["policies"], dtype=np.float32)
+        return SearchReanalyzeResult(
+            policies=policies.copy(),
+            search_reanalyzed=np.ones((policies.shape[0],), dtype=np.bool_),
+            selected_indexes=tuple(range(policies.shape[0])),
+        )
+
+    monkeypatch.setattr(dataset, "_evaluate_logits_values", fake_evaluate_logits_values)
+    monkeypatch.setattr(
+        on_sample_reanalyze_module,
+        "refresh_sampled_policies_with_search",
+        fake_refresh_sampled_policies_with_search,
+    )
+
+    dataset.sample_arrays(
+        3,
+        random.Random(0),
+        priority_config=PrioritySamplingConfig(
+            enabled=True,
+            value_error_weight=1.0,
+            policy_kl_weight=1.0,
+            target_age_weight=0.0,
+        ),
+    )
+
+    assert eval_shapes == [(3, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)]
+
+
+@pytest.mark.skipif(_torch_spec is None, reason="torch is not installed")
 def test_on_sample_priority_zero_weights_keep_initial_replay_weights(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

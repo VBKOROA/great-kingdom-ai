@@ -204,12 +204,18 @@ class OnSampleReanalyzeDataset:
             self._replay.policy_targets[indexes].astype(np.float32, copy=True),
             dtype=np.float32,
         )
+        sampled_evaluation = (
+            self._evaluate_logits_values(features, legal_masks)
+            if _priority_update_needs_model_eval(priority_config)
+            else None
+        )
         policies, search_reanalyzed = self._refresh_sampled_policies(
             indexes,
             features,
             legal_masks,
             policies,
             rng,
+            sampled_evaluation=sampled_evaluation,
         )
         sample_weights = np.ascontiguousarray(
             self._replay.sample_weights[indexes].astype(np.float32, copy=True)
@@ -225,6 +231,7 @@ class OnSampleReanalyzeDataset:
             values=values,
             search_reanalyzed=search_reanalyzed,
             priority_config=priority_config,
+            model_evaluation=sampled_evaluation,
         )
         self._sampled_batches += 1
         self._sampled_rows += len(indexes)
@@ -278,17 +285,16 @@ class OnSampleReanalyzeDataset:
         values: np.ndarray,
         search_reanalyzed: np.ndarray,
         priority_config: PrioritySamplingConfig | None,
+        model_evaluation: tuple[np.ndarray, np.ndarray] | None,
     ) -> None:
-        if priority_config is None or not priority_config.enabled:
+        if not _priority_update_has_signal(priority_config):
             return
-        if (
-            priority_config.value_error_weight == 0.0
-            and priority_config.policy_kl_weight == 0.0
-            and priority_config.target_age_weight == 0.0
-            and priority_config.search_reanalyzed_boost == 1.0
-        ):
-            return
-        policy_logits, value_predictions = self._evaluate_logits_values(features, legal_masks)
+        if model_evaluation is None and _priority_update_needs_model_eval(priority_config):
+            model_evaluation = self._evaluate_logits_values(features, legal_masks)
+        policy_logits: np.ndarray | None = None
+        value_predictions: np.ndarray | None = None
+        if model_evaluation is not None:
+            policy_logits, value_predictions = model_evaluation
         target_ages = np.maximum(
             self._model_version - self._replay.model_versions[indexes],
             0,
@@ -415,6 +421,7 @@ class OnSampleReanalyzeDataset:
         legal_masks: np.ndarray,
         policies: np.ndarray,
         rng: random.Random,
+        sampled_evaluation: tuple[np.ndarray, np.ndarray] | None,
     ) -> tuple[np.ndarray, np.ndarray]:
         row_count = len(indexes)
         ratio = self._config.policy_reanalyze_ratio
@@ -425,12 +432,26 @@ class OnSampleReanalyzeDataset:
         reanalyze_count = min(row_count, math.ceil(row_count * ratio))
         selected_positions = sorted(rng.sample(range(row_count), reanalyze_count))
         selected_replay_rows = [indexes[position] for position in selected_positions]
-        selected_features = np.ascontiguousarray(features[selected_positions], dtype=np.float32)
-        selected_legal_masks = np.ascontiguousarray(legal_masks[selected_positions], dtype=np.bool_)
-        policy_logits, refreshed_values = self._evaluate_logits_values(
-            selected_features,
-            selected_legal_masks,
-        )
+        if sampled_evaluation is None:
+            selected_features = np.ascontiguousarray(features[selected_positions], dtype=np.float32)
+            selected_legal_masks = np.ascontiguousarray(
+                legal_masks[selected_positions],
+                dtype=np.bool_,
+            )
+            policy_logits, refreshed_values = self._evaluate_logits_values(
+                selected_features,
+                selected_legal_masks,
+            )
+        else:
+            batch_policy_logits, batch_values = sampled_evaluation
+            policy_logits = np.ascontiguousarray(
+                batch_policy_logits[selected_positions],
+                dtype=np.float32,
+            )
+            refreshed_values = np.ascontiguousarray(
+                batch_values[selected_positions],
+                dtype=np.float32,
+            )
         search_result = self._refresh_with_search(
             transitions=self._replay.transition_refs(selected_replay_rows),
             policies=np.ascontiguousarray(policies[selected_positions], dtype=np.float32),
@@ -495,6 +516,27 @@ def _initial_priorities(sample_weights: np.ndarray) -> np.ndarray:
     if not np.isfinite(priorities).all() or np.any(priorities <= 0.0):
         raise ValueError("on-sample priorities must be finite and positive")
     return np.ascontiguousarray(priorities, dtype=np.float32)
+
+
+def _priority_update_has_signal(config: PrioritySamplingConfig | None) -> bool:
+    return (
+        config is not None
+        and config.enabled
+        and (
+            config.value_error_weight > 0.0
+            or config.policy_kl_weight > 0.0
+            or config.target_age_weight > 0.0
+            or config.search_reanalyzed_boost > 1.0
+        )
+    )
+
+
+def _priority_update_needs_model_eval(config: PrioritySamplingConfig | None) -> bool:
+    return (
+        config is not None
+        and config.enabled
+        and (config.value_error_weight > 0.0 or config.policy_kl_weight > 0.0)
+    )
 
 
 __all__ = ["OnSampleReanalyzeBatch", "OnSampleReanalyzeDataset", "OnSampleReanalyzeStats"]
