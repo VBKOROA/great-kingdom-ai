@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import math
 import shutil
@@ -191,6 +192,7 @@ def run_train_v2_pipeline(
             device=train_config.device,
             precision=pipeline_config.onnx_precision,
         )
+        _release_cuda_cache(train_config.device)
         printer.progress("iteration", 1, phase_total, detail="onnx export complete")
 
         self_play_summary = _generate_trajectory_self_play(
@@ -252,6 +254,7 @@ def run_train_v2_pipeline(
             ),
         )
         shutil.copy2(target_snapshot_path, paths["latest_target_snapshot_path"])
+        _release_cuda_cache(_reanalyze_device(pipeline_config, train_config))
         printer.progress("iteration", 3, phase_total, detail="reanalyze complete")
 
         effective_train_config = _train_config_for_iteration(
@@ -287,6 +290,7 @@ def run_train_v2_pipeline(
         )
         shutil.copy2(candidate_checkpoint, paths["candidate_checkpoint"])
         shutil.copy2(candidate_checkpoint, paths["training_checkpoint"])
+        _release_cuda_cache(effective_train_config.device)
         printer.metric("train steps", f"{train_summary.start_step}->{train_summary.end_step}")
         printer.progress("iteration", 4, phase_total, detail="training complete")
 
@@ -796,6 +800,23 @@ def _format_train_loss_detail(loss: dict[str, float]) -> str:
             f" kl={loss['policy_kl']:.4f}"
         )
     return detail
+
+
+def _release_cuda_cache(device: str | None) -> None:
+    if device is None or not str(device).startswith("cuda"):
+        return
+    gc.collect()
+    try:
+        import torch
+    except ModuleNotFoundError:
+        return
+    if not torch.cuda.is_available():
+        return
+    torch.cuda.empty_cache()
+    try:
+        torch.cuda.ipc_collect()
+    except RuntimeError:
+        pass
 
 
 def _train_config_for_iteration(
