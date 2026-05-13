@@ -74,6 +74,7 @@ class TrainV2PipelineConfig:
     reanalyze_device: str | None = None
     bootstrap_td_steps: int = 4
     gamma: float = 1.0
+    reanalyze_mode: str = "snapshot"
     search_reanalyze_fraction: float = 0.0
     search_reanalyze_budget: int | None = None
     search_reanalyze_simulations: int = 32
@@ -423,6 +424,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-replay-transitions", type=int, default=None)
     parser.add_argument("--max-self-play-games", type=int, default=None)
     parser.add_argument("--bootstrap-td-steps", type=int, default=None)
+    parser.add_argument(
+        "--reanalyze-mode",
+        choices=["snapshot", "on_sample"],
+        default=None,
+    )
     parser.add_argument("--train-reuse-factor", type=float, default=None)
     parser.add_argument("--min-train-steps", type=int, default=None)
     parser.add_argument("--max-train-steps", type=int, default=None)
@@ -463,6 +469,7 @@ def main() -> NoReturn:
         "min_replay_transitions": args.min_replay_transitions,
         "max_self_play_games": args.max_self_play_games,
         "bootstrap_td_steps": args.bootstrap_td_steps,
+        "reanalyze_mode": args.reanalyze_mode,
         "train_reuse_factor": args.train_reuse_factor,
         "min_train_steps": args.min_train_steps,
         "max_train_steps": args.max_train_steps,
@@ -768,6 +775,8 @@ def _validate_config(config: TrainV2PipelineConfig) -> None:
         raise ValueError("rust_self_play_batch_size must be positive")
     if config.reanalyze_batch_size <= 0:
         raise ValueError("reanalyze_batch_size must be positive")
+    if config.reanalyze_mode not in {"snapshot", "on_sample"}:
+        raise ValueError("reanalyze_mode must be one of: snapshot, on_sample")
     if config.train_checkpoint_mode not in {"resume", "bootstrap"}:
         raise ValueError("train_checkpoint_mode must be one of: resume, bootstrap")
     if config.train_reuse_factor is not None:

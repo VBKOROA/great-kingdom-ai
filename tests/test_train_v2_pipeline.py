@@ -285,6 +285,22 @@ def test_train_config_for_iteration_scales_steps_from_new_transitions() -> None:
     )
 
 
+def test_train_v2_parser_exposes_reanalyze_mode() -> None:
+    args = pipeline_module.build_parser().parse_args(["--reanalyze-mode", "on_sample"])
+
+    assert args.reanalyze_mode == "on_sample"
+
+
+def test_train_v2_pipeline_rejects_unknown_reanalyze_mode() -> None:
+    with pytest.raises(ValueError, match="reanalyze_mode"):
+        pipeline_module._validate_config(
+            pipeline_module.TrainV2PipelineConfig(
+                reanalyze_mode="invalid",
+                self_play=SelfPlayConfig(policy_target_c_visit=5.0, policy_target_c_scale=0.25),
+            )
+        )
+
+
 def test_train_v2_pipeline_requires_trajectory_episodes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
