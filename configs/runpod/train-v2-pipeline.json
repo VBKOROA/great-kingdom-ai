@@ -1,5 +1,5 @@
 {
-  "work_dir": "data/runpod/train-v2-large-policy",
+  "work_dir": "data/runpod/train-v2-128k",
   "iterations": 50,
   "replay_capacity": 128000,
   "self_play_games": 400,
