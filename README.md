@@ -58,8 +58,9 @@ python -m mypy
 ## 권장 학습: async v2
 
 Runpod에서는 actor와 learner를 별도 터미널에서 동시에 실행합니다. actor는 최신 ONNX로
-self-play shard를 만들고, learner는 shard를 trajectory replay에 import한 뒤 학습하고
-`training-latest.pt`와 `training-latest.onnx`를 갱신합니다.
+self-play shard를 만들고, learner는 replay를 메모리에 유지하면서 새 shard를 import합니다.
+학습량은 shard 개수가 아니라 `imported_transitions * train_reuse_factor`로 적립한 train
+budget에 따라 정하고, 학습 후 `training-latest.pt`와 `training-latest.onnx`를 갱신합니다.
 
 ```text
 training-latest.onnx
@@ -87,6 +88,7 @@ training-latest.onnx
 - work dir: `data/runpod/train-v2-gumbel-512k`
 - actor: `64` games/cycle, CUDA ONNX, Gumbel `64` simulations
 - learner: batch `1024`, steps `64`, AMP, priority sampling, CUDA prefetch `4`
+- learner train budget: imported transition당 `16` sample updates
 - replay capacity: `512000` transitions
 - learner pruning: import 완료된 shard 원본 디렉터리 자동 삭제
 

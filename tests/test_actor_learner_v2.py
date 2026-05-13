@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +9,9 @@ import numpy as np
 from great_kingdom_ai.actor_learner_v2 import (
     ActorV2Config,
     LearnerV2Config,
+    _continuous_train_steps,
     _next_actor_seed_start,
+    _run_learner_cli,
     load_v2_shard_records,
     pending_v2_shards,
     run_actor_v2_once,
@@ -371,3 +374,86 @@ def test_learner_v2_does_not_load_replay_when_no_pending_shards(
 
     assert summary.trained is False
     assert summary.replay_transitions is None
+
+
+def test_continuous_train_steps_follow_reuse_budget() -> None:
+    assert (
+        _continuous_train_steps(
+            train_budget_samples=3000 * 16,
+            replay_transitions=8192,
+            train_config=TrainingConfig(batch_size=1024, steps=64),
+            min_replay_transitions=8192,
+        )
+        == 46
+    )
+    assert (
+        _continuous_train_steps(
+            train_budget_samples=3000 * 32,
+            replay_transitions=8192,
+            train_config=TrainingConfig(batch_size=1024, steps=64),
+            min_replay_transitions=8192,
+        )
+        == 64
+    )
+    assert (
+        _continuous_train_steps(
+            train_budget_samples=1023,
+            replay_transitions=8192,
+            train_config=TrainingConfig(batch_size=1024, steps=64),
+            min_replay_transitions=8192,
+        )
+        == 0
+    )
+
+
+def test_learner_v2_loop_trains_from_imported_transition_budget(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    run_actor_v2_once(
+        ActorV2Config(
+            work_dir=tmp_path,
+            onnx_model_path=tmp_path / "model.onnx",
+            model_version="ema",
+            games=2,
+            seed_start=0,
+            onnx_device="cpu",
+        ),
+        runner=fake_actor_runner,
+        printer=PipelinePrinter(enabled=False),
+    )
+    train_steps: list[int] = []
+
+    def fake_train(
+        replay: Any,
+        config: TrainingConfig,
+        *,
+        checkpoint_path: str | Path,
+        resume_path: str | Path | None,
+        bootstrap_weights_path: str | Path | None = None,
+        log_every: int,
+        progress_callback: Any = None,
+    ) -> FakeTrainSummary:
+        del replay, resume_path, bootstrap_weights_path, log_every, progress_callback
+        train_steps.append(config.steps)
+        destination = Path(checkpoint_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("candidate", encoding="utf-8")
+        return FakeTrainSummary(destination)
+
+    monkeypatch.setattr(actor_learner_v2_module, "train_from_replay", fake_train)
+    summaries = _run_learner_cli(
+        LearnerV2Config(
+            work_dir=tmp_path,
+            replay_capacity=16,
+            min_replay_transitions=1,
+            export_onnx=False,
+            train_reuse_factor=16.0,
+        ),
+        TrainingConfig(batch_size=2, steps=64, device="cpu"),
+        argparse.Namespace(loop=True, max_cycles=1, sleep_seconds=0.0, json=True),
+    )
+
+    assert train_steps == [32]
+    assert summaries[0]["trained"] is True
+    assert summaries[0]["imported_transitions"] == 4

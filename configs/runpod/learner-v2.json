@@ -12,5 +12,6 @@
   "onnx_precision": "fp16",
   "onnx_dummy_batch_size": 2,
   "prune_artifacts": true,
-  "prune_keep_imported_shards": 0
+  "prune_keep_imported_shards": 0,
+  "train_reuse_factor": 16.0
 }
