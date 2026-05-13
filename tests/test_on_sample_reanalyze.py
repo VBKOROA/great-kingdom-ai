@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import random
+import threading
 from pathlib import Path
 
 import great_kingdom_ai.on_sample_reanalyze as on_sample_reanalyze_module
@@ -275,6 +276,60 @@ def test_on_sample_reuses_sampled_eval_for_policy_refresh_and_priority_update(
     )
 
     assert eval_shapes == [(3, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)]
+
+
+@pytest.mark.skipif(_torch_spec is None, reason="torch is not installed")
+def test_on_sample_onnx_evaluator_is_thread_local(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_thread_ids: list[int] = []
+
+    def fake_create_onnx_evaluator(
+        onnx_model_path: str,
+        *,
+        device: str,
+        max_batch_size: int,
+    ) -> object:
+        assert onnx_model_path == "model.onnx"
+        assert device == "cuda"
+        assert max_batch_size == 4
+        created_thread_ids.append(threading.get_ident())
+        return object()
+
+    monkeypatch.setattr(
+        on_sample_reanalyze_module,
+        "_create_onnx_evaluator",
+        fake_create_onnx_evaluator,
+    )
+    dataset = OnSampleReanalyzeDataset(
+        make_store(),
+        checkpoint_path=make_checkpoint(tmp_path),
+        config=ReanalyzeConfig(
+            batch_size=3,
+            device="cpu",
+            onnx_model_path="model.onnx",
+            onnx_device="cuda",
+            onnx_max_batch_size=4,
+        ),
+    )
+
+    assert created_thread_ids == []
+    main_evaluator = dataset._onnx_evaluator_for_current_thread()
+    assert dataset._onnx_evaluator_for_current_thread() is main_evaluator
+
+    thread_evaluators: list[object | None] = []
+    thread = threading.Thread(
+        target=lambda: thread_evaluators.append(
+            dataset._onnx_evaluator_for_current_thread()
+        )
+    )
+    thread.start()
+    thread.join()
+
+    assert len(set(created_thread_ids)) == 2
+    assert thread_evaluators == [thread_evaluators[0]]
+    assert thread_evaluators[0] is not main_evaluator
 
 
 @pytest.mark.skipif(_torch_spec is None, reason="torch is not installed")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import random
+import threading
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -108,15 +109,7 @@ class OnSampleReanalyzeDataset:
         self._search_seconds = 0.0
         self._bootstrap_horizon_counts: Counter[int] = Counter()
         self._bootstrap_source_counts: Counter[str] = Counter()
-        self._onnx_evaluator = (
-            None
-            if config.onnx_model_path is None
-            else _create_onnx_evaluator(
-                config.onnx_model_path,
-                device=config.onnx_device or config.device,
-                max_batch_size=config.onnx_max_batch_size,
-            )
-        )
+        self._onnx_evaluator_local = threading.local()
 
     @property
     def checkpoint_path(self) -> Path:
@@ -407,7 +400,7 @@ class OnSampleReanalyzeDataset:
             refreshed_values=value_head_values,
             model=self._model,
             device=self._config.device,
-            onnx_evaluator=self._onnx_evaluator,
+            onnx_evaluator=self._onnx_evaluator_for_current_thread(),
             config=self._config.search,
         )
         if search_result.root_values is None or not np.isfinite(search_result.root_values).all():
@@ -459,7 +452,7 @@ class OnSampleReanalyzeDataset:
             refreshed_values=refreshed_values,
             model=self._model,
             device=self._config.device,
-            onnx_evaluator=self._onnx_evaluator,
+            onnx_evaluator=self._onnx_evaluator_for_current_thread(),
             config=self._config.search,
         )
         refreshed = policies.copy()
@@ -484,6 +477,19 @@ class OnSampleReanalyzeDataset:
             raise ValueError("replay legal masks do not match feature-derived legal masks")
         return replay_legal_masks
 
+    def _onnx_evaluator_for_current_thread(self) -> Any | None:
+        if self._config.onnx_model_path is None:
+            return None
+        evaluator = getattr(self._onnx_evaluator_local, "evaluator", None)
+        if evaluator is None:
+            evaluator = _create_onnx_evaluator(
+                self._config.onnx_model_path,
+                device=self._config.onnx_device or self._config.device,
+                max_batch_size=self._config.onnx_max_batch_size,
+            )
+            self._onnx_evaluator_local.evaluator = evaluator
+        return evaluator
+
     def _evaluate_logits_values(
         self,
         features: np.ndarray,
@@ -491,7 +497,8 @@ class OnSampleReanalyzeDataset:
     ) -> tuple[np.ndarray, np.ndarray]:
         start = time.perf_counter()
         try:
-            if self._onnx_evaluator is None:
+            onnx_evaluator = self._onnx_evaluator_for_current_thread()
+            if onnx_evaluator is None:
                 return _evaluate_policy_logits_values(
                     self._model,
                     features,
@@ -500,7 +507,7 @@ class OnSampleReanalyzeDataset:
                     device=self._config.device,
                 )
             return _evaluate_policy_logits_values_with_onnx(
-                cast(Any, self._onnx_evaluator),
+                cast(Any, onnx_evaluator),
                 features,
                 batch_size=self._config.batch_size,
                 device=self._config.onnx_device or self._config.device,
