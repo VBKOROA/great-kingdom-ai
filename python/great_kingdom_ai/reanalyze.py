@@ -103,6 +103,14 @@ class ReanalyzeSummary:
     bootstrap_td_steps: int
     gamma: float
     search_reanalyzed: int = 0
+    reanalyze_mode: str = "snapshot"
+    value_bootstrap_source: str = "value_head"
+    dynamic_horizon_enabled: bool = False
+    sampled_batches: int = 0
+    sampled_rows: int = 0
+    policy_reanalyzed: int = 0
+    bootstrap_horizon_counts: dict[int, int] = field(default_factory=dict)
+    bootstrap_source_counts: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -114,6 +122,17 @@ class ReanalyzeSummary:
             "bootstrap_td_steps": self.bootstrap_td_steps,
             "gamma": self.gamma,
             "search_reanalyzed": self.search_reanalyzed,
+            "reanalyze_mode": self.reanalyze_mode,
+            "value_bootstrap_source": self.value_bootstrap_source,
+            "dynamic_horizon_enabled": self.dynamic_horizon_enabled,
+            "sampled_batches": self.sampled_batches,
+            "sampled_rows": self.sampled_rows,
+            "policy_reanalyzed": self.policy_reanalyzed,
+            "bootstrap_horizon_counts": {
+                str(horizon): count
+                for horizon, count in sorted(self.bootstrap_horizon_counts.items())
+            },
+            "bootstrap_source_counts": dict(sorted(self.bootstrap_source_counts.items())),
         }
 
 

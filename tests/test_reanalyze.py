@@ -238,6 +238,11 @@ def test_on_sample_reanalyze_refreshes_policy_targets_by_batch_ratio(
     batch = dataset.sample_arrays(len(store), random.Random(3))
 
     assert int(batch.search_reanalyzed.sum()) == 2
+    stats = dataset.target_stats()
+    assert stats.sampled_batches == 1
+    assert stats.sampled_rows == 3
+    assert stats.policy_reanalyzed == 2
+    assert sum(stats.bootstrap_source_counts.values()) == 3
     for position, was_refreshed in enumerate(batch.search_reanalyzed.tolist()):
         if was_refreshed:
             assert batch.policies[position].tolist() == pytest.approx(

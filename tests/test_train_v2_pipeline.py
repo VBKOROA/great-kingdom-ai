@@ -287,6 +287,8 @@ def test_train_v2_pipeline_uses_on_sample_reanalyze_dataset(
             self.model_version = int(config.model_version or 0)
             self.bootstrap_td_steps = config.bootstrap_td_steps
             self.gamma = config.gamma
+            self.value_bootstrap_source = config.value_bootstrap_source
+            self.dynamic_horizon_enabled = config.dynamic_horizon_enabled
             dataset_calls.append(
                 {
                     "rows": len(replay),
@@ -298,6 +300,19 @@ def test_train_v2_pipeline_uses_on_sample_reanalyze_dataset(
 
         def __len__(self) -> int:
             return self._size
+
+        def target_stats(self) -> Any:
+            return type(
+                "FakeStats",
+                (),
+                {
+                    "sampled_batches": 1,
+                    "sampled_rows": 2,
+                    "policy_reanalyzed": 1,
+                    "bootstrap_horizon_counts": {1: 2},
+                    "bootstrap_source_counts": {"value_head": 2},
+                },
+            )()
 
     def fake_save_checkpoint(state: object, path: str | Path) -> Path:
         del state
@@ -365,6 +380,9 @@ def test_train_v2_pipeline_uses_on_sample_reanalyze_dataset(
     ]
     assert trained_replay_types == ["FakeOnSampleDataset"]
     assert summary.latest_target_snapshot_path is None
+    assert summary.iterations[0].reanalyze.to_dict()["reanalyze_mode"] == "on_sample"
+    assert summary.iterations[0].reanalyze.to_dict()["sampled_batches"] == 1
+    assert summary.iterations[0].reanalyze.to_dict()["bootstrap_horizon_counts"] == {"1": 2}
     assert not (tmp_path / "targets" / "targets-000001.npz").exists()
 
 

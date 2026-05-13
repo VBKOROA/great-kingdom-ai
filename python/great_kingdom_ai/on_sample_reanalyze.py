@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import random
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -40,6 +41,27 @@ class OnSampleReanalyzeBatch:
     search_reanalyzed: np.ndarray
 
 
+@dataclass(frozen=True)
+class OnSampleReanalyzeStats:
+    sampled_batches: int
+    sampled_rows: int
+    policy_reanalyzed: int
+    bootstrap_horizon_counts: dict[int, int]
+    bootstrap_source_counts: dict[str, int]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "sampled_batches": self.sampled_batches,
+            "sampled_rows": self.sampled_rows,
+            "policy_reanalyzed": self.policy_reanalyzed,
+            "bootstrap_horizon_counts": {
+                str(horizon): count
+                for horizon, count in sorted(self.bootstrap_horizon_counts.items())
+            },
+            "bootstrap_source_counts": dict(sorted(self.bootstrap_source_counts.items())),
+        }
+
+
 class OnSampleReanalyzeDataset:
     """Refresh replay targets only for the learner batch being sampled."""
 
@@ -63,6 +85,11 @@ class OnSampleReanalyzeDataset:
         self._checkpoint_path = Path(checkpoint_path)
         self._model = state.model
         self._model_version = state.step if config.model_version is None else config.model_version
+        self._sampled_batches = 0
+        self._sampled_rows = 0
+        self._policy_reanalyzed = 0
+        self._bootstrap_horizon_counts: Counter[int] = Counter()
+        self._bootstrap_source_counts: Counter[str] = Counter()
         self._onnx_evaluator = (
             None
             if config.onnx_model_path is None
@@ -89,8 +116,25 @@ class OnSampleReanalyzeDataset:
     def gamma(self) -> float:
         return self._config.gamma
 
+    @property
+    def value_bootstrap_source(self) -> str:
+        return self._config.value_bootstrap_source
+
+    @property
+    def dynamic_horizon_enabled(self) -> bool:
+        return self._config.dynamic_horizon_enabled
+
     def __len__(self) -> int:
         return len(self._replay)
+
+    def target_stats(self) -> OnSampleReanalyzeStats:
+        return OnSampleReanalyzeStats(
+            sampled_batches=self._sampled_batches,
+            sampled_rows=self._sampled_rows,
+            policy_reanalyzed=self._policy_reanalyzed,
+            bootstrap_horizon_counts=dict(self._bootstrap_horizon_counts),
+            bootstrap_source_counts=dict(self._bootstrap_source_counts),
+        )
 
     def sample(self, batch_size: int, rng: random.Random) -> list[ReplaySample]:
         batch = self.sample_arrays(batch_size, rng)
@@ -136,11 +180,15 @@ class OnSampleReanalyzeDataset:
             * importance_weights,
             dtype=np.float32,
         )
+        values = self._sampled_bootstrap_targets(indexes)
+        self._sampled_batches += 1
+        self._sampled_rows += len(indexes)
+        self._policy_reanalyzed += int(np.count_nonzero(search_reanalyzed))
         return OnSampleReanalyzeBatch(
             indexes=np.asarray(indexes, dtype=np.int64),
             features=features,
             policies=policies,
-            values=self._sampled_bootstrap_targets(indexes),
+            values=values,
             sample_weights=sample_weights,
             legal_masks=legal_masks_from_features(features),
             search_reanalyzed=search_reanalyzed,
@@ -180,6 +228,8 @@ class OnSampleReanalyzeDataset:
         bootstrap_rows: list[int] = []
         bootstrap_offsets: dict[int, int] = {}
         pending: list[tuple[int, int, int, int]] = []
+        horizon_counts: Counter[int] = Counter()
+        source_counts: Counter[str] = Counter()
         gamma = self._config.gamma
 
         for batch_row, replay_row in enumerate(indexes):
@@ -205,6 +255,8 @@ class OnSampleReanalyzeDataset:
                     player=int(self._replay.players[replay_row]),
                     winner=int(self._replay.episode_winners[episode_index]),
                 )
+                horizon_counts[0] += 1
+                source_counts["terminal"] += 1
                 continue
             offset = bootstrap_offsets.get(target_row)
             if offset is None:
@@ -212,8 +264,11 @@ class OnSampleReanalyzeDataset:
                 bootstrap_offsets[target_row] = offset
                 bootstrap_rows.append(target_row)
             pending.append((batch_row, replay_row, target_row, effective_td_steps))
+            horizon_counts[effective_td_steps] += 1
+            source_counts[self._config.value_bootstrap_source] += 1
 
         if not pending:
+            self._record_bootstrap_stats(horizon_counts, source_counts)
             return np.ascontiguousarray(targets, dtype=np.float32)
 
         bootstrap_features = np.ascontiguousarray(
@@ -229,7 +284,16 @@ class OnSampleReanalyzeDataset:
             if int(self._replay.players[target_row]) != int(self._replay.players[replay_row]):
                 bootstrap = -bootstrap
             targets[batch_row] = np.float32((gamma**effective_td_steps) * bootstrap)
+        self._record_bootstrap_stats(horizon_counts, source_counts)
         return np.ascontiguousarray(targets, dtype=np.float32)
+
+    def _record_bootstrap_stats(
+        self,
+        horizon_counts: Counter[int],
+        source_counts: Counter[str],
+    ) -> None:
+        self._bootstrap_horizon_counts.update(horizon_counts)
+        self._bootstrap_source_counts.update(source_counts)
 
     def _bootstrap_values_for_rows(
         self,
@@ -324,4 +388,4 @@ class OnSampleReanalyzeDataset:
         )
 
 
-__all__ = ["OnSampleReanalyzeBatch", "OnSampleReanalyzeDataset"]
+__all__ = ["OnSampleReanalyzeBatch", "OnSampleReanalyzeDataset", "OnSampleReanalyzeStats"]

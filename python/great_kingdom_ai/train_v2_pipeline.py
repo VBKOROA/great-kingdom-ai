@@ -275,6 +275,8 @@ def run_train_v2_pipeline(
                 replay_path=paths["trajectory_replay_path"],
                 checkpoint_path=reanalyze_checkpoint,
                 output_path=target_snapshot_path,
+                value_bootstrap_source=pipeline_config.value_bootstrap_source,
+                dynamic_horizon_enabled=pipeline_config.dynamic_horizon_enabled,
             )
             if pipeline_config.save_target_snapshots:
                 printer.progress("reanalyze save", 0, 1, detail=f"output={target_snapshot_path}")
@@ -332,6 +334,12 @@ def run_train_v2_pipeline(
         shutil.copy2(candidate_checkpoint, paths["training_checkpoint"])
         _release_cuda_cache(effective_train_config.device)
         printer.metric("train steps", f"{train_summary.start_step}->{train_summary.end_step}")
+        if isinstance(target_replay, OnSampleReanalyzeDataset):
+            reanalyze_summary = _reanalyze_summary_for_on_sample_dataset(
+                target_replay,
+                replay_path=paths["trajectory_replay_path"],
+                output_path=target_snapshot_path,
+            )
         printer.progress("iteration", 4, phase_total, detail="training complete")
 
         candidate_win_rate: float | None = None
@@ -731,6 +739,8 @@ def _reanalyze_summary_for_snapshot(
     replay_path: Path,
     checkpoint_path: Path,
     output_path: Path,
+    value_bootstrap_source: str = "value_head",
+    dynamic_horizon_enabled: bool = False,
 ) -> ReanalyzeSummary:
     return ReanalyzeSummary(
         replay_path=replay_path,
@@ -745,6 +755,9 @@ def _reanalyze_summary_for_snapshot(
             if snapshot.search_reanalyzed is None
             else int(snapshot.search_reanalyzed.sum())
         ),
+        reanalyze_mode="snapshot",
+        value_bootstrap_source=value_bootstrap_source,
+        dynamic_horizon_enabled=dynamic_horizon_enabled,
     )
 
 
@@ -754,6 +767,7 @@ def _reanalyze_summary_for_on_sample_dataset(
     replay_path: Path,
     output_path: Path,
 ) -> ReanalyzeSummary:
+    stats = dataset.target_stats()
     return ReanalyzeSummary(
         replay_path=replay_path,
         checkpoint_path=dataset.checkpoint_path,
@@ -763,6 +777,14 @@ def _reanalyze_summary_for_on_sample_dataset(
         bootstrap_td_steps=dataset.bootstrap_td_steps,
         gamma=dataset.gamma,
         search_reanalyzed=0,
+        reanalyze_mode="on_sample",
+        value_bootstrap_source=dataset.value_bootstrap_source,
+        dynamic_horizon_enabled=dataset.dynamic_horizon_enabled,
+        sampled_batches=stats.sampled_batches,
+        sampled_rows=stats.sampled_rows,
+        policy_reanalyzed=stats.policy_reanalyzed,
+        bootstrap_horizon_counts=stats.bootstrap_horizon_counts,
+        bootstrap_source_counts=stats.bootstrap_source_counts,
     )
 
 
