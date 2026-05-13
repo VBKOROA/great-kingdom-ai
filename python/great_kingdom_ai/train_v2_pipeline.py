@@ -20,21 +20,13 @@ from great_kingdom_ai.evaluate import (
     save_arena_report,
 )
 from great_kingdom_ai.onnx_export import export_checkpoint_to_onnx
-from great_kingdom_ai.pipeline import PipelinePrinter
+from great_kingdom_ai.pipeline_printer import PipelinePrinter
 from great_kingdom_ai.reanalyze import (
     ReanalyzeConfig,
     ReanalyzeSummary,
     reanalyze_replay_store,
 )
 from great_kingdom_ai.runpod_pruning import collect_prune_items, prune_items
-from great_kingdom_ai.rust_onnx_pipeline import (
-    RustOnnxPipelineConfig,
-    _arena_config_for_pipeline,
-    _format_train_loss_detail,
-    _promote_candidate_unconditionally,
-    _should_run_arena,
-    _train_checkpoint_kwargs,
-)
 from great_kingdom_ai.rust_onnx_self_play import (
     RustOnnxSelfPlayConfig,
     RustSelfPlayRunSummary,
@@ -188,7 +180,7 @@ def run_train_v2_pipeline(
     printer.metric("reanalyze device", _reanalyze_device(pipeline_config, train_config))
 
     for iteration in range(first_iteration, last_iteration + 1):
-        base_phase_total = 6 if not _should_run_arena(_as_rust_config(pipeline_config)) else 7
+        base_phase_total = 6 if not _should_run_arena(pipeline_config) else 7
         phase_total = base_phase_total + (1 if pipeline_config.prune_artifacts else 0)
         printer.title(f"Train V2 Iteration {iteration}/{last_iteration}")
         onnx_path = paths["onnx_checkpoint_dir"] / f"best-{iteration:06d}.onnx"
@@ -282,7 +274,7 @@ def run_train_v2_pipeline(
             effective_train_config,
             checkpoint_path=candidate_checkpoint,
             **_train_checkpoint_kwargs(
-                _as_rust_config(pipeline_config),
+                pipeline_config,
                 _training_source_checkpoint(pipeline_config, paths),
             ),
             log_every=max(1, effective_train_config.steps // 10),
@@ -300,7 +292,7 @@ def run_train_v2_pipeline(
 
         candidate_win_rate: float | None = None
         promoted = False
-        if _should_run_arena(_as_rust_config(pipeline_config)):
+        if _should_run_arena(pipeline_config):
             report_path = paths["arena_dir"] / f"arena-{iteration:06d}.json"
             printer.step(f"arena evaluation -> {report_path}")
             candidate_model = load_model_from_checkpoint(
@@ -314,7 +306,7 @@ def run_train_v2_pipeline(
             report = run_arena(
                 candidate_model=candidate_model,
                 best_model=best_model,
-                config=_arena_config_for_pipeline(arena_config, iteration=iteration),
+                config=_arena_config_for_iteration(arena_config, iteration=iteration),
                 progress_callback=lambda current, target, game: printer.progress(
                     "arena games",
                     current,
@@ -640,7 +632,7 @@ def _paths(config: TrainV2PipelineConfig) -> dict[str, Path]:
 
 def _ensure_dirs(paths: dict[str, Path], config: TrainV2PipelineConfig) -> None:
     for name, path in paths.items():
-        if name == "arena_dir" and not _should_run_arena(_as_rust_config(config)):
+        if name == "arena_dir" and not _should_run_arena(config):
             continue
         if path.suffix:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -752,31 +744,58 @@ def _validate_config(config: TrainV2PipelineConfig) -> None:
             raise ValueError(f"{label} must be non-negative")
 
 
-def _as_rust_config(config: TrainV2PipelineConfig) -> RustOnnxPipelineConfig:
-    return RustOnnxPipelineConfig(
-        work_dir=config.work_dir,
-        iterations=config.iterations,
-        replay_capacity=config.replay_capacity,
-        self_play_games=config.self_play_games,
-        min_replay_samples=config.min_replay_transitions,
-        max_self_play_games=config.max_self_play_games,
-        seed_start=config.seed_start,
-        onnx_device=config.onnx_device,
-        onnx_precision=config.onnx_precision,
-        onnx_max_batch_size=config.onnx_max_batch_size,
-        rust_self_play_batch_size=config.rust_self_play_batch_size,
-        skip_arena=config.skip_arena,
-        promote=config.promote,
-        always_promote=config.always_promote,
-        resume=config.resume,
-        train_checkpoint_mode=config.train_checkpoint_mode,
-        aggregate_replay=False,
-        self_play=config.self_play,
-    )
-
-
 def _search_config_hash(config: SelfPlayConfig) -> str:
     return json.dumps(asdict(config), sort_keys=True, separators=(",", ":"))
+
+
+def _train_checkpoint_kwargs(
+    config: TrainV2PipelineConfig,
+    checkpoint: Path,
+) -> dict[str, Path | None]:
+    if config.train_checkpoint_mode == "resume":
+        return {"resume_path": checkpoint, "bootstrap_weights_path": None}
+    if config.train_checkpoint_mode == "bootstrap":
+        return {"resume_path": None, "bootstrap_weights_path": checkpoint}
+    raise ValueError("train_checkpoint_mode must be one of: resume, bootstrap")
+
+
+def _should_run_arena(config: TrainV2PipelineConfig) -> bool:
+    return not config.skip_arena and not config.always_promote
+
+
+def _promote_candidate_unconditionally(
+    *,
+    candidate_checkpoint: str | Path,
+    best_checkpoint: str | Path,
+) -> bool:
+    source = Path(candidate_checkpoint)
+    destination = Path(best_checkpoint)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+    return True
+
+
+def _arena_config_for_iteration(
+    arena_config: ArenaConfig,
+    *,
+    iteration: int,
+) -> ArenaConfig:
+    if iteration <= 0:
+        raise ValueError("iteration must be positive")
+    data = asdict(arena_config)
+    data["seed_start"] = arena_config.seed_start + (iteration - 1) * arena_config.games
+    return ArenaConfig(**data)
+
+
+def _format_train_loss_detail(loss: dict[str, float]) -> str:
+    detail = f"loss={loss['total']:.4f}"
+    if {"policy", "value", "policy_kl"}.issubset(loss):
+        detail += (
+            f" policy={loss['policy']:.4f}"
+            f" value={loss['value']:.4f}"
+            f" kl={loss['policy_kl']:.4f}"
+        )
+    return detail
 
 
 def _train_config_for_iteration(

@@ -22,7 +22,7 @@ from great_kingdom_ai.actor_learner_shards import (
     save_shard,
     utc_now,
 )
-from great_kingdom_ai.pipeline import PipelinePrinter
+from great_kingdom_ai.pipeline_printer import PipelinePrinter
 from great_kingdom_ai.replay_buffer import ReplayBuffer
 from great_kingdom_ai.rust_onnx_replay import RustReplayImportSummary, import_rust_self_play_samples
 from great_kingdom_ai.rust_onnx_self_play import (

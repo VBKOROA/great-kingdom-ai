@@ -274,17 +274,6 @@ great-kingdom-export-onnx \
   --check-parity
 ```
 
-기존 `great-kingdom-rust-onnx-pipeline`은 v1/비교용 경로입니다. 이 경로는 sample replay와
-optional aggregate replay를 사용합니다.
-
-```bash
-great-kingdom-rust-onnx-pipeline \
-  --device cuda \
-  --pipeline-config configs/runpod/pipeline.json \
-  --train-config configs/runpod/train.json \
-  --arena-config configs/runpod/arena.json
-```
-
 ## 개발 원칙
 
 - 테스트하기 쉬운 구조를 유지합니다.

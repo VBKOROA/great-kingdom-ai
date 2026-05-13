@@ -1,14 +1,12 @@
-"""Replay import helpers for the Rust ONNX self-play pipeline."""
+"""Replay import helpers for Rust ONNX self-play output."""
 
 from __future__ import annotations
 
-import argparse
 import json
-import shutil
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any
 
 import numpy as np
 
@@ -32,32 +30,6 @@ class RustReplayImportSummary:
             "imported_samples": self.imported_samples,
             "replay_samples": self.replay_samples,
             "imported_games": self.imported_games,
-        }
-
-
-@dataclass(frozen=True)
-class LegacyImportSummary:
-    legacy_work_dir: Path
-    onnx_work_dir: Path
-    imported: bool
-    replay_samples: int
-    game_logs: int
-    next_seed_start: int
-    best_checkpoint: Path | None
-    candidate_checkpoint: Path | None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "legacy_work_dir": str(self.legacy_work_dir),
-            "onnx_work_dir": str(self.onnx_work_dir),
-            "imported": self.imported,
-            "replay_samples": self.replay_samples,
-            "game_logs": self.game_logs,
-            "next_seed_start": self.next_seed_start,
-            "best_checkpoint": str(self.best_checkpoint) if self.best_checkpoint else None,
-            "candidate_checkpoint": (
-                str(self.candidate_checkpoint) if self.candidate_checkpoint else None
-            ),
         }
 
 
@@ -122,104 +94,6 @@ def import_rust_self_play_samples(
         replay_samples=replay_samples,
         imported_games=len(logs),
     )
-
-
-def import_legacy_pipeline_data(
-    *,
-    legacy_work_dir: str | Path,
-    onnx_work_dir: str | Path,
-    replay_capacity: int,
-    force: bool = False,
-) -> LegacyImportSummary:
-    legacy = Path(legacy_work_dir)
-    destination = Path(onnx_work_dir)
-    marker = destination / "reports" / "legacy-import.json"
-    if marker.exists() and not force:
-        data = json.loads(marker.read_text(encoding="utf-8"))
-        return _legacy_summary_from_dict(data, imported=False)
-
-    (destination / "replay").mkdir(parents=True, exist_ok=True)
-    (destination / "checkpoints").mkdir(parents=True, exist_ok=True)
-    (destination / "reports").mkdir(parents=True, exist_ok=True)
-
-    replay_samples = 0
-    legacy_replay = legacy / "replay" / "replay.npz"
-    if legacy_replay.exists():
-        replay = _load_replay_with_capacity(legacy_replay, replay_capacity)
-        replay_samples = len(replay)
-        replay.save(destination / "replay" / "replay.npz")
-
-    game_logs: list[dict[str, Any]] = []
-    legacy_logs = legacy / "replay" / "game_logs.json"
-    if legacy_logs.exists():
-        game_logs = _read_json_list(legacy_logs)
-        _write_json(destination / "replay" / "game_logs.json", game_logs)
-
-    best_checkpoint = _copy_if_exists(
-        legacy / "checkpoints" / "best.pt",
-        destination / "checkpoints" / "best.pt",
-    )
-    candidate_checkpoint = _copy_if_exists(
-        legacy / "checkpoints" / "candidate.pt",
-        destination / "checkpoints" / "candidate.pt",
-    )
-    summary = LegacyImportSummary(
-        legacy_work_dir=legacy,
-        onnx_work_dir=destination,
-        imported=True,
-        replay_samples=replay_samples,
-        game_logs=len(game_logs),
-        next_seed_start=_next_seed_start(game_logs),
-        best_checkpoint=best_checkpoint,
-        candidate_checkpoint=candidate_checkpoint,
-    )
-    _write_json(marker, summary.to_dict())
-    return summary
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="great-kingdom-import-legacy-pipeline",
-        description="Import legacy Python pipeline artifacts into a Rust ONNX pipeline work dir.",
-    )
-    parser.add_argument("--legacy-work-dir", type=Path, required=True)
-    parser.add_argument("--onnx-work-dir", type=Path, required=True)
-    parser.add_argument("--replay-capacity", type=int, default=500_000)
-    parser.add_argument("--force", action="store_true")
-    return parser
-
-
-def main() -> NoReturn:
-    args = build_parser().parse_args()
-    summary = import_legacy_pipeline_data(
-        legacy_work_dir=args.legacy_work_dir,
-        onnx_work_dir=args.onnx_work_dir,
-        replay_capacity=args.replay_capacity,
-        force=args.force,
-    )
-    print(json.dumps(summary.to_dict(), sort_keys=True))
-    raise SystemExit(0)
-
-
-def _load_replay_with_capacity(path: Path, capacity: int) -> ReplayBuffer:
-    source = ReplayBuffer.load(path)
-    with np.load(path) as data:
-        features = np.asarray(data["features"], dtype=np.float32)
-        policies = np.asarray(data["policies"], dtype=np.float32)
-        values = np.asarray(data["values"], dtype=np.float32)
-    replay = ReplayBuffer(capacity)
-    start = max(0, features.shape[0] - capacity)
-    for index in range(start, features.shape[0]):
-        replay.push(
-            ReplaySample(
-                features=features[index],
-                policy=policies[index],
-                value=float(values[index]),
-            )
-        )
-    if len(replay) != min(len(source), capacity):
-        raise ValueError("legacy replay import produced an inconsistent sample count")
-    return replay
 
 
 def _extend_online_aggregate_replay(
@@ -318,41 +192,7 @@ def _append_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> None:
             file.write("\n")
 
 
-def _copy_if_exists(source: Path, destination: Path) -> Path | None:
-    if not source.exists():
-        return None
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, destination)
-    return destination
-
-
-def _next_seed_start(logs: list[dict[str, Any]]) -> int:
-    seeds = [int(log["seed"]) for log in logs if isinstance(log.get("seed"), int)]
-    return max(seeds, default=-1) + 1
-
-
-def _legacy_summary_from_dict(data: dict[str, Any], *, imported: bool) -> LegacyImportSummary:
-    return LegacyImportSummary(
-        legacy_work_dir=Path(str(data["legacy_work_dir"])),
-        onnx_work_dir=Path(str(data["onnx_work_dir"])),
-        imported=imported,
-        replay_samples=int(data["replay_samples"]),
-        game_logs=int(data["game_logs"]),
-        next_seed_start=int(data["next_seed_start"]),
-        best_checkpoint=(
-            Path(str(data["best_checkpoint"])) if data.get("best_checkpoint") else None
-        ),
-        candidate_checkpoint=(
-            Path(str(data["candidate_checkpoint"]))
-            if data.get("candidate_checkpoint")
-            else None
-        ),
-    )
-
-
 __all__ = [
-    "LegacyImportSummary",
     "RustReplayImportSummary",
-    "import_legacy_pipeline_data",
     "import_rust_self_play_samples",
 ]

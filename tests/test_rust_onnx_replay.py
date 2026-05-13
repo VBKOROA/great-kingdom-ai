@@ -6,10 +6,7 @@ from pathlib import Path
 import numpy as np
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
-from great_kingdom_ai.rust_onnx_replay import (
-    import_legacy_pipeline_data,
-    import_rust_self_play_samples,
-)
+from great_kingdom_ai.rust_onnx_replay import import_rust_self_play_samples
 from great_kingdom_ai.self_play import GameLog, MoveLog
 
 
@@ -148,37 +145,3 @@ def test_import_rust_self_play_samples_can_skip_raw_replay_materialization(
     assert np.isclose(sample.value, 0.0)
     assert not artifact_dir.exists()
 
-
-def test_import_legacy_pipeline_data_copies_replay_logs_and_checkpoints(
-    tmp_path: Path,
-) -> None:
-    legacy = tmp_path / "legacy"
-    onnx = tmp_path / "onnx"
-    replay = ReplayBuffer(capacity=4)
-    replay.extend([make_sample(0), make_sample(1), make_sample(2)])
-    replay.save(legacy / "replay" / "replay.npz")
-    (legacy / "replay" / "game_logs.json").write_text(
-        '[{"seed": 7}, {"seed": 9}]',
-        encoding="utf-8",
-    )
-    (legacy / "checkpoints").mkdir(parents=True)
-    (legacy / "checkpoints" / "best.pt").write_text("best", encoding="utf-8")
-
-    summary = import_legacy_pipeline_data(
-        legacy_work_dir=legacy,
-        onnx_work_dir=onnx,
-        replay_capacity=2,
-    )
-    second_summary = import_legacy_pipeline_data(
-        legacy_work_dir=legacy,
-        onnx_work_dir=onnx,
-        replay_capacity=2,
-    )
-
-    imported_replay = ReplayBuffer.load(onnx / "replay" / "replay.npz")
-    assert len(imported_replay) == 2
-    assert summary.imported is True
-    assert summary.next_seed_start == 10
-    assert second_summary.imported is False
-    assert (onnx / "checkpoints" / "best.pt").read_text(encoding="utf-8") == "best"
-    assert (onnx / "reports" / "legacy-import.json").is_file()

@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from great_kingdom_ai.evaluate import ArenaConfig
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS, PASS_ACTION
-from great_kingdom_ai.pipeline import PipelinePrinter
+from great_kingdom_ai.pipeline_printer import PipelinePrinter
 from great_kingdom_ai.reanalyze import ReanalyzeSummary, ReanalyzeTargetSnapshot
 from great_kingdom_ai.rust_onnx_self_play import RustOnnxSelfPlayConfig, RustSelfPlayRunSummary
 from great_kingdom_ai.self_play import GameLog, MoveLog, SelfPlayConfig

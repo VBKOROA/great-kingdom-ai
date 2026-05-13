@@ -27,9 +27,7 @@ Runpod RTX 3090 24GB 환경에서 어떤 하이퍼파라미터를 어떻게 잡�
 
 ## 현재 설정 기준점
 
-현재 Runpod 설정은 다음 성격이다.
-
-`configs/runpod/pipeline.json`
+과거 v1 Runpod 설정은 다음 성격이었다. 현재 실행 경로는 v2 설정을 기준으로 한다.
 
 - `iterations`: 50
 - `self_play_games`: 2000
@@ -682,4 +680,3 @@ v2 첫 장기 run은 다음으로 시작한다.
 
 이 baseline이 기존 pipeline보다 안정적으로 같거나 좋아진 뒤에 reanalyze, learner reuse,
 priority, consistency 순서로 샘플 효율을 끌어올린다.
-

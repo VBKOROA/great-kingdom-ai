@@ -235,8 +235,6 @@ python -m pytest
 echo "Runpod setup complete."
 echo "For CUDA smoke test, run:"
 echo "  source \"$VENV_DIR/bin/activate\" && python scripts/run_m6_smoke.py --device cuda"
-echo "For Rust ONNX pipeline training, run:"
-echo "  great-kingdom-rust-onnx-pipeline --device cuda --pipeline-config configs/runpod/pipeline.json --train-config configs/runpod/train.json --arena-config configs/runpod/arena.json"
 echo "For trajectory v2 training, run:"
 echo "  great-kingdom-train-v2 --device cuda --pipeline-config configs/runpod/train-v2-pipeline.json --train-config configs/runpod/train.json --arena-config configs/runpod/arena.json"
 echo "To inspect or prune regenerable artifacts, run:"

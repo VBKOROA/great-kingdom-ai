@@ -13,7 +13,7 @@ from great_kingdom_ai.actor_learner_processes import (
     run_learner_process_once,
 )
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
-from great_kingdom_ai.pipeline import PipelinePrinter
+from great_kingdom_ai.pipeline_printer import PipelinePrinter
 from great_kingdom_ai.replay_buffer import ReplaySample
 from great_kingdom_ai.rust_onnx_self_play import RustOnnxSelfPlayConfig, RustSelfPlayRunSummary
 from great_kingdom_ai.self_play import GameLog, MoveLog
