@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import warnings
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, NoReturn
@@ -253,7 +254,14 @@ def _convert_onnx_to_fp16_keep_io(path: Path) -> None:
         raise RuntimeError("onnxconverter-common is required for FP16 ONNX export") from exc
 
     model = onnx.load(path)
-    converted = float16.convert_float_to_float16(model, keep_io_types=True)
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"the float32 number .* will be truncated to .*",
+            category=UserWarning,
+            module=r"onnxconverter_common\.float16",
+        )
+        converted = float16.convert_float_to_float16(model, keep_io_types=True)
     onnx.save(converted, path)
 
 
