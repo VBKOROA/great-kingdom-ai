@@ -27,7 +27,7 @@
   "search_reanalyze_simulations": 32,
   "search_reanalyze_max_considered_actions": 8,
   "search_reanalyze_leaf_batch_size": 1024,
-  "search_reanalyze_root_batch_size": 32768,
+  "search_reanalyze_root_batch_size": 16384,
   "search_reanalyze_seed": 900000,
   "prune_artifacts": true,
   "prune_keep_targets": 2,
