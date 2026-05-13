@@ -9,7 +9,7 @@
   "onnx_device": "cuda",
   "onnx_precision": "fp16",
   "onnx_max_batch_size": 8192,
-  "rust_self_play_batch_size": 1000,
+  "rust_self_play_batch_size": 2000,
   "skip_arena": true,
   "promote": true,
   "always_promote": true,
@@ -49,6 +49,6 @@
     "playout_cap_fast_simulations": 16,
     "playout_cap_full_max_considered_actions": 16,
     "playout_cap_fast_max_considered_actions": 4,
-    "leaf_batch_size": 512
+    "leaf_batch_size": 1024
   }
 }
