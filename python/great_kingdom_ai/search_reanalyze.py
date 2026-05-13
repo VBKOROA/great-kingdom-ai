@@ -510,8 +510,10 @@ def _root_value_from_result(result: Any) -> float | None:
     if root_value is None:
         return None
     value = float(root_value())
-    if not math.isfinite(value) or value < -1.0 or value > 1.0:
+    if not math.isfinite(value):
         return None
+    if value < -1.0 or value > 1.0:
+        return float(np.clip(value, -1.0, 1.0))
     return value
 
 

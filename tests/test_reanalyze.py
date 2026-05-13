@@ -659,12 +659,22 @@ def test_refresh_policies_with_search_can_use_onnx_evaluator(
     assert sampled_result.root_values.tolist() == pytest.approx([0.25, 0.25])
 
 
-def test_search_reanalyze_treats_invalid_root_value_as_unavailable() -> None:
+def test_search_reanalyze_clips_finite_out_of_range_root_value() -> None:
     import great_kingdom_ai.search_reanalyze as search_reanalyze
 
     class FakeResult:
         def root_value(self) -> float:
             return 1.5
+
+    assert search_reanalyze._root_value_from_result(FakeResult()) == pytest.approx(1.0)
+
+
+def test_search_reanalyze_treats_nonfinite_root_value_as_unavailable() -> None:
+    import great_kingdom_ai.search_reanalyze as search_reanalyze
+
+    class FakeResult:
+        def root_value(self) -> float:
+            return float("nan")
 
     assert search_reanalyze._root_value_from_result(FakeResult()) is None
 
