@@ -430,3 +430,63 @@ def test_on_sample_sampled_search_uses_rust_core_path(
     assert stats.stale_policy_fallbacks == 0
     assert stats.value_eval_seconds > 0.0
     assert stats.search_seconds > 0.0
+
+
+@pytest.mark.skipif(_torch_spec is None, reason="torch is not installed")
+def test_on_sample_policy_reanalyze_ratio_boundaries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_counts: list[int] = []
+
+    def fake_refresh_sampled_policies_with_search(**kwargs: object) -> SearchReanalyzeResult:
+        policies = np.asarray(kwargs["policies"], dtype=np.float32)
+        selected_counts.append(policies.shape[0])
+        return SearchReanalyzeResult(
+            policies=policies.copy(),
+            search_reanalyzed=np.ones((policies.shape[0],), dtype=np.bool_),
+            selected_indexes=tuple(range(policies.shape[0])),
+        )
+
+    monkeypatch.setattr(
+        on_sample_reanalyze_module,
+        "refresh_sampled_policies_with_search",
+        fake_refresh_sampled_policies_with_search,
+    )
+    store = make_store()
+    checkpoint = make_checkpoint(tmp_path)
+
+    zero_dataset = OnSampleReanalyzeDataset(
+        store,
+        checkpoint_path=checkpoint,
+        config=ReanalyzeConfig(batch_size=3, policy_reanalyze_ratio=0.0),
+    )
+    zero_batch = zero_dataset.sample_arrays(3, random.Random(0))
+
+    assert selected_counts == []
+    assert zero_batch.search_reanalyzed.tolist() == [False, False, False]
+
+    one_dataset = OnSampleReanalyzeDataset(
+        store,
+        checkpoint_path=checkpoint,
+        config=ReanalyzeConfig(batch_size=3, policy_reanalyze_ratio=1.0),
+    )
+    one_batch = one_dataset.sample_arrays(3, random.Random(0))
+
+    assert selected_counts == [3]
+    assert one_batch.search_reanalyzed.tolist() == [True, True, True]
+
+    ceil_dataset = OnSampleReanalyzeDataset(
+        store,
+        checkpoint_path=checkpoint,
+        config=ReanalyzeConfig(batch_size=3, policy_reanalyze_ratio=0.01),
+    )
+    ceil_batch = ceil_dataset.sample_arrays(3, random.Random(0))
+
+    assert selected_counts == [3, 1]
+    assert int(ceil_batch.search_reanalyzed.sum()) == 1
+
+    with pytest.raises(ValueError, match="policy_reanalyze_ratio"):
+        ReanalyzeConfig(policy_reanalyze_ratio=-0.01)
+    with pytest.raises(ValueError, match="policy_reanalyze_ratio"):
+        ReanalyzeConfig(policy_reanalyze_ratio=1.01)
