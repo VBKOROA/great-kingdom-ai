@@ -1,0 +1,28 @@
+{
+  "work_dir": "data/runpod/train-v2-gumbel-512k",
+  "onnx_model_path": "data/runpod/train-v2-gumbel-512k/checkpoints/onnx/training-latest.onnx",
+  "model_version": "training-latest",
+  "games": 64,
+  "seed_start": 1000000,
+  "onnx_device": "cuda",
+  "onnx_max_batch_size": 4096,
+  "rust_self_play_batch_size": 512,
+  "self_play": {
+    "max_turns": 112,
+    "gumbel_simulations": 64,
+    "gumbel_max_considered_actions": 16,
+    "gumbel_c_visit": 50.0,
+    "gumbel_c_scale": 1.0,
+    "policy_target_c_visit": 50.0,
+    "policy_target_c_scale": 1.0,
+    "policy_target_temperature": 1.0,
+    "gumbel_seed": 700000,
+    "playout_cap_randomization": true,
+    "playout_cap_full_search_fraction": 0.25,
+    "playout_cap_full_simulations": 64,
+    "playout_cap_fast_simulations": 16,
+    "playout_cap_full_max_considered_actions": 16,
+    "playout_cap_fast_max_considered_actions": 4,
+    "leaf_batch_size": 2048
+  }
+}

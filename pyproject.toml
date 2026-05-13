@@ -41,6 +41,8 @@ great-kingdom-export-onnx = "great_kingdom_ai.onnx_export:main"
 great-kingdom-train-v2 = "great_kingdom_ai.train_v2_pipeline:main"
 great-kingdom-actor = "great_kingdom_ai.actor_learner_processes:actor_main"
 great-kingdom-learner = "great_kingdom_ai.actor_learner_processes:learner_main"
+great-kingdom-actor-v2 = "great_kingdom_ai.actor_learner_v2:actor_v2_main"
+great-kingdom-learner-v2 = "great_kingdom_ai.actor_learner_v2:learner_v2_main"
 
 [tool.setuptools.packages.find]
 where = ["python"]
