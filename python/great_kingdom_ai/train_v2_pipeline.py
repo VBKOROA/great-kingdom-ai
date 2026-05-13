@@ -175,8 +175,16 @@ def run_train_v2_pipeline(
     )
     first_iteration = completed_iterations + 1
     last_iteration = completed_iterations + pipeline_config.iterations
-    seed_cursor = _initial_seed_cursor(pipeline_config)
     replay = _load_or_create_trajectory_replay(paths["trajectory_replay_path"], pipeline_config)
+    replay = _discard_incomplete_resume_data(
+        replay,
+        replay_path=paths["trajectory_replay_path"],
+        game_log_path=paths["game_log_path"],
+        completed_iterations=completed_iterations,
+        pipeline_config=pipeline_config,
+        printer=printer,
+    )
+    seed_cursor = _initial_seed_cursor(pipeline_config)
     summaries: list[TrainV2IterationSummary] = []
 
     printer.title("Train V2 Pipeline")
@@ -725,6 +733,67 @@ def _load_or_create_trajectory_replay(
     if config.resume and path.exists():
         return TrajectoryReplayStore.load(path)
     return TrajectoryReplayStore.empty(config.replay_capacity)
+
+
+def _discard_incomplete_resume_data(
+    replay: TrajectoryReplayStore,
+    *,
+    replay_path: Path,
+    game_log_path: Path,
+    completed_iterations: int,
+    pipeline_config: TrainV2PipelineConfig,
+    printer: PipelinePrinter,
+) -> TrajectoryReplayStore:
+    if not pipeline_config.resume or len(replay) == 0:
+        return replay
+    incomplete_mask = replay.created_iterations > completed_iterations
+    if not bool(incomplete_mask.any()):
+        return replay
+
+    kept_episodes = tuple(
+        episode
+        for episode in replay.episodes
+        if all(
+            transition.created_iteration <= completed_iterations
+            for transition in episode.transitions
+        )
+    )
+    cleaned = TrajectoryReplayStore.from_episodes(replay.capacity, kept_episodes)
+    cleaned.save(replay_path, compressed=False)
+    max_seed = (
+        int(cleaned.episode_seeds.max())
+        if cleaned.episode_seeds.size
+        else pipeline_config.seed_start - 1
+    )
+    removed_logs = _trim_game_logs_after_seed(game_log_path, max_seed=max_seed)
+    printer.metric("discarded incomplete transitions", int(incomplete_mask.sum()))
+    if removed_logs:
+        printer.metric("discarded incomplete game logs", removed_logs)
+    return cleaned
+
+
+def _trim_game_logs_after_seed(path: Path, *, max_seed: int) -> int:
+    if not path.exists():
+        return 0
+    kept_lines: list[str] = []
+    removed = 0
+    with path.open("r", encoding="utf-8") as file:
+        for line in file:
+            if not line.strip():
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                kept_lines.append(line)
+                continue
+            seed = data.get("seed") if isinstance(data, dict) else None
+            if seed is None or int(seed) <= max_seed:
+                kept_lines.append(line)
+            else:
+                removed += 1
+    if removed:
+        path.write_text("".join(kept_lines), encoding="utf-8")
+    return removed
 
 
 def _load_target_snapshot(path: Path) -> Any:

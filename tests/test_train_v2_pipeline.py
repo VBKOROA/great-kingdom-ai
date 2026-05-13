@@ -16,6 +16,7 @@ from great_kingdom_ai.train import TrainingConfig
 from great_kingdom_ai.trajectory_replay import (
     TrajectoryEpisode,
     TrajectoryReplayBuffer,
+    TrajectoryReplayStore,
     TrajectoryTransition,
     legal_mask_from_features,
 )
@@ -395,6 +396,60 @@ def test_train_v2_pipeline_uses_on_sample_reanalyze_dataset(
     assert summary.iterations[0].reanalyze.to_dict()["policy_reanalyze_ratio_applied"] == 0.5
     assert summary.iterations[0].reanalyze.to_dict()["bootstrap_horizon_counts"] == {"1": 2}
     assert not (tmp_path / "targets" / "targets-000001.npz").exists()
+
+
+def test_train_v2_pipeline_discards_incomplete_resume_data(tmp_path: Path) -> None:
+    completed = pipeline_module._tag_episodes(
+        (make_episode(100),),
+        model_version=1,
+        created_iteration=1,
+        search_config_hash="complete",
+    )
+    incomplete = pipeline_module._tag_episodes(
+        (make_episode(101), make_episode(102)),
+        model_version=2,
+        created_iteration=2,
+        search_config_hash="incomplete",
+    )
+    replay = TrajectoryReplayStore.from_episodes(16, (*completed, *incomplete))
+    replay_path = tmp_path / "replay" / "trajectory-replay.npz"
+    game_log_path = tmp_path / "replay" / "game_logs.jsonl"
+    replay.save(replay_path, compressed=False)
+    pipeline_module._append_game_logs(
+        game_log_path,
+        tuple(
+            GameLog(
+                seed=seed,
+                moves=(),
+                winner=1,
+                end_reason=1,
+                territory_scores=(0, 0),
+            )
+            for seed in (100, 101, 102)
+        ),
+    )
+    config = pipeline_module.TrainV2PipelineConfig(
+        work_dir=tmp_path,
+        seed_start=100,
+        resume=True,
+        self_play=SelfPlayConfig(policy_target_c_visit=5.0, policy_target_c_scale=0.25),
+    )
+
+    cleaned = pipeline_module._discard_incomplete_resume_data(
+        replay,
+        replay_path=replay_path,
+        game_log_path=game_log_path,
+        completed_iterations=1,
+        pipeline_config=config,
+        printer=PipelinePrinter(enabled=False),
+    )
+
+    reloaded = TrajectoryReplayStore.load(replay_path)
+    assert cleaned.episode_seeds.tolist() == [100]
+    assert reloaded.episode_seeds.tolist() == [100]
+    assert pipeline_module._initial_seed_cursor(config) == 101
+    assert "101" not in game_log_path.read_text(encoding="utf-8")
+    assert "102" not in game_log_path.read_text(encoding="utf-8")
 
 
 def test_train_config_for_iteration_scales_steps_from_new_transitions() -> None:
