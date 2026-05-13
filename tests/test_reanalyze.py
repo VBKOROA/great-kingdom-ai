@@ -460,6 +460,29 @@ def test_refresh_policies_with_search_can_use_onnx_evaluator(
     assert result.policies[0].tolist() == pytest.approx(make_policy(PASS_ACTION).tolist())
 
 
+def test_search_reanalyze_reconstruction_validation_is_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import great_kingdom_ai.search_reanalyze as search_reanalyze
+
+    calls = 0
+
+    def fake_validate(batch: object, refs: object) -> None:
+        nonlocal calls
+        del batch, refs
+        calls += 1
+
+    monkeypatch.setattr(search_reanalyze, "_validate_reconstructed_batch", fake_validate)
+    monkeypatch.delenv("GKA_SEARCH_REANALYZE_VALIDATE", raising=False)
+    assert not search_reanalyze._validate_reconstructed_batches_enabled()
+
+    monkeypatch.setenv("GKA_SEARCH_REANALYZE_VALIDATE", "1")
+    assert search_reanalyze._validate_reconstructed_batches_enabled()
+    search_reanalyze._validate_reconstructed_batch(object(), object())
+
+    assert calls == 1
+
+
 def test_select_search_reanalyze_indexes_uses_fraction_budget_and_priority() -> None:
     episode = make_episode()
     policies = np.stack([transition.policy_target for transition in episode.transitions], axis=0)

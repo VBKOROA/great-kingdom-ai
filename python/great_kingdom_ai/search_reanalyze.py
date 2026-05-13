@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
@@ -176,7 +177,8 @@ def refresh_policies_with_search(
         )
         chunk_refs = [refs[row_index] for row_index in chunk_indexes]
         batch = _reconstruct_batch(core, chunk_refs, config=config)
-        _validate_reconstructed_batch(batch, chunk_refs)
+        if _validate_reconstructed_batches_enabled():
+            _validate_reconstructed_batch(batch, chunk_refs)
         if onnx_evaluator is None:
             assert evaluator is not None
             results = batch.search_active_with_logits_and_evaluator(
@@ -347,6 +349,17 @@ def _validate_reconstructed_batch(batch: Any, refs: Sequence[_TransitionRef]) ->
         features = features.reshape(FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
         if not np.allclose(features, transition.features, atol=1e-6):
             raise ValueError("reconstructed state features do not match trajectory transition")
+
+
+def _validate_reconstructed_batches_enabled() -> bool:
+    return os.environ.get("GKA_SEARCH_REANALYZE_VALIDATE", "") not in {
+        "",
+        "0",
+        "false",
+        "False",
+        "no",
+        "No",
+    }
 
 
 def _validate_reconstructed_state(state: Any, transition: TrajectoryTransition) -> None:
