@@ -199,6 +199,7 @@ class OnSampleReanalyzeDataset:
             priority_config=priority_config,
         )
         features = np.ascontiguousarray(self._replay.features[indexes], dtype=np.float32)
+        legal_masks = self._legal_masks_for_rows(indexes, features)
         policies = np.ascontiguousarray(
             self._replay.policy_targets[indexes].astype(np.float32, copy=True),
             dtype=np.float32,
@@ -206,6 +207,7 @@ class OnSampleReanalyzeDataset:
         policies, search_reanalyzed = self._refresh_sampled_policies(
             indexes,
             features,
+            legal_masks,
             policies,
             rng,
         )
@@ -218,6 +220,7 @@ class OnSampleReanalyzeDataset:
         self._update_sampled_priorities(
             indexes=indexes,
             features=features,
+            legal_masks=legal_masks,
             policies=policies,
             values=values,
             search_reanalyzed=search_reanalyzed,
@@ -232,7 +235,7 @@ class OnSampleReanalyzeDataset:
             policies=policies,
             values=values,
             sample_weights=sample_weights,
-            legal_masks=legal_masks_from_features(features),
+            legal_masks=legal_masks,
             search_reanalyzed=search_reanalyzed,
         )
 
@@ -270,6 +273,7 @@ class OnSampleReanalyzeDataset:
         *,
         indexes: list[int],
         features: np.ndarray,
+        legal_masks: np.ndarray,
         policies: np.ndarray,
         values: np.ndarray,
         search_reanalyzed: np.ndarray,
@@ -284,7 +288,6 @@ class OnSampleReanalyzeDataset:
             and priority_config.search_reanalyzed_boost == 1.0
         ):
             return
-        legal_masks = np.ascontiguousarray(self._replay.legal_masks[indexes], dtype=np.bool_)
         policy_logits, value_predictions = self._evaluate_logits_values(features, legal_masks)
         target_ages = np.maximum(
             self._model_version - self._replay.model_versions[indexes],
@@ -379,7 +382,7 @@ class OnSampleReanalyzeDataset:
         bootstrap_features: np.ndarray,
     ) -> np.ndarray:
         bootstrap_legal_masks = np.ascontiguousarray(
-            self._replay.legal_masks[bootstrap_rows],
+            self._legal_masks_for_rows(bootstrap_rows, bootstrap_features),
             dtype=np.bool_,
         )
         policy_logits, value_head_values = self._evaluate_logits_values(
@@ -409,6 +412,7 @@ class OnSampleReanalyzeDataset:
         self,
         indexes: list[int],
         features: np.ndarray,
+        legal_masks: np.ndarray,
         policies: np.ndarray,
         rng: random.Random,
     ) -> tuple[np.ndarray, np.ndarray]:
@@ -422,10 +426,7 @@ class OnSampleReanalyzeDataset:
         selected_positions = sorted(rng.sample(range(row_count), reanalyze_count))
         selected_replay_rows = [indexes[position] for position in selected_positions]
         selected_features = np.ascontiguousarray(features[selected_positions], dtype=np.float32)
-        selected_legal_masks = np.ascontiguousarray(
-            self._replay.legal_masks[selected_replay_rows],
-            dtype=np.bool_,
-        )
+        selected_legal_masks = np.ascontiguousarray(legal_masks[selected_positions], dtype=np.bool_)
         policy_logits, refreshed_values = self._evaluate_logits_values(
             selected_features,
             selected_legal_masks,
@@ -454,6 +455,13 @@ class OnSampleReanalyzeDataset:
             return refresh_sampled_policies_with_search(**kwargs)
         finally:
             self._search_seconds += time.perf_counter() - start
+
+    def _legal_masks_for_rows(self, indexes: list[int], features: np.ndarray) -> np.ndarray:
+        replay_legal_masks = np.ascontiguousarray(self._replay.legal_masks[indexes], dtype=np.bool_)
+        feature_legal_masks = legal_masks_from_features(features)
+        if not np.array_equal(replay_legal_masks, feature_legal_masks):
+            raise ValueError("replay legal masks do not match feature-derived legal masks")
+        return replay_legal_masks
 
     def _evaluate_logits_values(
         self,

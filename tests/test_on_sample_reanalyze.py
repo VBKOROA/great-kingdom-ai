@@ -490,3 +490,17 @@ def test_on_sample_policy_reanalyze_ratio_boundaries(
         ReanalyzeConfig(policy_reanalyze_ratio=-0.01)
     with pytest.raises(ValueError, match="policy_reanalyze_ratio"):
         ReanalyzeConfig(policy_reanalyze_ratio=1.01)
+
+
+@pytest.mark.skipif(_torch_spec is None, reason="torch is not installed")
+def test_on_sample_detects_replay_legal_mask_mismatch(tmp_path: Path) -> None:
+    store = make_store()
+    store.legal_masks[0] = ~store.legal_masks[0]
+    dataset = OnSampleReanalyzeDataset(
+        store,
+        checkpoint_path=make_checkpoint(tmp_path),
+        config=ReanalyzeConfig(batch_size=3, policy_reanalyze_ratio=1.0),
+    )
+
+    with pytest.raises(ValueError, match="legal masks"):
+        dataset.sample_arrays(3, random.Random(0))
