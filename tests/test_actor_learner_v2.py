@@ -7,6 +7,7 @@ import numpy as np
 from great_kingdom_ai.actor_learner_v2 import (
     ActorV2Config,
     LearnerV2Config,
+    _next_actor_seed_start,
     load_v2_shard_records,
     pending_v2_shards,
     run_actor_v2_once,
@@ -121,6 +122,45 @@ def test_actor_v2_writes_trajectory_shard_metadata(tmp_path: Path) -> None:
     assert pending_v2_shards(tmp_path / "shards" / "metadata.jsonl")[0].shard_id == (
         summary.shard.shard_id
     )
+
+
+def test_actor_v2_next_seed_resumes_from_metadata(tmp_path: Path) -> None:
+    first = run_actor_v2_once(
+        ActorV2Config(
+            work_dir=tmp_path,
+            onnx_model_path=tmp_path / "model.onnx",
+            model_version="training-latest",
+            games=64,
+            seed_start=1000000,
+            onnx_device="cpu",
+        ),
+        runner=fake_actor_runner,
+        printer=PipelinePrinter(enabled=False),
+    )
+    second = run_actor_v2_once(
+        ActorV2Config(
+            work_dir=tmp_path,
+            onnx_model_path=tmp_path / "model.onnx",
+            model_version="training-latest",
+            games=64,
+            seed_start=first.shard.seed_start + first.shard.games,
+            onnx_device="cpu",
+        ),
+        runner=fake_actor_runner,
+        printer=PipelinePrinter(enabled=False),
+    )
+
+    next_seed = _next_actor_seed_start(
+        ActorV2Config(
+            work_dir=tmp_path,
+            model_version="training-latest",
+            games=64,
+            seed_start=1000000,
+        )
+    )
+
+    assert second.shard.seed_start == 1000064
+    assert next_seed == 1000128
 
 
 def test_learner_v2_imports_pending_shards_trains_and_exports(tmp_path: Path) -> None:
