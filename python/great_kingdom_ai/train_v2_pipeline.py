@@ -10,7 +10,7 @@ import shutil
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, NoReturn, cast
 
 from great_kingdom_ai.evaluate import (
     ArenaConfig,
@@ -810,7 +810,7 @@ def _release_cuda_cache(device: str | None) -> None:
         return
     torch.cuda.empty_cache()
     try:
-        torch.cuda.ipc_collect()
+        cast(Callable[[], None], torch.cuda.ipc_collect)()
     except RuntimeError:
         pass
 
