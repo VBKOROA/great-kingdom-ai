@@ -55,6 +55,8 @@ class OnSampleReanalyzeStats:
     search_seconds: float
     policy_reanalyze_ratio_applied: float
     stale_policy_fallbacks: int
+    policy_cache_hits: int
+    policy_cache_misses: int
     mcts_root_cache_hits: int
     mcts_root_cache_misses: int
     bootstrap_horizon_counts: dict[int, int]
@@ -71,6 +73,8 @@ class OnSampleReanalyzeStats:
             "search_seconds": self.search_seconds,
             "policy_reanalyze_ratio_applied": self.policy_reanalyze_ratio_applied,
             "stale_policy_fallbacks": self.stale_policy_fallbacks,
+            "policy_cache_hits": self.policy_cache_hits,
+            "policy_cache_misses": self.policy_cache_misses,
             "mcts_root_cache_hits": self.mcts_root_cache_hits,
             "mcts_root_cache_misses": self.mcts_root_cache_misses,
             "bootstrap_horizon_counts": {
@@ -109,6 +113,9 @@ class OnSampleReanalyzeDataset:
         self._sampled_rows = 0
         self._policy_reanalyzed = 0
         self._stale_policy_fallbacks = 0
+        self._policy_cache: dict[int, np.ndarray] = {}
+        self._policy_cache_hits = 0
+        self._policy_cache_misses = 0
         self._value_eval_seconds = 0.0
         self._search_seconds = 0.0
         self._mcts_root_cache: dict[int, np.float32] = {}
@@ -166,6 +173,8 @@ class OnSampleReanalyzeDataset:
             search_seconds=self._search_seconds,
             policy_reanalyze_ratio_applied=policy_reanalyze_ratio_applied,
             stale_policy_fallbacks=self._stale_policy_fallbacks,
+            policy_cache_hits=self._policy_cache_hits,
+            policy_cache_misses=self._policy_cache_misses,
             mcts_root_cache_hits=self._mcts_root_cache_hits,
             mcts_root_cache_misses=self._mcts_root_cache_misses,
             bootstrap_horizon_counts=dict(self._bootstrap_horizon_counts),
@@ -479,29 +488,49 @@ class OnSampleReanalyzeDataset:
         reanalyze_count = min(row_count, math.ceil(row_count * ratio))
         selected_positions = sorted(rng.sample(range(row_count), reanalyze_count))
         selected_replay_rows = [indexes[position] for position in selected_positions]
+        refreshed = policies.copy()
+        missing_positions: list[int] = []
+        missing_replay_rows: list[int] = []
+        for position, replay_row in zip(
+            selected_positions,
+            selected_replay_rows,
+            strict=True,
+        ):
+            cached_policy = self._policy_cache.get(replay_row)
+            if cached_policy is None:
+                missing_positions.append(position)
+                missing_replay_rows.append(replay_row)
+            else:
+                refreshed[position] = cached_policy
+                search_reanalyzed[position] = True
+        self._policy_cache_hits += len(selected_positions) - len(missing_positions)
+        self._policy_cache_misses += len(missing_positions)
+        if not missing_positions:
+            return np.ascontiguousarray(refreshed, dtype=np.float32), search_reanalyzed
+
         if sampled_evaluation is None:
-            selected_features = np.ascontiguousarray(features[selected_positions], dtype=np.float32)
-            selected_legal_masks = np.ascontiguousarray(
-                legal_masks[selected_positions],
+            missing_features = np.ascontiguousarray(features[missing_positions], dtype=np.float32)
+            missing_legal_masks = np.ascontiguousarray(
+                legal_masks[missing_positions],
                 dtype=np.bool_,
             )
             policy_logits, refreshed_values = self._evaluate_logits_values(
-                selected_features,
-                selected_legal_masks,
+                missing_features,
+                missing_legal_masks,
             )
         else:
             batch_policy_logits, batch_values = sampled_evaluation
             policy_logits = np.ascontiguousarray(
-                batch_policy_logits[selected_positions],
+                batch_policy_logits[missing_positions],
                 dtype=np.float32,
             )
             refreshed_values = np.ascontiguousarray(
-                batch_values[selected_positions],
+                batch_values[missing_positions],
                 dtype=np.float32,
             )
         search_result = self._refresh_with_search(
-            transitions=self._replay.transition_refs(selected_replay_rows),
-            policies=np.ascontiguousarray(policies[selected_positions], dtype=np.float32),
+            transitions=self._replay.transition_refs(missing_replay_rows),
+            policies=np.ascontiguousarray(policies[missing_positions], dtype=np.float32),
             policy_logits=policy_logits,
             refreshed_values=refreshed_values,
             model=self._model,
@@ -509,13 +538,36 @@ class OnSampleReanalyzeDataset:
             onnx_evaluator=self._onnx_evaluator_for_current_thread(),
             config=self._config.search,
         )
-        refreshed = policies.copy()
-        refreshed[selected_positions] = search_result.policies
-        search_reanalyzed[selected_positions] = search_result.search_reanalyzed
+        refreshed[missing_positions] = search_result.policies
+        search_reanalyzed[missing_positions] = search_result.search_reanalyzed
+        self._cache_search_result_policies(
+            replay_rows=missing_replay_rows,
+            policies=search_result.policies,
+            search_reanalyzed=search_result.search_reanalyzed,
+            root_values=search_result.root_values,
+        )
         self._stale_policy_fallbacks += int(
-            len(selected_positions) - np.count_nonzero(search_result.search_reanalyzed)
+            len(missing_positions) - np.count_nonzero(search_result.search_reanalyzed)
         )
         return np.ascontiguousarray(refreshed, dtype=np.float32), search_reanalyzed
+
+    def _cache_search_result_policies(
+        self,
+        *,
+        replay_rows: list[int],
+        policies: np.ndarray,
+        search_reanalyzed: np.ndarray,
+        root_values: np.ndarray | None,
+    ) -> None:
+        for position, replay_row in enumerate(replay_rows):
+            if not bool(search_reanalyzed[position]):
+                continue
+            self._policy_cache[replay_row] = np.ascontiguousarray(
+                policies[position],
+                dtype=np.float32,
+            ).copy()
+            if root_values is not None and np.isfinite(root_values[position]):
+                self._mcts_root_cache[replay_row] = np.float32(root_values[position])
 
     def _refresh_with_search(self, **kwargs: Any) -> Any:
         start = time.perf_counter()

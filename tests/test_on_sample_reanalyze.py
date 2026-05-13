@@ -279,6 +279,84 @@ def test_on_sample_reuses_sampled_eval_for_policy_refresh_and_priority_update(
 
 
 @pytest.mark.skipif(_torch_spec is None, reason="torch is not installed")
+def test_on_sample_policy_reanalyze_cache_skips_duplicate_search(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = make_store()
+    dataset = OnSampleReanalyzeDataset(
+        store,
+        checkpoint_path=make_checkpoint(tmp_path),
+        config=ReanalyzeConfig(
+            batch_size=3,
+            bootstrap_td_steps=0,
+            policy_reanalyze_ratio=1.0,
+            model_version=10,
+        ),
+    )
+    eval_calls = 0
+    search_batch_sizes: list[int] = []
+
+    def fixed_indexes(
+        batch_size: int,
+        rng: random.Random,
+        *,
+        recent_fraction: float,
+        recent_window: int,
+        priority_config: PrioritySamplingConfig | None,
+    ) -> tuple[list[int], np.ndarray]:
+        del rng, recent_fraction, recent_window, priority_config
+        return list(range(batch_size)), np.ones((batch_size,), dtype=np.float32)
+
+    def fake_evaluate_logits_values(
+        features: np.ndarray,
+        legal_masks: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        nonlocal eval_calls
+        del legal_masks
+        eval_calls += 1
+        return (
+            np.stack([make_policy(PASS_ACTION) for _ in range(features.shape[0])], axis=0),
+            np.zeros((features.shape[0],), dtype=np.float32),
+        )
+
+    def fake_refresh_sampled_policies_with_search(**kwargs: object) -> SearchReanalyzeResult:
+        policies = np.asarray(kwargs["policies"], dtype=np.float32)
+        search_batch_sizes.append(policies.shape[0])
+        refreshed = np.stack(
+            [make_policy(index) for index in range(policies.shape[0])],
+            axis=0,
+        )
+        return SearchReanalyzeResult(
+            policies=refreshed,
+            search_reanalyzed=np.ones((policies.shape[0],), dtype=np.bool_),
+            selected_indexes=tuple(range(policies.shape[0])),
+            root_values=np.linspace(0.1, 0.3, policies.shape[0], dtype=np.float32),
+        )
+
+    monkeypatch.setattr(dataset, "_sample_indexes", fixed_indexes)
+    monkeypatch.setattr(dataset, "_evaluate_logits_values", fake_evaluate_logits_values)
+    monkeypatch.setattr(
+        on_sample_reanalyze_module,
+        "refresh_sampled_policies_with_search",
+        fake_refresh_sampled_policies_with_search,
+    )
+
+    first = dataset.sample_arrays(3, random.Random(0))
+    second = dataset.sample_arrays(3, random.Random(1))
+
+    assert search_batch_sizes == [3]
+    assert eval_calls == 1
+    assert first.search_reanalyzed.tolist() == [True, True, True]
+    assert second.search_reanalyzed.tolist() == [True, True, True]
+    assert np.array_equal(first.policies, second.policies)
+    stats = dataset.target_stats()
+    assert stats.policy_cache_hits == 3
+    assert stats.policy_cache_misses == 3
+    assert stats.policy_reanalyzed == 6
+
+
+@pytest.mark.skipif(_torch_spec is None, reason="torch is not installed")
 def test_on_sample_onnx_evaluator_is_thread_local(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -629,7 +707,7 @@ def test_on_sample_sampled_search_uses_rust_core_path(
         history for chunk in search_histories[:2] for history in chunk
     ]
     assert sorted(policy_refresh_histories) == [[], [1], [1, 2]]
-    assert search_histories[2:] == [[[1]]]
+    assert search_histories[2:] == []
     assert batch.search_reanalyzed.tolist() == [True, True, True]
     assert batch.policies.shape == (3, ACTION_SPACE)
     assert all(
@@ -644,6 +722,10 @@ def test_on_sample_sampled_search_uses_rust_core_path(
     assert stats.policy_reanalyze_ratio_applied == pytest.approx(1.0)
     assert stats.search_reanalyzed == 3
     assert stats.stale_policy_fallbacks == 0
+    assert stats.policy_cache_hits == 0
+    assert stats.policy_cache_misses == 3
+    assert stats.mcts_root_cache_hits == 1
+    assert stats.mcts_root_cache_misses == 0
     assert stats.value_eval_seconds > 0.0
     assert stats.search_seconds > 0.0
 

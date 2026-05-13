@@ -114,6 +114,8 @@ class ReanalyzeSummary:
     search_seconds: float = 0.0
     policy_reanalyze_ratio_applied: float = 0.0
     stale_policy_fallbacks: int = 0
+    policy_cache_hits: int = 0
+    policy_cache_misses: int = 0
     mcts_root_cache_hits: int = 0
     mcts_root_cache_misses: int = 0
     bootstrap_horizon_counts: dict[int, int] = field(default_factory=dict)
@@ -140,6 +142,8 @@ class ReanalyzeSummary:
             "search_seconds": self.search_seconds,
             "policy_reanalyze_ratio_applied": self.policy_reanalyze_ratio_applied,
             "stale_policy_fallbacks": self.stale_policy_fallbacks,
+            "policy_cache_hits": self.policy_cache_hits,
+            "policy_cache_misses": self.policy_cache_misses,
             "mcts_root_cache_hits": self.mcts_root_cache_hits,
             "mcts_root_cache_misses": self.mcts_root_cache_misses,
             "bootstrap_horizon_counts": {
