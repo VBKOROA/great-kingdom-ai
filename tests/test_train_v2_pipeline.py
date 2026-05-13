@@ -382,6 +382,7 @@ def test_train_v2_pipeline_uses_on_sample_reanalyze_dataset(
     assert summary.latest_target_snapshot_path is None
     assert summary.iterations[0].reanalyze.to_dict()["reanalyze_mode"] == "on_sample"
     assert summary.iterations[0].reanalyze.to_dict()["sampled_batches"] == 1
+    assert summary.iterations[0].reanalyze.to_dict()["search_reanalyzed"] == 1
     assert summary.iterations[0].reanalyze.to_dict()["bootstrap_horizon_counts"] == {"1": 2}
     assert not (tmp_path / "targets" / "targets-000001.npz").exists()
 

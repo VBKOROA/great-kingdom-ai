@@ -776,7 +776,7 @@ def _reanalyze_summary_for_on_sample_dataset(
         model_version=dataset.model_version,
         bootstrap_td_steps=dataset.bootstrap_td_steps,
         gamma=dataset.gamma,
-        search_reanalyzed=0,
+        search_reanalyzed=stats.policy_reanalyzed,
         reanalyze_mode="on_sample",
         value_bootstrap_source=dataset.value_bootstrap_source,
         dynamic_horizon_enabled=dataset.dynamic_horizon_enabled,
