@@ -147,6 +147,14 @@ def run_actor_v2_once(
     printer.title("Actor V2")
     printer.metric("work dir", config.work_dir)
     printer.metric("onnx model", config.onnx_model_path)
+    printer.metric("model version", config.model_version)
+    printer.metric("games", config.games)
+    printer.metric("seed start", config.seed_start)
+    printer.metric("onnx device", config.onnx_device)
+    printer.metric("onnx max batch", config.onnx_max_batch_size)
+    printer.metric("self-play batch", config.rust_self_play_batch_size)
+    printer.metric("gumbel sims", config.self_play.gumbel_simulations)
+    printer.metric("leaf batch", config.self_play.leaf_batch_size)
     printer.step(f"generating trajectory shard {shard_id}")
     summary = run_self_play(
         RustOnnxSelfPlayConfig(
@@ -185,7 +193,11 @@ def run_actor_v2_once(
         created_at=_utc_now(),
     )
     _append_event(paths["metadata_path"], {"event": "shard_completed", **record.to_dict()})
-    printer.done(f"wrote shard {shard_id}: games={record.games}, transitions={transitions}")
+    average_length = transitions / max(1, record.games)
+    printer.metric("new games", record.games)
+    printer.metric("new transitions", transitions)
+    printer.metric("avg game length", f"{average_length:.1f}")
+    printer.done(f"wrote shard {shard_id} in {printer.elapsed()}")
     return ActorV2Summary(shard=record)
 
 
@@ -208,6 +220,13 @@ def run_learner_v2_once(
     printer.title("Learner V2")
     printer.metric("work dir", config.work_dir)
     printer.metric("pending shards", len(pending))
+    printer.metric("replay capacity", config.replay_capacity)
+    printer.metric("min replay rows", config.min_replay_transitions)
+    printer.metric("train batch", train_config.batch_size)
+    printer.metric("train steps", train_config.steps)
+    printer.metric("recent window", train_config.recent_sample_window)
+    printer.metric("recent fraction", train_config.recent_sample_fraction)
+    printer.metric("ema decay", train_config.ema_decay)
     replay = _load_or_create_replay(paths["replay_path"], capacity=config.replay_capacity)
     imported_transitions = 0
     imported_games = 0
@@ -229,6 +248,8 @@ def run_learner_v2_once(
         )
     replay.save(paths["replay_path"], compressed=False)
     _append_game_logs(paths["game_log_path"], pending)
+    printer.metric("imported games", imported_games)
+    printer.metric("imported rows", imported_transitions)
     printer.metric("replay transitions", len(replay))
 
     if len(replay) < config.min_replay_transitions:
@@ -271,6 +292,7 @@ def run_learner_v2_once(
     )
     training_latest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(candidate_checkpoint, training_latest)
+    printer.done(f"training complete: {train_summary.start_step}->{train_summary.end_step}")
     onnx_path: Path | None = _onnx_output_path(config)
     if config.export_onnx:
         assert onnx_path is not None
@@ -285,6 +307,7 @@ def run_learner_v2_once(
             prefer_ema=True,
         )
         temporary_onnx_path.replace(onnx_path)
+        printer.done(f"onnx ready: {onnx_path}")
     else:
         onnx_path = None
 
