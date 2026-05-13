@@ -249,6 +249,7 @@ def run_train_v2_pipeline(
                 seed=pipeline_config.search_reanalyze_seed,
             ),
         )
+        target_replay: ReanalyzeTargetSnapshot | OnSampleReanalyzeDataset
         if pipeline_config.reanalyze_mode == "snapshot":
             target_replay = build_reanalyze_snapshot_from_store(
                 replay,
@@ -399,7 +400,8 @@ def run_train_v2_pipeline(
         trajectory_replay_path=paths["trajectory_replay_path"],
         latest_target_snapshot_path=(
             paths["latest_target_snapshot_path"]
-            if pipeline_config.save_target_snapshots
+            if pipeline_config.reanalyze_mode == "snapshot"
+            and pipeline_config.save_target_snapshots
             and paths["latest_target_snapshot_path"].exists()
             else None
         ),

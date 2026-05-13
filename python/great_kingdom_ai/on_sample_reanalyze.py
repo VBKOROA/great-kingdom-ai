@@ -22,6 +22,7 @@ from great_kingdom_ai.reanalyze import (
     _evaluate_policy_logits_values_with_onnx,
     _sample_indexes,
 )
+from great_kingdom_ai.replay_buffer import ReplaySample
 from great_kingdom_ai.search_reanalyze import refresh_sampled_policies_with_search
 from great_kingdom_ai.self_play_data import value_target_for_player
 from great_kingdom_ai.trajectory_replay import TrajectoryReplayStore
@@ -89,6 +90,18 @@ class OnSampleReanalyzeDataset:
 
     def __len__(self) -> int:
         return len(self._replay)
+
+    def sample(self, batch_size: int, rng: random.Random) -> list[ReplaySample]:
+        batch = self.sample_arrays(batch_size, rng)
+        return [
+            ReplaySample(
+                features=batch.features[row],
+                policy=batch.policies[row],
+                value=float(batch.values[row]),
+                sample_weight=float(batch.sample_weights[row]),
+            )
+            for row in range(batch.features.shape[0])
+        ]
 
     def sample_arrays(
         self,

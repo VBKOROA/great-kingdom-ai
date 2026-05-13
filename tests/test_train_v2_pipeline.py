@@ -333,6 +333,7 @@ def test_train_v2_pipeline_uses_on_sample_reanalyze_dataset(
     monkeypatch.setattr(pipeline_module, "export_checkpoint_to_onnx", fake_export)
     monkeypatch.setattr(pipeline_module, "OnSampleReanalyzeDataset", FakeOnSampleDataset)
     monkeypatch.setattr(pipeline_module, "train_from_replay", fake_train_from_replay)
+    write_text(tmp_path / "targets" / "latest.npz")
 
     summary = pipeline_module.run_train_v2_pipeline(
         pipeline_config=pipeline_module.TrainV2PipelineConfig(
