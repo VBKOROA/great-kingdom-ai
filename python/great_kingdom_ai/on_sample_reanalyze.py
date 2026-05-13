@@ -14,6 +14,7 @@ import numpy as np
 from great_kingdom_ai.priority_sampling import (
     PrioritySamplingConfig,
     legal_masks_from_features,
+    priority_scores,
     sample_priority_indexes,
 )
 from great_kingdom_ai.reanalyze import (
@@ -85,6 +86,7 @@ class OnSampleReanalyzeDataset:
         self._checkpoint_path = Path(checkpoint_path)
         self._model = state.model
         self._model_version = state.step if config.model_version is None else config.model_version
+        self._priorities = _initial_priorities(replay.sample_weights)
         self._sampled_batches = 0
         self._sampled_rows = 0
         self._policy_reanalyzed = 0
@@ -123,6 +125,10 @@ class OnSampleReanalyzeDataset:
     @property
     def dynamic_horizon_enabled(self) -> bool:
         return self._config.dynamic_horizon_enabled
+
+    @property
+    def priorities(self) -> np.ndarray:
+        return self._priorities.copy()
 
     def __len__(self) -> int:
         return len(self._replay)
@@ -181,6 +187,14 @@ class OnSampleReanalyzeDataset:
             dtype=np.float32,
         )
         values = self._sampled_bootstrap_targets(indexes)
+        self._update_sampled_priorities(
+            indexes=indexes,
+            features=features,
+            policies=policies,
+            values=values,
+            search_reanalyzed=search_reanalyzed,
+            priority_config=priority_config,
+        )
         self._sampled_batches += 1
         self._sampled_rows += len(indexes)
         self._policy_reanalyzed += int(np.count_nonzero(search_reanalyzed))
@@ -205,7 +219,7 @@ class OnSampleReanalyzeDataset:
     ) -> tuple[list[int], np.ndarray]:
         if priority_config is not None and priority_config.enabled:
             sampled = sample_priority_indexes(
-                priorities=self._replay.sample_weights.astype(np.float32, copy=False)
+                priorities=self._priorities.astype(np.float32, copy=False)
                 ** np.float32(priority_config.alpha),
                 batch_size=batch_size,
                 rng=rng,
@@ -222,6 +236,42 @@ class OnSampleReanalyzeDataset:
             recent_window=recent_window,
         )
         return indexes, np.ones((batch_size,), dtype=np.float32)
+
+    def _update_sampled_priorities(
+        self,
+        *,
+        indexes: list[int],
+        features: np.ndarray,
+        policies: np.ndarray,
+        values: np.ndarray,
+        search_reanalyzed: np.ndarray,
+        priority_config: PrioritySamplingConfig | None,
+    ) -> None:
+        if priority_config is None or not priority_config.enabled:
+            return
+        if (
+            priority_config.value_error_weight == 0.0
+            and priority_config.policy_kl_weight == 0.0
+            and priority_config.target_age_weight == 0.0
+            and priority_config.search_reanalyzed_boost == 1.0
+        ):
+            return
+        legal_masks = np.ascontiguousarray(self._replay.legal_masks[indexes], dtype=np.bool_)
+        policy_logits, value_predictions = self._evaluate_logits_values(features, legal_masks)
+        target_ages = np.maximum(
+            self._model_version - self._replay.model_versions[indexes],
+            0,
+        ).astype(np.int64)
+        self._priorities[indexes] = priority_scores(
+            values=values,
+            value_predictions=value_predictions,
+            policies=policies,
+            policy_logits=policy_logits,
+            legal_masks=legal_masks,
+            target_ages=target_ages,
+            search_reanalyzed=search_reanalyzed,
+            config=priority_config,
+        )
 
     def _sampled_bootstrap_targets(self, indexes: list[int]) -> np.ndarray:
         targets = np.empty((len(indexes),), dtype=np.float32)
@@ -386,6 +436,15 @@ class OnSampleReanalyzeDataset:
             batch_size=self._config.batch_size,
             device=self._config.onnx_device or self._config.device,
         )
+
+
+def _initial_priorities(sample_weights: np.ndarray) -> np.ndarray:
+    priorities = np.asarray(sample_weights, dtype=np.float32).copy()
+    if priorities.shape != sample_weights.shape:
+        raise ValueError("priority shape must match replay sample weights")
+    if not np.isfinite(priorities).all() or np.any(priorities <= 0.0):
+        raise ValueError("on-sample priorities must be finite and positive")
+    return np.ascontiguousarray(priorities, dtype=np.float32)
 
 
 __all__ = ["OnSampleReanalyzeBatch", "OnSampleReanalyzeDataset", "OnSampleReanalyzeStats"]
