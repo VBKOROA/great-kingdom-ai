@@ -3,8 +3,9 @@
 Great Kingdom 보드게임을 위한 self-play 학습 실험 저장소입니다.
 
 Rust 규칙 엔진과 Gumbel search로 self-play를 만들고, Python에서 trajectory replay,
-reanalyze target snapshot, policy-value network 학습, arena 평가를 실행합니다. 현재 권장
-학습 경로는 `great-kingdom-train-v2`입니다.
+policy-value network 학습, ONNX export, arena 평가를 실행합니다. 현재 Runpod 권장 학습
+경로는 `great-kingdom-actor-v2`와 `great-kingdom-learner-v2`를 같이 돌리는 light async
+구조입니다.
 
 ## 구조
 
@@ -54,56 +55,136 @@ python -m ruff check .
 python -m mypy
 ```
 
-## 권장 학습: v2
+## 권장 학습: async v2
 
-v2 파이프라인은 원본 replay와 학습 target을 분리합니다.
+Runpod에서는 actor와 learner를 별도 터미널에서 동시에 실행합니다. actor는 최신 ONNX로
+self-play shard를 만들고, learner는 shard를 trajectory replay에 import한 뒤 학습하고
+`training-latest.pt`와 `training-latest.onnx`를 갱신합니다.
 
 ```text
-best.pt
-  -> ONNX export
-  -> Rust ONNX self-play
-  -> trajectory-replay.npz
-  -> reanalyze target snapshot
+training-latest.onnx
+  -> actor-v2 Rust ONNX self-play
+  -> shards/<shard-id>/
+  -> learner-v2 import
+  -> replay/trajectory-replay.npz
   -> learner training
-  -> candidate/training-latest/best checkpoint
+  -> checkpoints/training-latest.pt
+  -> checkpoints/onnx/training-latest.onnx
 ```
 
 핵심 산출물:
 
 - `replay/trajectory-replay.npz`: 재개에 필요한 원본 trajectory replay
-- `targets/targets-*.npz`: 특정 checkpoint/config로 만든 학습 target snapshot
-- `targets/latest.npz`: 최신 target snapshot 사본
-- `checkpoints/best.pt`: 다음 self-play/export 기준 모델
-- `checkpoints/training-latest.pt`: learner resume 기준 checkpoint
-- `reports/metrics.jsonl`: 완료 iteration 기록
-- `replay/game_logs.jsonl`: seed cursor 계산용 로그
+- `replay/game_logs.jsonl`: import된 게임 로그
+- `shards/metadata.jsonl`: shard 완료/import 기록과 actor seed resume 기준
+- `checkpoints/training-latest.pt`: 현재 async v2의 주 학습 checkpoint
+- `checkpoints/onnx/training-latest.onnx`: actor가 self-play에 쓰는 최신 ONNX
+- `checkpoints/candidate.pt`: learner가 방금 만든 candidate 사본
+- `checkpoints/best.pt`: 초기 fallback/복구용 anchor
 
-Runpod 권장 실행:
+현재 Runpod 권장 설정:
+
+- work dir: `data/runpod/train-v2-gumbel-512k`
+- actor: `64` games/cycle, CUDA ONNX, Gumbel `64` simulations
+- learner: batch `1024`, steps `64`, AMP, priority sampling, CUDA prefetch `4`
+- replay capacity: `512000` transitions
+- learner pruning: import 완료된 shard 원본 디렉터리 자동 삭제
+
+### 실행 순서
+
+먼저 Runpod 환경을 준비합니다.
 
 ```bash
 source .venv/bin/activate
+```
+
+터미널 1: actor
+
+```bash
+great-kingdom-actor-v2 \
+  --actor-config configs/runpod/actor-v2.json \
+  --loop \
+  --sleep-seconds 1
+```
+
+actor는 재시작 시 `shards/metadata.jsonl`을 보고 같은 `model_version`의 다음 seed부터
+이어갑니다. 기존 shard와 충돌하면 최신 코드 반영 후 다시 실행하거나, 임시로
+`--seed-start`를 다음 값으로 지정합니다.
+
+터미널 2: learner
+
+```bash
+great-kingdom-learner-v2 \
+  --learner-config configs/runpod/learner-v2.json \
+  --train-config configs/runpod/train.json \
+  --loop \
+  --sleep-seconds 5
+```
+
+터미널 3: 시스템 모니터링
+
+```bash
+./scripts/monitor.sh 10
+```
+
+터미널 4: 10분마다 checkpoint snapshot 저장
+
+```bash
+./scripts/save_training_snapshots.sh
+```
+
+비교용 baseline을 먼저 남기려면:
+
+```bash
+mkdir -p data/runpod/train-v2-gumbel-512k/checkpoints/snapshots
+cp data/runpod/train-v2-gumbel-512k/checkpoints/training-latest.pt \
+  data/runpod/train-v2-gumbel-512k/checkpoints/snapshots/baseline.pt
+```
+
+최근 12개 snapshot만 유지하려면:
+
+```bash
+./scripts/save_training_snapshots.sh \
+  data/runpod/train-v2-gumbel-512k/checkpoints/training-latest.pt \
+  data/runpod/train-v2-gumbel-512k/checkpoints/snapshots \
+  600 \
+  12
+```
+
+백그라운드로 돌릴 때:
+
+```bash
+nohup great-kingdom-actor-v2 \
+  --actor-config configs/runpod/actor-v2.json \
+  --loop \
+  --sleep-seconds 1 \
+  > actor.log 2>&1 &
+
+nohup great-kingdom-learner-v2 \
+  --learner-config configs/runpod/learner-v2.json \
+  --train-config configs/runpod/train.json \
+  --loop \
+  --sleep-seconds 5 \
+  > learner.log 2>&1 &
+
+nohup ./scripts/save_training_snapshots.sh > snapshots.log 2>&1 &
+```
+
+현재 async v2에서는 arena promote를 자동으로 하지 않습니다. 가장 최신 모델은
+`checkpoints/training-latest.pt`이고, "검증된 최강"은 snapshot끼리 arena 비교해서 고릅니다.
+
+### 단일 파이프라인
+
+actor/learner 분리 없이 한 프로세스로 전체 iteration을 돌리고 싶을 때만
+`great-kingdom-train-v2`를 사용합니다.
+
+```bash
 great-kingdom-train-v2 \
   --device cuda \
   --pipeline-config configs/runpod/train-v2-pipeline.json \
   --train-config configs/runpod/train.json \
   --arena-config configs/runpod/arena.json
 ```
-
-현재 Runpod v2 권장 설정은 `configs/runpod/train-v2-pipeline.json`입니다. 3090 24GB에서
-장시간 재학습을 염두에 둔 균형형 설정입니다.
-
-- trajectory replay capacity: `300000`
-- self-play: `1500` games/iteration
-- Gumbel full search: `96` simulations
-- playout-cap: full fraction `0.35`, fast simulations `24`
-- bootstrap target: `8` steps
-- search reanalyze: `0.5%`, 최대 `512` states/iteration
-- learner: batch `512`, reuse factor `1.5`, steps clamp `64..512`, priority sampling enabled
-- pruning: 각 iteration 마지막에 target `2`, candidate `3`, ONNX `1`개만 유지
-- arena는 기본 skip, candidate는 자동 promote
-
-v2는 aggregate replay를 쓰지 않습니다. 중복 state 평균 대신 trajectory replay, reanalyze,
-target age, priority sampling, 제한된 search reanalyze로 replay 재사용 효율을 올립니다.
 
 ## Runpod 설치
 
@@ -124,44 +205,58 @@ python scripts/run_m6_smoke.py --device cuda
 python scripts/run_m8_train_smoke.py --device cuda
 ```
 
-학습 중 CPU/RAM/GPU 상태를 watch로 확인:
+학습 중 CPU/RAM/GPU 상태:
 
 ```bash
-watch -n 2 'free -h && echo && top -bn1 | head -n 12 && echo && nvidia-smi'
-```
-
-GPU만 가볍게 보려면:
-
-```bash
-watch -n 2 nvidia-smi
+./scripts/monitor.sh 10
 ```
 
 ## 용량 정리
 
-Runpod 30GB 디스크에서는 오래된 target snapshot과 checkpoint history를 주기적으로 정리하는
-편이 좋습니다. 정리 스크립트는 기본 dry-run입니다.
+async v2 learner는 import 완료된 shard 원본 디렉터리를 학습 성공 사이클 마지막에 자동으로
+삭제합니다. replay, metadata, active checkpoint는 보존합니다.
+
+자동 삭제 대상:
+
+- `shards/<imported-shard-id>/trajectory-replay.npz`
+- `shards/<imported-shard-id>/game_logs.json`
+- `shards/<imported-shard-id>/` 디렉터리
+
+자동 보존 대상:
+
+- `replay/trajectory-replay.npz`
+- `replay/game_logs.jsonl`
+- `shards/metadata.jsonl`
+- `checkpoints/best.pt`
+- `checkpoints/training-latest.pt`
+- `checkpoints/candidate.pt`
+- `checkpoints/onnx/training-latest.onnx`
+- `checkpoints/snapshots/*.pt`
+
+단일 `train-v2` 파이프라인 산출물이나 오래된 재생성 가능 artifact는 별도 스크립트로 정리할 수
+있습니다. 정리 스크립트는 기본 dry-run입니다.
 
 ```bash
 python scripts/prune_runpod_artifacts.py \
-  --work-dir data/runpod/train-v2-recommended-medium-plus
+  --work-dir data/runpod/train-v2-gumbel-512k
 ```
 
 실제 삭제:
 
 ```bash
 python scripts/prune_runpod_artifacts.py \
-  --work-dir data/runpod/train-v2-recommended-medium-plus \
+  --work-dir data/runpod/train-v2-gumbel-512k \
   --delete
 ```
 
-기본 삭제 대상:
+스크립트 기본 삭제 대상:
 
 - 오래된 `targets/targets-*.npz`
 - 오래된 `checkpoints/candidates/candidate-*.pt`
 - 오래된 `checkpoints/onnx/best-*.onnx`
 - `self-play/iteration-*`
 
-기본 보존 대상:
+스크립트 기본 보존 대상:
 
 - `replay/trajectory-replay.npz`
 - `targets/latest.npz`
@@ -175,7 +270,7 @@ python scripts/prune_runpod_artifacts.py \
 
 ```bash
 python scripts/prune_runpod_artifacts.py \
-  --work-dir data/runpod/train-v2-recommended-medium-plus \
+  --work-dir data/runpod/train-v2-gumbel-512k \
   --include-build-cache \
   --delete
 ```
@@ -184,7 +279,7 @@ python scripts/prune_runpod_artifacts.py \
 
 ```bash
 python scripts/prune_runpod_artifacts.py \
-  --work-dir data/runpod/train-v2-recommended-medium-plus \
+  --work-dir data/runpod/train-v2-gumbel-512k \
   --keep-targets 1 \
   --keep-candidates 1 \
   --keep-onnx 0 \
@@ -193,22 +288,25 @@ python scripts/prune_runpod_artifacts.py \
 
 ## 평가와 플레이
 
-후보 모델과 best 모델을 arena에서 비교:
+현재 async v2의 최신 모델과 저장해 둔 snapshot을 arena에서 비교:
 
 ```bash
 great-kingdom-evaluate \
-  --candidate data/runpod/train-v2-recommended-medium-plus/checkpoints/candidate.pt \
-  --best data/runpod/train-v2-recommended-medium-plus/checkpoints/best.pt \
-  --report data/runpod/train-v2-recommended-medium-plus/reports/arena-manual.json \
+  --candidate data/runpod/train-v2-gumbel-512k/checkpoints/training-latest.pt \
+  --best data/runpod/train-v2-gumbel-512k/checkpoints/snapshots/baseline.pt \
+  --report data/runpod/train-v2-gumbel-512k/reports/arena-latest-vs-baseline.json \
   --config configs/runpod/arena.json \
   --device cuda
 ```
+
+snapshot끼리 비교할 때는 `--candidate`와 `--best`에 비교할 `.pt` 파일을 각각 넣습니다.
+async v2는 자동 promote를 하지 않으므로, 가장 강한 모델은 이런 arena 비교 결과로 고릅니다.
 
 직접 대국:
 
 ```bash
 great-kingdom-play \
-  --model-checkpoint data/runpod/train-v2-recommended-medium-plus/checkpoints/best.pt \
+  --model-checkpoint data/runpod/train-v2-gumbel-512k/checkpoints/training-latest.pt \
   --human-player blue \
   --device cpu \
   --model-simulations 64
@@ -218,7 +316,9 @@ great-kingdom-play \
 
 ```bash
 great-kingdom-play \
-  --arena-checkpoints best.pt best-2.pt \
+  --arena-checkpoints \
+    data/runpod/train-v2-gumbel-512k/checkpoints/snapshots/baseline.pt \
+    data/runpod/train-v2-gumbel-512k/checkpoints/training-latest.pt \
   --device cpu \
   --model-simulations 64
 ```
@@ -242,13 +342,15 @@ great-kingdom-play --replay-actions '20,68,77' --pause
 
 ## 기타 명령
 
-Replay 또는 target snapshot이 준비되어 있다면 learner만 직접 실행할 수 있습니다.
+async v2에서는 learner를 직접 실행하는 대신 `great-kingdom-learner-v2`를 사용합니다.
+단일 `train-v2` 파이프라인에서 target snapshot이 준비되어 있을 때만 저수준 learner CLI를 직접
+사용합니다.
 
 ```bash
 great-kingdom-train \
-  --replay data/runpod/train-v2-recommended-medium-plus/targets/latest.npz \
-  --checkpoint data/runpod/train-v2-recommended-medium-plus/checkpoints/candidate.pt \
-  --resume data/runpod/train-v2-recommended-medium-plus/checkpoints/training-latest.pt \
+  --replay data/runpod/train-v2-gumbel-512k/targets/latest.npz \
+  --checkpoint data/runpod/train-v2-gumbel-512k/checkpoints/candidate.pt \
+  --resume data/runpod/train-v2-gumbel-512k/checkpoints/training-latest.pt \
   --config configs/runpod/train.json \
   --device cuda
 ```
@@ -257,7 +359,7 @@ great-kingdom-train \
 
 ```bash
 great-kingdom-single-batch-overfit \
-  --replay data/runpod/train-v2-recommended-medium-plus/targets/latest.npz \
+  --replay data/runpod/train-v2-gumbel-512k/targets/latest.npz \
   --config configs/runpod/train.json \
   --device cuda \
   --steps 1000 \
@@ -269,8 +371,8 @@ ONNX export:
 
 ```bash
 great-kingdom-export-onnx \
-  --checkpoint data/runpod/train-v2-recommended-medium-plus/checkpoints/best.pt \
-  --output data/runpod/train-v2-recommended-medium-plus/checkpoints/best.onnx \
+  --checkpoint data/runpod/train-v2-gumbel-512k/checkpoints/training-latest.pt \
+  --output data/runpod/train-v2-gumbel-512k/checkpoints/onnx/training-latest.onnx \
   --check-parity
 ```
 
