@@ -822,6 +822,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, default=None, help="JSON ArenaConfig override")
     parser.add_argument("--device", choices=["cpu", "cuda"], default=None)
     parser.add_argument("--games", type=int, default=None)
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--seed-start", type=int, default=None)
+    parser.add_argument("--max-turns", type=int, default=None)
     parser.add_argument("--gumbel-simulations", type=int, default=None)
     parser.add_argument(
         "--gumbel-max-considered-actions",
@@ -830,6 +833,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
     )
+    parser.add_argument("--gumbel-c-visit", type=float, default=None)
+    parser.add_argument("--gumbel-c-scale", type=float, default=None)
+    parser.add_argument("--policy-target-c-visit", type=float, default=None)
+    parser.add_argument("--policy-target-c-scale", type=float, default=None)
+    parser.add_argument("--policy-target-temperature", type=float, default=None)
+    parser.add_argument("--gumbel-seed", type=int, default=None)
+    parser.add_argument("--leaf-batch-size", type=int, default=None)
+    parser.add_argument("--promotion-threshold", type=float, default=None)
     parser.add_argument(
         "--promote",
         action="store_true",
@@ -843,8 +854,19 @@ def _config_from_args(args: argparse.Namespace) -> ArenaConfig:
     overrides = {
         "device": args.device,
         "games": args.games,
+        "batch_size": args.batch_size,
+        "seed_start": args.seed_start,
+        "max_turns": args.max_turns,
         "gumbel_simulations": args.gumbel_simulations,
         "gumbel_max_considered_actions": args.gumbel_max_considered_actions,
+        "gumbel_c_visit": args.gumbel_c_visit,
+        "gumbel_c_scale": args.gumbel_c_scale,
+        "policy_target_c_visit": args.policy_target_c_visit,
+        "policy_target_c_scale": args.policy_target_c_scale,
+        "policy_target_temperature": args.policy_target_temperature,
+        "gumbel_seed": args.gumbel_seed,
+        "leaf_batch_size": args.leaf_batch_size,
+        "promotion_threshold": args.promotion_threshold,
     }
     data = asdict(config)
     data.update({key: value for key, value in overrides.items() if value is not None})

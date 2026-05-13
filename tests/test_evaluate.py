@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 import types
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +60,69 @@ def test_evaluate_parser_accepts_gumbel_max_considered_actions_alias() -> None:
     config = evaluate_module._config_from_args(args)
 
     assert config.gumbel_max_considered_actions == 8
+
+
+def test_evaluate_parser_can_override_all_arena_config_fields() -> None:
+    args = evaluate_module.build_parser().parse_args(
+        [
+            "--candidate",
+            "test.pt",
+            "--best",
+            "test-best.pt",
+            "--report",
+            "arena.json",
+            "--games",
+            "3",
+            "--batch-size",
+            "2",
+            "--seed-start",
+            "11",
+            "--max-turns",
+            "40",
+            "--gumbel-simulations",
+            "32",
+            "--gumbel-max-considered-actions",
+            "7",
+            "--gumbel-c-visit",
+            "12.5",
+            "--gumbel-c-scale",
+            "0.75",
+            "--policy-target-c-visit",
+            "8.5",
+            "--policy-target-c-scale",
+            "0.5",
+            "--policy-target-temperature",
+            "1.25",
+            "--gumbel-seed",
+            "101",
+            "--leaf-batch-size",
+            "4",
+            "--device",
+            "cuda",
+            "--promotion-threshold",
+            "0.6",
+        ]
+    )
+
+    config = evaluate_module._config_from_args(args)
+
+    assert asdict(config) == {
+        "games": 3,
+        "batch_size": 2,
+        "seed_start": 11,
+        "max_turns": 40,
+        "gumbel_simulations": 32,
+        "gumbel_max_considered_actions": 7,
+        "gumbel_c_visit": 12.5,
+        "gumbel_c_scale": 0.75,
+        "policy_target_c_visit": 8.5,
+        "policy_target_c_scale": 0.5,
+        "policy_target_temperature": 1.25,
+        "gumbel_seed": 101,
+        "leaf_batch_size": 4,
+        "device": "cuda",
+        "promotion_threshold": 0.6,
+    }
 
 
 class OneMoveState:
