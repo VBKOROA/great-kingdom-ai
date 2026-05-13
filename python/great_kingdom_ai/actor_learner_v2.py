@@ -520,14 +520,15 @@ def _run_actor_cli(config: ActorV2Config, args: argparse.Namespace) -> list[dict
     summaries = []
     cycles = args.max_cycles if args.loop else 1
     cycle = 0
+    seed_cursor = _next_actor_seed_start(config)
     while cycles is None or cycle < cycles:
         shard_config = ActorV2Config(
             work_dir=config.work_dir,
             onnx_model_path=config.onnx_model_path,
             model_version=config.model_version,
-            shard_id=None,
+            shard_id=config.shard_id if not args.loop else None,
             games=config.games,
-            seed_start=config.seed_start + cycle * config.games,
+            seed_start=seed_cursor,
             onnx_device=config.onnx_device,
             onnx_max_batch_size=config.onnx_max_batch_size,
             rust_self_play_batch_size=config.rust_self_play_batch_size,
@@ -538,6 +539,7 @@ def _run_actor_cli(config: ActorV2Config, args: argparse.Namespace) -> list[dict
             printer=PipelinePrinter(enabled=not args.json),
         )
         summaries.append(summary.to_dict())
+        seed_cursor = summary.shard.seed_start + summary.shard.games
         cycle += 1
         if not args.loop or (cycles is not None and cycle >= cycles):
             break
@@ -608,6 +610,16 @@ def _load_or_create_replay(path: Path, *, capacity: int) -> TrajectoryReplayStor
             return replay
         return TrajectoryReplayStore.from_episodes(capacity, replay.episodes)
     return TrajectoryReplayStore.empty(capacity)
+
+
+def _next_actor_seed_start(config: ActorV2Config) -> int:
+    records = load_v2_shard_records(_paths(config.work_dir)["metadata_path"])
+    next_seed = config.seed_start
+    for record in records:
+        if record.model_version != config.model_version:
+            continue
+        next_seed = max(next_seed, record.seed_start + record.games)
+    return next_seed
 
 
 def _prune_learner_artifacts(
