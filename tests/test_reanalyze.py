@@ -122,6 +122,60 @@ def test_reanalyze_target_snapshot_round_trips_and_samples_arrays(tmp_path: Path
     assert load_training_replay(path).__class__ is ReanalyzeTargetSnapshot
 
 
+def test_dynamic_horizon_shrinks_td_steps_for_older_rows() -> None:
+    assert (
+        reanalyze_module._effective_bootstrap_td_steps(
+            td_steps=5,
+            model_version=100,
+            created_iteration=100,
+            dynamic_horizon_enabled=True,
+            dynamic_horizon_tau=0.3,
+            dynamic_horizon_total_steps=100,
+        )
+        == 5
+    )
+    assert (
+        reanalyze_module._effective_bootstrap_td_steps(
+            td_steps=5,
+            model_version=100,
+            created_iteration=40,
+            dynamic_horizon_enabled=True,
+            dynamic_horizon_tau=0.3,
+            dynamic_horizon_total_steps=100,
+        )
+        == 3
+    )
+    assert (
+        reanalyze_module._effective_bootstrap_td_steps(
+            td_steps=5,
+            model_version=100,
+            created_iteration=0,
+            dynamic_horizon_enabled=True,
+            dynamic_horizon_tau=0.3,
+            dynamic_horizon_total_steps=100,
+        )
+        == 2
+    )
+
+
+def test_dynamic_horizon_changes_bootstrap_target_for_stale_store_rows() -> None:
+    store = TrajectoryReplayStore.from_episodes(8, (make_episode(),))
+    refreshed_values = np.asarray([0.1, 0.4, 0.9], dtype=np.float32)
+
+    targets = reanalyze_module._bootstrap_targets_from_store(
+        store,
+        refreshed_values,
+        td_steps=2,
+        gamma=1.0,
+        model_version=10,
+        dynamic_horizon_enabled=True,
+        dynamic_horizon_tau=0.5,
+        dynamic_horizon_total_steps=10,
+    )
+
+    assert targets.tolist() == pytest.approx([-0.4, -1.0, 1.0])
+
+
 @pytest.mark.skipif(_torch_spec is None, reason="torch is not installed")
 def test_on_sample_reanalyze_matches_snapshot_bootstrap_values(tmp_path: Path) -> None:
     replay = TrajectoryReplayBuffer(capacity=8)
@@ -658,6 +712,11 @@ def test_reanalyze_parser_exposes_phase7_cli_options() -> None:
             "32",
             "--bootstrap-td-steps",
             "4",
+            "--dynamic-horizon-enabled",
+            "--dynamic-horizon-tau",
+            "0.25",
+            "--dynamic-horizon-total-steps",
+            "120",
             "--search-reanalyze-fraction",
             "0.25",
             "--search-reanalyze-budget",
@@ -676,6 +735,9 @@ def test_reanalyze_parser_exposes_phase7_cli_options() -> None:
     assert args.onnx_device == "cuda"
     assert args.onnx_max_batch_size == 32
     assert args.bootstrap_td_steps == 4
+    assert args.dynamic_horizon_enabled is True
+    assert args.dynamic_horizon_tau == pytest.approx(0.25)
+    assert args.dynamic_horizon_total_steps == 120
     assert args.search_reanalyze_fraction == pytest.approx(0.25)
     assert args.search_reanalyze_budget == 7
     assert args.search_reanalyze_simulations == 8

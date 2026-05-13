@@ -18,6 +18,7 @@ from great_kingdom_ai.priority_sampling import (
 from great_kingdom_ai.reanalyze import (
     ReanalyzeConfig,
     _create_onnx_evaluator,
+    _effective_bootstrap_td_steps,
     _evaluate_policy_logits_values,
     _evaluate_policy_logits_values_with_onnx,
     _sample_indexes,
@@ -178,8 +179,7 @@ class OnSampleReanalyzeDataset:
         targets = np.empty((len(indexes),), dtype=np.float32)
         bootstrap_rows: list[int] = []
         bootstrap_offsets: dict[int, int] = {}
-        pending: list[tuple[int, int, int]] = []
-        td_steps = self._config.bootstrap_td_steps
+        pending: list[tuple[int, int, int, int]] = []
         gamma = self._config.gamma
 
         for batch_row, replay_row in enumerate(indexes):
@@ -187,9 +187,17 @@ class OnSampleReanalyzeDataset:
                 np.searchsorted(self._replay.episode_offsets, replay_row, side="right") - 1
             )
             terminal_row = int(self._replay.episode_offsets[episode_index + 1]) - 1
-            target_row = replay_row + td_steps
+            effective_td_steps = _effective_bootstrap_td_steps(
+                td_steps=self._config.bootstrap_td_steps,
+                model_version=self._model_version,
+                created_iteration=int(self._replay.created_iterations[replay_row]),
+                dynamic_horizon_enabled=self._config.dynamic_horizon_enabled,
+                dynamic_horizon_tau=self._config.dynamic_horizon_tau,
+                dynamic_horizon_total_steps=self._config.dynamic_horizon_total_steps,
+            )
+            target_row = replay_row + effective_td_steps
             if (
-                td_steps == 0
+                effective_td_steps == 0
                 or bool(self._replay.terminals[replay_row])
                 or target_row >= terminal_row
             ):
@@ -203,7 +211,7 @@ class OnSampleReanalyzeDataset:
                 offset = len(bootstrap_rows)
                 bootstrap_offsets[target_row] = offset
                 bootstrap_rows.append(target_row)
-            pending.append((batch_row, replay_row, target_row))
+            pending.append((batch_row, replay_row, target_row, effective_td_steps))
 
         if not pending:
             return np.ascontiguousarray(targets, dtype=np.float32)
@@ -216,11 +224,11 @@ class OnSampleReanalyzeDataset:
             bootstrap_features,
             np.ascontiguousarray(self._replay.legal_masks[bootstrap_rows], dtype=np.bool_),
         )
-        for batch_row, replay_row, target_row in pending:
+        for batch_row, replay_row, target_row, effective_td_steps in pending:
             bootstrap = float(bootstrap_values[bootstrap_offsets[target_row]])
             if int(self._replay.players[target_row]) != int(self._replay.players[replay_row]):
                 bootstrap = -bootstrap
-            targets[batch_row] = np.float32((gamma**td_steps) * bootstrap)
+            targets[batch_row] = np.float32((gamma**effective_td_steps) * bootstrap)
         return np.ascontiguousarray(targets, dtype=np.float32)
 
     def _refresh_sampled_policies(

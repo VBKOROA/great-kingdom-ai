@@ -388,11 +388,24 @@ def test_train_config_for_iteration_scales_steps_from_new_transitions() -> None:
 
 def test_train_v2_parser_exposes_reanalyze_mode() -> None:
     args = pipeline_module.build_parser().parse_args(
-        ["--reanalyze-mode", "on_sample", "--policy-reanalyze-ratio", "0.99"]
+        [
+            "--reanalyze-mode",
+            "on_sample",
+            "--policy-reanalyze-ratio",
+            "0.99",
+            "--dynamic-horizon-enabled",
+            "--dynamic-horizon-tau",
+            "0.25",
+            "--dynamic-horizon-total-steps",
+            "50",
+        ]
     )
 
     assert args.reanalyze_mode == "on_sample"
     assert args.policy_reanalyze_ratio == pytest.approx(0.99)
+    assert args.dynamic_horizon_enabled is True
+    assert args.dynamic_horizon_tau == pytest.approx(0.25)
+    assert args.dynamic_horizon_total_steps == 50
 
 
 def test_train_v2_pipeline_rejects_unknown_reanalyze_mode() -> None:
@@ -410,6 +423,16 @@ def test_train_v2_pipeline_rejects_invalid_policy_reanalyze_ratio() -> None:
         pipeline_module._validate_config(
             pipeline_module.TrainV2PipelineConfig(
                 policy_reanalyze_ratio=1.1,
+                self_play=SelfPlayConfig(policy_target_c_visit=5.0, policy_target_c_scale=0.25),
+            )
+        )
+
+
+def test_train_v2_pipeline_requires_dynamic_horizon_total_steps() -> None:
+    with pytest.raises(ValueError, match="dynamic_horizon_total_steps"):
+        pipeline_module._validate_config(
+            pipeline_module.TrainV2PipelineConfig(
+                dynamic_horizon_enabled=True,
                 self_play=SelfPlayConfig(policy_target_c_visit=5.0, policy_target_c_scale=0.25),
             )
         )

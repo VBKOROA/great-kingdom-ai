@@ -75,6 +75,9 @@ class TrainV2PipelineConfig:
     reanalyze_device: str | None = None
     bootstrap_td_steps: int = 4
     gamma: float = 1.0
+    dynamic_horizon_enabled: bool = False
+    dynamic_horizon_tau: float = 0.3
+    dynamic_horizon_total_steps: int | None = None
     reanalyze_mode: str = "snapshot"
     policy_reanalyze_ratio: float = 0.0
     search_reanalyze_fraction: float = 0.0
@@ -232,6 +235,9 @@ def run_train_v2_pipeline(
             onnx_max_batch_size=pipeline_config.onnx_max_batch_size,
             bootstrap_td_steps=pipeline_config.bootstrap_td_steps,
             gamma=pipeline_config.gamma,
+            dynamic_horizon_enabled=pipeline_config.dynamic_horizon_enabled,
+            dynamic_horizon_tau=pipeline_config.dynamic_horizon_tau,
+            dynamic_horizon_total_steps=pipeline_config.dynamic_horizon_total_steps,
             policy_reanalyze_ratio=pipeline_config.policy_reanalyze_ratio,
             model_version=iteration,
             compressed=False,
@@ -443,6 +449,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-self-play-games", type=int, default=None)
     parser.add_argument("--bootstrap-td-steps", type=int, default=None)
     parser.add_argument(
+        "--dynamic-horizon-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument("--dynamic-horizon-tau", type=float, default=None)
+    parser.add_argument("--dynamic-horizon-total-steps", type=int, default=None)
+    parser.add_argument(
         "--reanalyze-mode",
         choices=["snapshot", "on_sample"],
         default=None,
@@ -488,6 +501,9 @@ def main() -> NoReturn:
         "min_replay_transitions": args.min_replay_transitions,
         "max_self_play_games": args.max_self_play_games,
         "bootstrap_td_steps": args.bootstrap_td_steps,
+        "dynamic_horizon_enabled": args.dynamic_horizon_enabled,
+        "dynamic_horizon_tau": args.dynamic_horizon_tau,
+        "dynamic_horizon_total_steps": args.dynamic_horizon_total_steps,
         "reanalyze_mode": args.reanalyze_mode,
         "policy_reanalyze_ratio": args.policy_reanalyze_ratio,
         "train_reuse_factor": args.train_reuse_factor,
@@ -819,6 +835,14 @@ def _validate_config(config: TrainV2PipelineConfig) -> None:
         config.policy_reanalyze_ratio
     ) <= 1.0:
         raise ValueError("policy_reanalyze_ratio must be finite and in [0, 1]")
+    if not math.isfinite(config.dynamic_horizon_tau) or config.dynamic_horizon_tau <= 0.0:
+        raise ValueError("dynamic_horizon_tau must be finite and positive")
+    if config.dynamic_horizon_total_steps is not None and config.dynamic_horizon_total_steps <= 0:
+        raise ValueError("dynamic_horizon_total_steps must be positive")
+    if config.dynamic_horizon_enabled and config.dynamic_horizon_total_steps is None:
+        raise ValueError(
+            "dynamic_horizon_total_steps is required when dynamic horizon is enabled"
+        )
     if config.train_checkpoint_mode not in {"resume", "bootstrap"}:
         raise ValueError("train_checkpoint_mode must be one of: resume, bootstrap")
     if config.train_reuse_factor is not None:

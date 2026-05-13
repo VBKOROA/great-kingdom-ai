@@ -47,6 +47,9 @@ class ReanalyzeConfig:
     onnx_max_batch_size: int = 1024
     bootstrap_td_steps: int = 0
     gamma: float = 1.0
+    dynamic_horizon_enabled: bool = False
+    dynamic_horizon_tau: float = 0.3
+    dynamic_horizon_total_steps: int | None = None
     policy_reanalyze_ratio: float = 0.0
     model_version: int | None = None
     compressed: bool = True
@@ -61,6 +64,14 @@ class ReanalyzeConfig:
             raise ValueError("bootstrap_td_steps must be non-negative")
         if not math.isfinite(self.gamma) or not 0.0 <= self.gamma <= 1.0:
             raise ValueError("gamma must be finite and in [0, 1]")
+        if not math.isfinite(self.dynamic_horizon_tau) or self.dynamic_horizon_tau <= 0.0:
+            raise ValueError("dynamic_horizon_tau must be finite and positive")
+        if self.dynamic_horizon_total_steps is not None and self.dynamic_horizon_total_steps <= 0:
+            raise ValueError("dynamic_horizon_total_steps must be positive")
+        if self.dynamic_horizon_enabled and self.dynamic_horizon_total_steps is None:
+            raise ValueError(
+                "dynamic_horizon_total_steps is required when dynamic horizon is enabled"
+            )
         if not math.isfinite(self.policy_reanalyze_ratio) or not 0.0 <= (
             self.policy_reanalyze_ratio
         ) <= 1.0:
@@ -419,6 +430,10 @@ def build_reanalyze_snapshot_from_store(
         refreshed_values,
         td_steps=config.bootstrap_td_steps,
         gamma=config.gamma,
+        model_version=model_version,
+        dynamic_horizon_enabled=config.dynamic_horizon_enabled,
+        dynamic_horizon_tau=config.dynamic_horizon_tau,
+        dynamic_horizon_total_steps=config.dynamic_horizon_total_steps,
     )
     _report_progress(progress_callback, "bootstrap", 1, 1, f"rows={values.shape[0]}")
     source_model_versions = np.asarray(replay.model_versions, dtype=np.int64)
@@ -510,6 +525,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bootstrap-td-steps", type=int, default=0)
     parser.add_argument("--gamma", type=float, default=1.0)
     parser.add_argument(
+        "--dynamic-horizon-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--dynamic-horizon-tau", type=float, default=0.3)
+    parser.add_argument("--dynamic-horizon-total-steps", type=int, default=None)
+    parser.add_argument(
         "--model-version",
         type=int,
         default=None,
@@ -546,6 +568,9 @@ def main() -> NoReturn:
         onnx_max_batch_size=args.onnx_max_batch_size,
         bootstrap_td_steps=args.bootstrap_td_steps,
         gamma=args.gamma,
+        dynamic_horizon_enabled=args.dynamic_horizon_enabled,
+        dynamic_horizon_tau=args.dynamic_horizon_tau,
+        dynamic_horizon_total_steps=args.dynamic_horizon_total_steps,
         model_version=args.model_version,
         compressed=not args.no_compress,
         search=SearchReanalyzeConfig(
@@ -701,6 +726,10 @@ def _bootstrap_targets_from_refreshed_values(
     *,
     td_steps: int,
     gamma: float,
+    model_version: int = 0,
+    dynamic_horizon_enabled: bool = False,
+    dynamic_horizon_tau: float = 0.3,
+    dynamic_horizon_total_steps: int | None = None,
 ) -> np.ndarray:
     targets = np.empty((refreshed_values.shape[0],), dtype=np.float32)
     row_offset = 0
@@ -708,8 +737,20 @@ def _bootstrap_targets_from_refreshed_values(
         terminal_index = len(episode.transitions) - 1
         for index, transition in enumerate(episode.transitions):
             row = row_offset + index
-            target_index = index + td_steps
-            if td_steps == 0 or transition.terminal or target_index >= terminal_index:
+            effective_td_steps = _effective_bootstrap_td_steps(
+                td_steps=td_steps,
+                model_version=model_version,
+                created_iteration=transition.created_iteration,
+                dynamic_horizon_enabled=dynamic_horizon_enabled,
+                dynamic_horizon_tau=dynamic_horizon_tau,
+                dynamic_horizon_total_steps=dynamic_horizon_total_steps,
+            )
+            target_index = index + effective_td_steps
+            if (
+                effective_td_steps == 0
+                or transition.terminal
+                or target_index >= terminal_index
+            ):
                 targets[row] = value_target_for_player(
                     player=transition.player,
                     winner=episode.winner,
@@ -720,7 +761,7 @@ def _bootstrap_targets_from_refreshed_values(
             bootstrap_transition = episode.transitions[target_index]
             if bootstrap_transition.player != transition.player:
                 bootstrap = -bootstrap
-            targets[row] = np.float32((gamma**td_steps) * bootstrap)
+            targets[row] = np.float32((gamma**effective_td_steps) * bootstrap)
         row_offset += len(episode.transitions)
     return targets
 
@@ -731,6 +772,10 @@ def _bootstrap_targets_from_store(
     *,
     td_steps: int,
     gamma: float,
+    model_version: int = 0,
+    dynamic_horizon_enabled: bool = False,
+    dynamic_horizon_tau: float = 0.3,
+    dynamic_horizon_total_steps: int | None = None,
 ) -> np.ndarray:
     targets = np.empty((refreshed_values.shape[0],), dtype=np.float32)
     for episode_index in range(replay.episode_count):
@@ -739,8 +784,20 @@ def _bootstrap_targets_from_store(
         terminal_index = end - 1
         winner = int(replay.episode_winners[episode_index])
         for row in range(start, end):
-            target_index = row + td_steps
-            if td_steps == 0 or bool(replay.terminals[row]) or target_index >= terminal_index:
+            effective_td_steps = _effective_bootstrap_td_steps(
+                td_steps=td_steps,
+                model_version=model_version,
+                created_iteration=int(replay.created_iterations[row]),
+                dynamic_horizon_enabled=dynamic_horizon_enabled,
+                dynamic_horizon_tau=dynamic_horizon_tau,
+                dynamic_horizon_total_steps=dynamic_horizon_total_steps,
+            )
+            target_index = row + effective_td_steps
+            if (
+                effective_td_steps == 0
+                or bool(replay.terminals[row])
+                or target_index >= terminal_index
+            ):
                 targets[row] = value_target_for_player(
                     player=int(replay.players[row]),
                     winner=winner,
@@ -750,8 +807,26 @@ def _bootstrap_targets_from_store(
             bootstrap = float(refreshed_values[target_index])
             if int(replay.players[target_index]) != int(replay.players[row]):
                 bootstrap = -bootstrap
-            targets[row] = np.float32((gamma**td_steps) * bootstrap)
+            targets[row] = np.float32((gamma**effective_td_steps) * bootstrap)
     return targets
+
+
+def _effective_bootstrap_td_steps(
+    *,
+    td_steps: int,
+    model_version: int,
+    created_iteration: int,
+    dynamic_horizon_enabled: bool,
+    dynamic_horizon_tau: float,
+    dynamic_horizon_total_steps: int | None,
+) -> int:
+    if td_steps <= 0 or not dynamic_horizon_enabled:
+        return td_steps
+    if dynamic_horizon_total_steps is None:
+        raise ValueError("dynamic_horizon_total_steps is required")
+    age = max(model_version - created_iteration, 0)
+    shrink = math.floor(age / (dynamic_horizon_tau * dynamic_horizon_total_steps))
+    return min(td_steps, max(1, td_steps - shrink))
 
 
 def _transition_episode_values(
