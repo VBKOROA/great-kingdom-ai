@@ -19,6 +19,7 @@ from great_kingdom_ai.evaluate import (
     promote_candidate_if_needed,
     run_arena,
     run_arena_batched,
+    run_arena_onnx,
     save_arena_report,
     summarize_arena,
 )
@@ -305,6 +306,9 @@ class FakeArenaBatch:
         active = self.active_game_indexes()
         return _ArenaBatchEvalRequest([self.states[index] for index in active], active)
 
+    def active_legal_masks(self) -> list[list[bool]]:
+        return [self.states[index].legal_mask() for index in self.active_game_indexes()]
+
     def current_players(self) -> list[int]:
         return [state.current_player() for state in self.states]
 
@@ -339,6 +343,34 @@ class FakeArenaBatch:
             visits[action] = 1
             results[game_index] = PriorSearchResult(visits)
         return results
+
+    def search_active_with_onnx_evaluators(
+        self,
+        candidate_evaluator: FakeNetwork,
+        best_evaluator: FakeNetwork,
+        leaf_batch_size: int = 8,
+    ) -> tuple[list[PriorSearchResult | None], list[list[float]]]:
+        del leaf_batch_size
+        active = self.active_game_indexes()
+        root_logits: list[list[float]] = []
+        results: list[PriorSearchResult | None] = [None] * self.len()
+        for game_index in active:
+            state = self.states[game_index]
+            model = (
+                candidate_evaluator
+                if state.current_player() == self._candidate_players[game_index]
+                else best_evaluator
+            )
+            logits = [-20.0] * ACTION_SPACE
+            for action in state.legal_actions():
+                logits[action] = 0.0
+            logits[model.preferred_action] = 5.0
+            root_logits.append(logits)
+            action = max(state.legal_actions(), key=lambda legal_action: logits[legal_action])
+            visits = [0] * ACTION_SPACE
+            visits[action] = 1
+            results[game_index] = PriorSearchResult(visits)
+        return results, root_logits
 
     def apply_actions(self, actions: list[int | None]) -> list[int | None]:
         for index, action in enumerate(actions):
@@ -704,6 +736,54 @@ def test_run_arena_batched_reports_finished_games_in_seed_order(
     assert [game.seed for game in report.games] == [0, 1]
     assert [len(game.moves) for game in report.games] == [1, 2]
     assert progress == [(1, 2, 0), (2, 2, 1)]
+
+
+def test_run_arena_onnx_uses_rust_onnx_batch_method(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_create_core_arena_batch(
+        config: ArenaConfig,
+        *,
+        game_count: int,
+        seed_start: int,
+        game_index_start: int = 0,
+    ) -> FakeArenaBatch:
+        del config
+        return FakeArenaBatch(
+            game_count=game_count,
+            seed_start=seed_start,
+            game_index_start=game_index_start,
+        )
+
+    def fake_create_onnx_evaluator(
+        path: Path,
+        *,
+        device: str = "cpu",
+        max_batch_size: int = 8192,
+    ) -> FakeNetwork:
+        del device, max_batch_size
+        return FakeNetwork(2 if path.name == "candidate.onnx" else 3)
+
+    monkeypatch.setattr(
+        evaluate_module,
+        "create_core_arena_batch",
+        fake_create_core_arena_batch,
+    )
+    monkeypatch.setattr(
+        evaluate_module,
+        "create_onnx_evaluator",
+        fake_create_onnx_evaluator,
+    )
+
+    report = run_arena_onnx(
+        candidate_onnx_path=tmp_path / "candidate.onnx",
+        best_onnx_path=tmp_path / "best.onnx",
+        config=ArenaConfig(games=2, batch_size=2, max_turns=4, gumbel_simulations=1),
+    )
+
+    assert [[move.action for move in game.moves] for game in report.games] == [[2], [3]]
+    assert report.summary.candidate_wins == 2
 
 
 def test_run_arena_batched_requires_leaf_game_index_metadata(

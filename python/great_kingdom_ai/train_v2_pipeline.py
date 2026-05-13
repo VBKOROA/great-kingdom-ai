@@ -15,9 +15,8 @@ from typing import Any, NoReturn
 from great_kingdom_ai.evaluate import (
     ArenaConfig,
     load_arena_config,
-    load_model_from_checkpoint,
     promote_candidate_if_needed,
-    run_arena,
+    run_arena_checkpoints_onnx,
     save_arena_report,
 )
 from great_kingdom_ai.onnx_export import export_checkpoint_to_onnx
@@ -299,18 +298,12 @@ def run_train_v2_pipeline(
         if _should_run_arena(pipeline_config):
             report_path = paths["arena_dir"] / f"arena-{iteration:06d}.json"
             printer.step(f"arena evaluation -> {report_path}")
-            candidate_model = load_model_from_checkpoint(
-                candidate_checkpoint,
-                device=arena_config.device,
-            )
-            best_model = load_model_from_checkpoint(
-                paths["best_checkpoint"],
-                device=arena_config.device,
-            )
-            report = run_arena(
-                candidate_model=candidate_model,
-                best_model=best_model,
+            report = run_arena_checkpoints_onnx(
+                candidate_checkpoint=candidate_checkpoint,
+                best_checkpoint=paths["best_checkpoint"],
                 config=_arena_config_for_iteration(arena_config, iteration=iteration),
+                onnx_max_batch_size=pipeline_config.onnx_max_batch_size,
+                onnx_precision=pipeline_config.onnx_precision,
                 progress_callback=lambda current, target, game: printer.progress(
                     "arena games",
                     current,

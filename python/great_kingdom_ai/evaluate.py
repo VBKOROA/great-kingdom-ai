@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 import shutil
+import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -19,6 +20,7 @@ from great_kingdom_ai.evaluator import (
     evaluate_feature_batch_logits_values,
 )
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
+from great_kingdom_ai.onnx_export import export_checkpoint_to_onnx
 from great_kingdom_ai.self_play import MoveLog, SelfPlayState, create_core_game_state
 
 BLUE = 1
@@ -49,6 +51,8 @@ class ArenaBatchLike(Protocol):
 
     def active_eval_request(self) -> Any: ...
 
+    def active_legal_masks(self) -> list[list[bool]]: ...
+
     def current_players(self) -> list[int] | bytes: ...
 
     def candidate_players(self) -> list[int] | bytes: ...
@@ -61,6 +65,13 @@ class ArenaBatchLike(Protocol):
         leaf_batch_size: int = 8,
     ) -> list[ArenaSearchResultLike | None]: ...
 
+    def search_active_with_onnx_evaluators(
+        self,
+        candidate_evaluator: Any,
+        best_evaluator: Any,
+        leaf_batch_size: int = 8,
+    ) -> tuple[list[ArenaSearchResultLike | None], list[list[float]]]: ...
+
     def apply_actions(self, actions: list[int | None]) -> list[int | None]: ...
 
     def is_terminal(self) -> list[bool]: ...
@@ -70,6 +81,12 @@ class ArenaBatchLike(Protocol):
     def end_reasons(self) -> list[int | None]: ...
 
     def territory_scores(self) -> list[tuple[int, int]]: ...
+
+
+@dataclass
+class ArenaOnnxEvaluators:
+    candidate: Any
+    best: Any
 
 
 @dataclass(frozen=True)
@@ -278,6 +295,7 @@ def run_arena_batched(
     candidate_model: Any,
     best_model: Any,
     config: ArenaConfig | None = None,
+    onnx_evaluators: ArenaOnnxEvaluators | None = None,
     progress_callback: Callable[[int, int, ArenaGameResult], None] | None = None,
 ) -> ArenaReport:
     config = config if config is not None else ArenaConfig()
@@ -301,53 +319,66 @@ def run_arena_batched(
             if not active_indexes:
                 break
 
-            request = batch.active_eval_request()
-            feature_rows, masks, row_count = _request_feature_rows_and_masks(request)
             current_players = _as_int_list(batch.current_players())
             candidate_players = _as_int_list(batch.candidate_players())
-            root_logits, root_values = _evaluate_arena_rows_by_model(
-                candidate_model=candidate_model,
-                best_model=best_model,
-                feature_rows=feature_rows,
-                legal_masks=masks,
-                game_indexes=active_indexes,
-                current_players=[current_players[index] for index in active_indexes],
-                candidate_players=candidate_players,
-                device=config.device,
-            )
-
-            def evaluator(
-                leaf_request: Any,
-                candidate_players: list[int] = candidate_players,
-            ) -> tuple[list[list[float]], list[float]]:
-                leaf_features, leaf_masks, leaf_row_count = _request_feature_rows_and_masks(
-                    leaf_request
+            if onnx_evaluators is not None:
+                masks = _active_legal_masks(batch)
+                if not hasattr(batch, "search_active_with_onnx_evaluators"):
+                    raise RuntimeError(
+                        "great_kingdom_core.GumbelArenaBatch does not support ONNX arena. "
+                        "Rebuild the Rust extension."
+                    )
+                results, root_logits = batch.search_active_with_onnx_evaluators(
+                    onnx_evaluators.candidate,
+                    onnx_evaluators.best,
+                    leaf_batch_size=config.leaf_batch_size,
                 )
-                leaf_game_indexes = _request_game_indexes(
-                    leaf_request,
-                    expected_len=leaf_row_count,
-                )
-                leaf_players = _request_current_players(
-                    leaf_request,
-                    expected_len=leaf_row_count,
-                )
-                return _evaluate_arena_rows_by_model(
+            else:
+                request = batch.active_eval_request()
+                feature_rows, masks, row_count = _request_feature_rows_and_masks(request)
+                root_logits, root_values = _evaluate_arena_rows_by_model(
                     candidate_model=candidate_model,
                     best_model=best_model,
-                    feature_rows=leaf_features,
-                    legal_masks=leaf_masks,
-                    game_indexes=leaf_game_indexes,
-                    current_players=leaf_players,
+                    feature_rows=feature_rows,
+                    legal_masks=masks,
+                    game_indexes=active_indexes,
+                    current_players=[current_players[index] for index in active_indexes],
                     candidate_players=candidate_players,
                     device=config.device,
                 )
 
-            results = batch.search_active_with_logits_and_evaluator(
-                root_logits,
-                evaluator,
-                root_values=root_values,
-                leaf_batch_size=config.leaf_batch_size,
-            )
+                def evaluator(
+                    leaf_request: Any,
+                    candidate_players: list[int] = candidate_players,
+                ) -> tuple[list[list[float]], list[float]]:
+                    leaf_features, leaf_masks, leaf_row_count = _request_feature_rows_and_masks(
+                        leaf_request
+                    )
+                    leaf_game_indexes = _request_game_indexes(
+                        leaf_request,
+                        expected_len=leaf_row_count,
+                    )
+                    leaf_players = _request_current_players(
+                        leaf_request,
+                        expected_len=leaf_row_count,
+                    )
+                    return _evaluate_arena_rows_by_model(
+                        candidate_model=candidate_model,
+                        best_model=best_model,
+                        feature_rows=leaf_features,
+                        legal_masks=leaf_masks,
+                        game_indexes=leaf_game_indexes,
+                        current_players=leaf_players,
+                        candidate_players=candidate_players,
+                        device=config.device,
+                    )
+
+                results = batch.search_active_with_logits_and_evaluator(
+                    root_logits,
+                    evaluator,
+                    root_values=root_values,
+                    leaf_batch_size=config.leaf_batch_size,
+                )
             actions: list[int | None] = [None] * batch.len()
             for active_offset, game_index in enumerate(active_indexes):
                 search_result = results[game_index]
@@ -540,6 +571,92 @@ def load_model_from_checkpoint(
     return state.model
 
 
+def create_onnx_evaluator(
+    path: str | Path,
+    *,
+    device: str = "cpu",
+    max_batch_size: int = 8192,
+) -> Any:
+    try:
+        import great_kingdom_core as core
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "great_kingdom_core is not installed. Build it with maturin before ONNX arena."
+        ) from exc
+    if not hasattr(core, "OnnxEvaluator"):
+        raise RuntimeError(
+            "great_kingdom_core.OnnxEvaluator is not available. "
+            "Rebuild the Rust extension with ONNX support."
+        )
+    return core.OnnxEvaluator(str(path), device=device, max_batch_size=max_batch_size)
+
+
+def run_arena_onnx(
+    *,
+    candidate_onnx_path: str | Path,
+    best_onnx_path: str | Path,
+    config: ArenaConfig | None = None,
+    onnx_max_batch_size: int = 8192,
+    progress_callback: Callable[[int, int, ArenaGameResult], None] | None = None,
+) -> ArenaReport:
+    config = config if config is not None else ArenaConfig()
+    _validate_arena_config(config)
+    if config.batch_size <= 1:
+        config = ArenaConfig(**{**asdict(config), "batch_size": max(1, config.games)})
+    evaluators = ArenaOnnxEvaluators(
+        candidate=create_onnx_evaluator(
+            candidate_onnx_path,
+            device=config.device,
+            max_batch_size=onnx_max_batch_size,
+        ),
+        best=create_onnx_evaluator(
+            best_onnx_path,
+            device=config.device,
+            max_batch_size=onnx_max_batch_size,
+        ),
+    )
+    return run_arena_batched(
+        candidate_model=None,
+        best_model=None,
+        config=config,
+        onnx_evaluators=evaluators,
+        progress_callback=progress_callback,
+    )
+
+
+def run_arena_checkpoints_onnx(
+    *,
+    candidate_checkpoint: str | Path,
+    best_checkpoint: str | Path,
+    config: ArenaConfig | None = None,
+    onnx_max_batch_size: int = 8192,
+    onnx_precision: str = "fp16",
+    progress_callback: Callable[[int, int, ArenaGameResult], None] | None = None,
+) -> ArenaReport:
+    config = config if config is not None else ArenaConfig()
+    with tempfile.TemporaryDirectory(prefix="gka-arena-onnx-") as temp_dir:
+        temp_path = Path(temp_dir)
+        candidate_onnx = _arena_onnx_path(
+            candidate_checkpoint,
+            temp_path / "candidate.onnx",
+            device=config.device,
+            precision=onnx_precision,
+        )
+        best_onnx = _arena_onnx_path(
+            best_checkpoint,
+            temp_path / "best.onnx",
+            device=config.device,
+            precision=onnx_precision,
+        )
+        return run_arena_onnx(
+            candidate_onnx_path=candidate_onnx,
+            best_onnx_path=best_onnx,
+            config=config,
+            onnx_max_batch_size=onnx_max_batch_size,
+            progress_callback=progress_callback,
+        )
+
+
 def create_core_search_engine(
     config: ArenaConfig,
     *,
@@ -610,6 +727,25 @@ def load_arena_config(path: str | Path) -> ArenaConfig:
     if not isinstance(data, dict):
         raise ValueError("arena config must be a JSON object")
     return ArenaConfig(**data)
+
+
+def _arena_onnx_path(
+    checkpoint_or_onnx: str | Path,
+    output_path: Path,
+    *,
+    device: str,
+    precision: str,
+) -> Path:
+    source = Path(checkpoint_or_onnx)
+    if source.suffix == ".onnx":
+        return source
+    export_checkpoint_to_onnx(
+        source,
+        output_path,
+        device=device,
+        precision=precision,
+    )
+    return output_path
 
 
 def _deterministic_action(
@@ -754,6 +890,16 @@ def _request_feature_rows_and_masks(request: Any) -> tuple[Any, Any, int]:
     return feature_rows, legal_masks, len(feature_rows)
 
 
+def _active_legal_masks(batch: ArenaBatchLike) -> list[list[bool]]:
+    if hasattr(batch, "active_legal_masks"):
+        return [[bool(value) for value in row] for row in batch.active_legal_masks()]
+    request = batch.active_eval_request()
+    _feature_rows, masks, _row_count = _request_feature_rows_and_masks(request)
+    if isinstance(masks, np.ndarray):
+        return [[bool(value) for value in row] for row in masks]
+    return [[bool(value) for value in row] for row in masks]
+
+
 def _request_game_indexes(request: Any, *, expected_len: int) -> list[int]:
     if not hasattr(request, "game_indexes"):
         raise RuntimeError("arena eval request did not include game index metadata")
@@ -842,6 +988,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--leaf-batch-size", type=int, default=None)
     parser.add_argument("--promotion-threshold", type=float, default=None)
     parser.add_argument(
+        "--backend",
+        choices=["onnx", "pytorch"],
+        default="onnx",
+        help="arena inference backend; ONNX uses the Rust evaluator path",
+    )
+    parser.add_argument("--onnx-max-batch-size", type=int, default=8192)
+    parser.add_argument("--onnx-precision", choices=["fp32", "fp16"], default=None)
+    parser.add_argument(
         "--promote",
         action="store_true",
         help="Copy candidate over best if accepted",
@@ -876,13 +1030,23 @@ def _config_from_args(args: argparse.Namespace) -> ArenaConfig:
 def main() -> NoReturn:
     args = build_parser().parse_args()
     config = _config_from_args(args)
-    candidate_model = load_model_from_checkpoint(args.candidate, device=config.device)
-    best_model = load_model_from_checkpoint(args.best, device=config.device)
-    report = run_arena(
-        candidate_model=candidate_model,
-        best_model=best_model,
-        config=config,
-    )
+    if args.backend == "onnx":
+        precision = args.onnx_precision or ("fp16" if config.device == "cuda" else "fp32")
+        report = run_arena_checkpoints_onnx(
+            candidate_checkpoint=args.candidate,
+            best_checkpoint=args.best,
+            config=config,
+            onnx_max_batch_size=args.onnx_max_batch_size,
+            onnx_precision=precision,
+        )
+    else:
+        candidate_model = load_model_from_checkpoint(args.candidate, device=config.device)
+        best_model = load_model_from_checkpoint(args.best, device=config.device)
+        report = run_arena(
+            candidate_model=candidate_model,
+            best_model=best_model,
+            config=config,
+        )
     save_arena_report(report, args.report)
     promoted = (
         promote_candidate_if_needed(
@@ -914,9 +1078,11 @@ __all__ = [
     "ArenaBatchLike",
     "ArenaConfig",
     "ArenaGameResult",
+    "ArenaOnnxEvaluators",
     "ArenaReport",
     "ArenaSummary",
     "create_core_arena_batch",
+    "create_onnx_evaluator",
     "create_core_search_engine",
     "evaluate_state_policy",
     "evaluate_state_policy_logits",
@@ -927,6 +1093,8 @@ __all__ = [
     "promote_candidate_if_needed",
     "run_arena",
     "run_arena_batched",
+    "run_arena_checkpoints_onnx",
+    "run_arena_onnx",
     "save_arena_report",
     "summarize_arena",
 ]

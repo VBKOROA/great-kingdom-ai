@@ -1,4 +1,4 @@
-use pyo3::{exceptions::PyValueError, prelude::*};
+use pyo3::{exceptions::PyRuntimeError, exceptions::PyValueError, prelude::*};
 use rayon::prelude::*;
 
 use super::{
@@ -8,14 +8,15 @@ use super::{
     result::GumbelResult,
     sampling::sample_root_candidates,
     search::{
-        GumbelSearch, PendingGumbelSimulation, backup_path, parse_gumbel_eval_response,
-        reserve_path, root_ranking_scores, unreserve_path,
+        GumbelEvalBatch, GumbelSearch, PendingGumbelSimulation, backup_path,
+        parse_gumbel_eval_response, reserve_path, root_ranking_scores, unreserve_path,
     },
     sequential_halving::RootSequentialHalving,
 };
 use crate::{
     eval_request::EvalRequest,
     game::{ACTION_SPACE, Action, GameState},
+    onnx::{NetworkOutput, OnnxEvaluator},
 };
 
 const BLUE: u8 = 1;
@@ -113,6 +114,14 @@ impl GumbelArenaBatch {
     }
 
     #[must_use]
+    pub fn active_legal_masks(&self) -> Vec<Vec<bool>> {
+        self.active_indexes()
+            .into_iter()
+            .map(|index| self.states[index].legal_mask())
+            .collect()
+    }
+
+    #[must_use]
     pub fn current_players(&self) -> Vec<u8> {
         self.states.iter().map(GameState::current_player).collect()
     }
@@ -161,12 +170,60 @@ impl GumbelArenaBatch {
         if leaf_batch_size == 0 {
             return Err(PyValueError::new_err("leaf_batch_size must be positive"));
         }
+        let mut evaluator = PythonArenaLeafEvaluator::new(evaluator);
         self.search_active_with_logits_evaluator(
             policy_logits,
-            evaluator,
             &root_values,
             leaf_batch_size,
+            &mut evaluator,
         )
+    }
+
+    #[pyo3(signature = (candidate_evaluator, best_evaluator, leaf_batch_size = 16))]
+    pub fn search_active_with_onnx_evaluators(
+        &mut self,
+        mut candidate_evaluator: PyRefMut<'_, OnnxEvaluator>,
+        mut best_evaluator: PyRefMut<'_, OnnxEvaluator>,
+        leaf_batch_size: usize,
+    ) -> PyResult<(Vec<Option<GumbelResult>>, Vec<Vec<f32>>)> {
+        if leaf_batch_size == 0 {
+            return Err(PyValueError::new_err("leaf_batch_size must be positive"));
+        }
+        let active_indexes = self.active_indexes();
+        let active_states = active_indexes
+            .iter()
+            .map(|index| self.states[*index].clone())
+            .collect::<Vec<_>>();
+        let candidate_players = self.candidate_players.clone();
+        let mut evaluator = OnnxArenaLeafEvaluator::new(
+            &mut candidate_evaluator,
+            &mut best_evaluator,
+            candidate_players,
+        );
+        let root_eval = evaluator.evaluate(
+            active_states,
+            active_indexes.clone(),
+            active_indexes.len(),
+            0,
+        )?;
+        root_eval.validate_len(active_indexes.len())?;
+        let root_policy_logits = root_eval
+            .policies
+            .iter()
+            .map(|row| Vec::from(*row))
+            .collect::<Vec<_>>();
+        let root_rows = root_eval
+            .policies
+            .into_iter()
+            .map(Vec::from)
+            .collect::<Vec<_>>();
+        let results = self.search_active_with_logits_evaluator(
+            root_rows,
+            &root_eval.values,
+            leaf_batch_size,
+            &mut evaluator,
+        )?;
+        Ok((results, root_policy_logits))
     }
 
     pub fn apply_actions(&mut self, actions: Vec<Option<usize>>) -> PyResult<Vec<Option<u8>>> {
@@ -245,9 +302,9 @@ impl GumbelArenaBatch {
     fn search_active_with_logits_evaluator(
         &mut self,
         rows: Vec<Vec<f32>>,
-        evaluator: &Bound<'_, PyAny>,
         root_values: &[f32],
         leaf_batch_size: usize,
+        evaluator: &mut impl ArenaLeafEvaluator,
     ) -> PyResult<Vec<Option<GumbelResult>>> {
         let active_indexes = self.active_indexes();
         if rows.len() != active_indexes.len() {
@@ -326,6 +383,7 @@ impl GumbelArenaBatch {
             ));
         }
 
+        let mut wave = 0_u64;
         while active_indexes.iter().any(|index| {
             let Some(search) = current_player_search(&self.searches[*index], &self.states[*index])
             else {
@@ -333,7 +391,8 @@ impl GumbelArenaBatch {
             };
             completed[*index] < search.config.simulations
         }) {
-            evaluator.py().check_signals()?;
+            evaluator.check_signals()?;
+            wave = wave.wrapping_add(1);
             let pending_by_game: Vec<Vec<_>> = self
                 .states
                 .par_iter()
@@ -413,9 +472,8 @@ impl GumbelArenaBatch {
                 .iter()
                 .map(|leaf| leaf.game_index)
                 .collect::<Vec<_>>();
-            let request = EvalRequest::new_with_game_indexes(request_states, game_indexes);
-            let response = evaluator.call1((request,))?;
-            let eval = parse_gumbel_eval_response(&response)?;
+            let eval =
+                evaluator.evaluate(request_states, game_indexes, active_indexes.len(), wave)?;
             eval.validate_len(pending.len())?;
 
             let mut by_game: Vec<Vec<PendingArenaEvaluation>> =
@@ -534,6 +592,200 @@ impl GumbelArenaBatch {
         }
         Ok(results)
     }
+}
+
+trait ArenaLeafEvaluator {
+    fn check_signals(&mut self) -> PyResult<()>;
+
+    fn evaluate(
+        &mut self,
+        states: Vec<GameState>,
+        game_indexes: Vec<usize>,
+        active_games: usize,
+        wave: u64,
+    ) -> PyResult<GumbelEvalBatch>;
+}
+
+struct PythonArenaLeafEvaluator<'a, 'py> {
+    callback: &'a Bound<'py, PyAny>,
+}
+
+impl<'a, 'py> PythonArenaLeafEvaluator<'a, 'py> {
+    const fn new(callback: &'a Bound<'py, PyAny>) -> Self {
+        Self { callback }
+    }
+}
+
+impl ArenaLeafEvaluator for PythonArenaLeafEvaluator<'_, '_> {
+    fn check_signals(&mut self) -> PyResult<()> {
+        self.callback.py().check_signals()
+    }
+
+    fn evaluate(
+        &mut self,
+        states: Vec<GameState>,
+        game_indexes: Vec<usize>,
+        _active_games: usize,
+        _wave: u64,
+    ) -> PyResult<GumbelEvalBatch> {
+        let request = EvalRequest::new_with_game_indexes(states, game_indexes);
+        let response = self.callback.call1((request,))?;
+        parse_gumbel_eval_response(&response)
+    }
+}
+
+struct OnnxArenaLeafEvaluator<'a> {
+    candidate: &'a mut OnnxEvaluator,
+    best: &'a mut OnnxEvaluator,
+    candidate_players: Vec<u8>,
+}
+
+impl<'a> OnnxArenaLeafEvaluator<'a> {
+    fn new(
+        candidate: &'a mut OnnxEvaluator,
+        best: &'a mut OnnxEvaluator,
+        candidate_players: Vec<u8>,
+    ) -> Self {
+        Self {
+            candidate,
+            best,
+            candidate_players,
+        }
+    }
+}
+
+impl ArenaLeafEvaluator for OnnxArenaLeafEvaluator<'_> {
+    fn check_signals(&mut self) -> PyResult<()> {
+        Python::with_gil(|py| py.check_signals())
+    }
+
+    fn evaluate(
+        &mut self,
+        states: Vec<GameState>,
+        game_indexes: Vec<usize>,
+        active_games: usize,
+        wave: u64,
+    ) -> PyResult<GumbelEvalBatch> {
+        if states.len() != game_indexes.len() {
+            return Err(PyValueError::new_err(
+                "arena ONNX state and game index counts must match",
+            ));
+        }
+
+        let mut candidate_rows = Vec::new();
+        let mut candidate_states = Vec::new();
+        let mut best_rows = Vec::new();
+        let mut best_states = Vec::new();
+        for (row, (state, game_index)) in
+            states.into_iter().zip(game_indexes.into_iter()).enumerate()
+        {
+            let Some(candidate_player) = self.candidate_players.get(game_index).copied() else {
+                return Err(PyValueError::new_err(format!(
+                    "arena ONNX game index out of range: {game_index}"
+                )));
+            };
+            match state.current_player() {
+                player if player == candidate_player => {
+                    candidate_rows.push(row);
+                    candidate_states.push(state);
+                }
+                BLUE | ORANGE => {
+                    best_rows.push(row);
+                    best_states.push(state);
+                }
+                player => {
+                    return Err(PyValueError::new_err(format!(
+                        "invalid arena current player: {player}"
+                    )));
+                }
+            }
+        }
+
+        let mut policies = vec![None; candidate_rows.len() + best_rows.len()];
+        let mut values = vec![None; policies.len()];
+        fill_onnx_rows(
+            self.candidate,
+            candidate_states,
+            candidate_rows,
+            &mut policies,
+            &mut values,
+            active_games,
+            wave,
+        )?;
+        fill_onnx_rows(
+            self.best,
+            best_states,
+            best_rows,
+            &mut policies,
+            &mut values,
+            active_games,
+            wave,
+        )?;
+        Ok(GumbelEvalBatch::new(
+            policies
+                .into_iter()
+                .map(|row| {
+                    row.ok_or_else(|| {
+                        PyRuntimeError::new_err("arena ONNX evaluation missed a policy row")
+                    })
+                })
+                .collect::<PyResult<Vec<_>>>()?,
+            values
+                .into_iter()
+                .map(|value| {
+                    value.ok_or_else(|| {
+                        PyRuntimeError::new_err("arena ONNX evaluation missed a value row")
+                    })
+                })
+                .collect::<PyResult<Vec<_>>>()?,
+        ))
+    }
+}
+
+fn fill_onnx_rows(
+    evaluator: &mut OnnxEvaluator,
+    states: Vec<GameState>,
+    rows: Vec<usize>,
+    policies: &mut [Option<[f32; ACTION_SPACE]>],
+    values: &mut [Option<f32>],
+    active_games: usize,
+    wave: u64,
+) -> PyResult<()> {
+    if states.is_empty() {
+        return Ok(());
+    }
+    if wave == 0 {
+        evaluator.set_gumbel_root_profile_context(active_games);
+    } else {
+        evaluator.set_gumbel_leaf_profile_context(wave, active_games, rows.len());
+    }
+    let output = evaluator
+        .evaluate_request(&EvalRequest::new_with_precomputed_features(states))
+        .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+    assign_onnx_output(output, rows, policies, values)
+}
+
+fn assign_onnx_output(
+    output: NetworkOutput,
+    rows: Vec<usize>,
+    policies: &mut [Option<[f32; ACTION_SPACE]>],
+    values: &mut [Option<f32>],
+) -> PyResult<()> {
+    if output.policy_logits.len() != rows.len() || output.values.len() != rows.len() {
+        return Err(PyRuntimeError::new_err(
+            "arena ONNX evaluator returned a mismatched batch size",
+        ));
+    }
+    for (row, (policy, value)) in rows.into_iter().zip(
+        output
+            .policy_logits
+            .into_iter()
+            .zip(output.values.into_iter()),
+    ) {
+        policies[row] = Some(policy);
+        values[row] = Some(value);
+    }
+    Ok(())
 }
 
 fn current_player_search<'a>(
