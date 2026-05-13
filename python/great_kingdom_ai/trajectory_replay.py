@@ -245,8 +245,7 @@ class TrajectoryReplayStore:
         destination = Path(path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         payload = self.to_payload()
-        save = np.savez_compressed if compressed else np.savez
-        save(destination, **cast(dict[str, Any], payload))
+        _save_npz_atomic(destination, cast(dict[str, Any], payload), compressed=compressed)
 
     def to_payload(self) -> dict[str, np.ndarray]:
         payload: dict[str, np.ndarray] = {
@@ -423,8 +422,7 @@ class TrajectoryReplayBuffer:
         destination = Path(path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         payload = _episodes_to_payload(self._capacity, list(self._episodes))
-        save = np.savez_compressed if compressed else np.savez
-        save(destination, **cast(dict[str, Any], payload))
+        _save_npz_atomic(destination, cast(dict[str, Any], payload), compressed=compressed)
 
     def _sample_transition_refs(
         self,
@@ -1045,6 +1043,23 @@ def _load_optional_array(
     if present.shape != (shape[0],):
         raise ValueError(f"trajectory replay {key}_present length mismatch")
     return values, present
+
+
+def _save_npz_atomic(
+    destination: Path,
+    payload: dict[str, Any],
+    *,
+    compressed: bool,
+) -> None:
+    temporary = destination.with_name(f"{destination.name}.tmp")
+    save = np.savez_compressed if compressed else np.savez
+    try:
+        with temporary.open("wb") as file:
+            save(file, **payload)
+        temporary.replace(destination)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def _validate_payload_lengths(data: Any, transition_count: int) -> None:
