@@ -483,6 +483,49 @@ def test_search_reanalyze_reconstruction_validation_is_opt_in(
     assert calls == 1
 
 
+def test_reconstruct_batch_uses_rust_action_history_fast_path() -> None:
+    import great_kingdom_ai.search_reanalyze as search_reanalyze
+
+    class FakeBatch:
+        captured_histories: list[list[int]] | None = None
+
+        def __init__(self, game_count: int, **kwargs: object) -> None:
+            raise AssertionError("slow constructor should not be used")
+
+        @staticmethod
+        def from_action_histories(
+            action_histories: list[list[int]],
+            **kwargs: object,
+        ) -> str:
+            FakeBatch.captured_histories = action_histories
+            assert kwargs["simulations"] == 7
+            assert kwargs["max_considered_actions"] == 3
+            return "fast-batch"
+
+    class FakeCore:
+        GumbelSelfPlayBatch = FakeBatch
+
+    episode = make_episode()
+    refs = [
+        search_reanalyze._TransitionRef(episode, 0, 10),
+        search_reanalyze._TransitionRef(episode, 2, 12),
+    ]
+
+    batch = search_reanalyze._reconstruct_batch(
+        FakeCore,
+        refs,
+        config=SearchReanalyzeConfig(
+            simulations=7,
+            max_considered_actions=3,
+            policy_target_c_visit=5.0,
+            policy_target_c_scale=0.25,
+        ),
+    )
+
+    assert batch == "fast-batch"
+    assert FakeBatch.captured_histories == [[], [1, 2]]
+
+
 def test_select_search_reanalyze_indexes_uses_fraction_budget_and_priority() -> None:
     episode = make_episode()
     policies = np.stack([transition.policy_target for transition in episode.transitions], axis=0)

@@ -306,6 +306,24 @@ def _reconstruct_batch(
     *,
     config: SearchReanalyzeConfig,
 ) -> Any:
+    if hasattr(core.GumbelSelfPlayBatch, "from_action_histories"):
+        return core.GumbelSelfPlayBatch.from_action_histories(
+            [
+                [
+                    int(transition.action)
+                    for transition in ref.episode.transitions[: ref.transition_index]
+                ]
+                for ref in refs
+            ],
+            simulations=config.simulations,
+            max_considered_actions=config.max_considered_actions,
+            c_visit=config.c_visit,
+            c_scale=config.c_scale,
+            seed=config.seed + min(ref.row_index for ref in refs),
+            policy_target_temperature=config.policy_target_temperature,
+            policy_target_c_visit=config.policy_target_c_visit,
+            policy_target_c_scale=config.policy_target_c_scale,
+        )
     batch = core.GumbelSelfPlayBatch(
         game_count=len(refs),
         simulations=config.simulations,

@@ -138,6 +138,35 @@ def test_gumbel_self_play_batch_constructor_and_active_request() -> None:
     importlib.util.find_spec("great_kingdom_core") is None,
     reason="great_kingdom_core extension is not installed",
 )
+def test_gumbel_self_play_batch_can_reconstruct_from_action_histories() -> None:
+    import great_kingdom_core as core  # type: ignore[import-untyped]
+
+    if not hasattr(core.GumbelSelfPlayBatch, "from_action_histories"):
+        pytest.skip("installed great_kingdom_core does not expose from_action_histories")
+
+    batch = core.GumbelSelfPlayBatch.from_action_histories(
+        [[], [0], [0, 1]],
+        simulations=4,
+        seed=99,
+        **target_scale_kwargs(),
+    )
+
+    assert batch.len() == 3
+    assert batch.active_count() == 3
+    assert list(batch.current_players()) == [1, 2, 1]
+
+    with pytest.raises(ValueError, match="invalid action index"):
+        core.GumbelSelfPlayBatch.from_action_histories(
+            [[core.action_space() + 1]],
+            simulations=4,
+            **target_scale_kwargs(),
+        )
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("great_kingdom_core") is None,
+    reason="great_kingdom_core extension is not installed",
+)
 def test_gumbel_arena_batch_constructor_and_basic_state_methods() -> None:
     import great_kingdom_core as core  # type: ignore[import-untyped]
 

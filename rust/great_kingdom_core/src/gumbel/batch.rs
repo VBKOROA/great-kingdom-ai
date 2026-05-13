@@ -79,6 +79,50 @@ impl GumbelSelfPlayBatch {
         Ok(Self::new(game_count, config))
     }
 
+    #[staticmethod]
+    #[pyo3(signature = (
+        action_histories,
+        simulations = 128,
+        max_considered_actions = 16,
+        c_visit = 50.0,
+        c_scale = 1.0,
+        seed = 2026,
+        policy_target_temperature = 1.0,
+        policy_target_c_visit = None,
+        policy_target_c_scale = None
+    ))]
+    pub fn from_action_histories(
+        action_histories: Vec<Vec<usize>>,
+        simulations: u32,
+        max_considered_actions: usize,
+        c_visit: f32,
+        c_scale: f32,
+        seed: u64,
+        policy_target_temperature: f32,
+        policy_target_c_visit: Option<f32>,
+        policy_target_c_scale: Option<f32>,
+    ) -> PyResult<Self> {
+        if action_histories.is_empty() {
+            return Err(PyValueError::new_err("action_histories must not be empty"));
+        }
+        let policy_target_c_visit = policy_target_c_visit
+            .ok_or_else(|| PyValueError::new_err("policy_target_c_visit must be set"))?;
+        let policy_target_c_scale = policy_target_c_scale
+            .ok_or_else(|| PyValueError::new_err("policy_target_c_scale must be set"))?;
+        let config = GumbelConfig::new_with_policy_target_config(
+            simulations,
+            max_considered_actions,
+            c_visit,
+            c_scale,
+            seed,
+            policy_target_temperature,
+            policy_target_c_visit,
+            policy_target_c_scale,
+        );
+        config.validate()?;
+        Self::new_from_action_histories(action_histories, config)
+    }
+
     #[must_use]
     pub fn len(&self) -> usize {
         self.states.len()
@@ -354,6 +398,41 @@ impl GumbelSelfPlayBatch {
             states: vec![GameState::new(); game_count],
             searches,
         }
+    }
+
+    fn new_from_action_histories(
+        action_histories: Vec<Vec<usize>>,
+        config: GumbelConfig,
+    ) -> PyResult<Self> {
+        let game_count = action_histories.len();
+        let mut batch = Self::new(game_count, config);
+        batch
+            .states
+            .par_iter_mut()
+            .zip(action_histories.par_iter())
+            .enumerate()
+            .try_for_each(|(game_index, (state, history))| {
+                for (action_offset, action_index) in history.iter().copied().enumerate() {
+                    let action = Action::from_index(action_index).ok_or_else(|| {
+                        format!(
+                            "invalid action index {action_index} at game {game_index}, offset {action_offset}"
+                        )
+                    })?;
+                    if state.is_terminal() {
+                        return Err(format!(
+                            "cannot apply action at game {game_index}, offset {action_offset}: game is terminal"
+                        ));
+                    }
+                    state.apply(action).map_err(|err| {
+                        format!(
+                            "invalid action at game {game_index}, offset {action_offset}: {err:?}"
+                        )
+                    })?;
+                }
+                Ok::<(), String>(())
+            })
+            .map_err(PyValueError::new_err)?;
+        Ok(batch)
     }
 
     fn active_indexes(&self) -> Vec<usize> {
