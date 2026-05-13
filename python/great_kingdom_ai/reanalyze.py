@@ -41,6 +41,9 @@ ReanalyzeProgressCallback = Callable[[str, int, int, str], None]
 class ReanalyzeConfig:
     batch_size: int = 1024
     device: str = "cpu"
+    onnx_model_path: str | None = None
+    onnx_device: str | None = None
+    onnx_max_batch_size: int = 1024
     bootstrap_td_steps: int = 0
     gamma: float = 1.0
     model_version: int | None = None
@@ -50,6 +53,8 @@ class ReanalyzeConfig:
     def __post_init__(self) -> None:
         if self.batch_size <= 0:
             raise ValueError("batch_size must be positive")
+        if self.onnx_max_batch_size <= 0:
+            raise ValueError("onnx_max_batch_size must be positive")
         if self.bootstrap_td_steps < 0:
             raise ValueError("bootstrap_td_steps must be non-negative")
         if not math.isfinite(self.gamma) or not 0.0 <= self.gamma <= 1.0:
@@ -353,23 +358,41 @@ def build_reanalyze_snapshot_from_store(
     if len(replay) == 0:
         raise ValueError("trajectory replay must contain at least one transition")
     _report_progress(progress_callback, "checkpoint", 0, 1, f"loading {checkpoint_path}")
-    state = load_checkpoint(checkpoint_path, device=config.device, prefer_ema=True)
+    checkpoint_device = "cpu" if config.onnx_model_path is not None else config.device
+    state = load_checkpoint(checkpoint_path, device=checkpoint_device, prefer_ema=True)
     state.model.eval()
-    _report_progress(progress_callback, "checkpoint", 1, 1, f"device={config.device}")
+    eval_backend = "onnx" if config.onnx_model_path is not None else "pytorch"
+    _report_progress(
+        progress_callback,
+        "checkpoint",
+        1,
+        1,
+        f"device={config.device}, eval_backend={eval_backend}",
+    )
     model_version = state.step if config.model_version is None else config.model_version
 
     features = np.ascontiguousarray(replay.features, dtype=np.float32)
     legal_masks = np.ascontiguousarray(replay.legal_masks, dtype=np.bool_)
     policies = np.ascontiguousarray(replay.policy_targets, dtype=np.float32)
     _report_progress(progress_callback, "arrays", 1, 1, f"rows={features.shape[0]}")
-    policy_logits, refreshed_values = _evaluate_policy_logits_values(
-        state.model,
-        features,
-        legal_masks,
-        batch_size=config.batch_size,
-        device=config.device,
-        progress_callback=progress_callback,
-    )
+    if config.onnx_model_path is None:
+        policy_logits, refreshed_values = _evaluate_policy_logits_values(
+            state.model,
+            features,
+            legal_masks,
+            batch_size=config.batch_size,
+            device=config.device,
+            progress_callback=progress_callback,
+        )
+    else:
+        policy_logits, refreshed_values = _evaluate_policy_logits_values_with_onnx(
+            config.onnx_model_path,
+            features,
+            batch_size=config.batch_size,
+            device=config.onnx_device or config.device,
+            max_batch_size=config.onnx_max_batch_size,
+            progress_callback=progress_callback,
+        )
     _report_progress(
         progress_callback,
         "bootstrap",
@@ -461,6 +484,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", type=Path, required=True, help="Output target snapshot .npz")
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
+    parser.add_argument(
+        "--onnx-model",
+        type=Path,
+        default=None,
+        help="Optional ONNX model for policy/value refresh evaluation",
+    )
+    parser.add_argument("--onnx-device", choices=["cpu", "cuda"], default=None)
+    parser.add_argument("--onnx-max-batch-size", type=int, default=1024)
     parser.add_argument("--bootstrap-td-steps", type=int, default=0)
     parser.add_argument("--gamma", type=float, default=1.0)
     parser.add_argument(
@@ -495,6 +526,9 @@ def main() -> NoReturn:
     config = ReanalyzeConfig(
         batch_size=args.batch_size,
         device=args.device,
+        onnx_model_path=None if args.onnx_model is None else str(args.onnx_model),
+        onnx_device=args.onnx_device,
+        onnx_max_batch_size=args.onnx_max_batch_size,
         bootstrap_td_steps=args.bootstrap_td_steps,
         gamma=args.gamma,
         model_version=args.model_version,
@@ -572,6 +606,71 @@ def _evaluate_policy_logits_values(
         np.concatenate(policy_logits, axis=0).astype(np.float32),
         np.concatenate(values, axis=0).astype(np.float32),
     )
+
+
+def _evaluate_policy_logits_values_with_onnx(
+    onnx_model_path: str,
+    features: np.ndarray,
+    *,
+    batch_size: int,
+    device: str,
+    max_batch_size: int,
+    progress_callback: ReanalyzeProgressCallback | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    core = _import_core()
+    evaluator = core.OnnxEvaluator(
+        str(onnx_model_path),
+        device=device,
+        max_batch_size=max_batch_size,
+    )
+    policy_logits: list[np.ndarray] = []
+    values: list[np.ndarray] = []
+    total_batches = math.ceil(features.shape[0] / batch_size)
+    _report_progress(
+        progress_callback,
+        "eval",
+        0,
+        total_batches,
+        (
+            f"rows={features.shape[0]}, batch_size={batch_size}, "
+            f"device={device}, backend=onnx"
+        ),
+    )
+    for start in range(0, features.shape[0], batch_size):
+        end = min(start + batch_size, features.shape[0])
+        batch_number = start // batch_size + 1
+        request = _eval_request_from_feature_array(core, features[start:end])
+        batch_logits, batch_values = evaluator.evaluate(request)
+        policy_logits.append(np.asarray(batch_logits, dtype=np.float32))
+        values.append(np.asarray(batch_values, dtype=np.float32))
+        _report_progress(
+            progress_callback,
+            "eval",
+            batch_number,
+            total_batches,
+            f"rows={start}:{end}",
+        )
+    return (
+        np.concatenate(policy_logits, axis=0).astype(np.float32),
+        np.concatenate(values, axis=0).astype(np.float32),
+    )
+
+
+def _eval_request_from_feature_array(core: Any, features: np.ndarray) -> Any:
+    rows = np.ascontiguousarray(features.reshape(features.shape[0], -1), dtype=np.float32)
+    if hasattr(core.EvalRequest, "from_feature_plane_bytes"):
+        return core.EvalRequest.from_feature_plane_bytes(rows.shape[0], rows.tobytes())
+    return core.EvalRequest.from_feature_rows(rows.tolist())
+
+
+def _import_core() -> Any:
+    try:
+        import great_kingdom_core as core
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "great_kingdom_core is not installed. Build it with maturin before ONNX reanalyze."
+        ) from exc
+    return core
 
 
 def _bootstrap_targets_from_refreshed_values(

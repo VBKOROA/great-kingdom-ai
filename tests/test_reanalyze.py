@@ -413,6 +413,12 @@ def test_reanalyze_parser_exposes_phase7_cli_options() -> None:
             "targets.npz",
             "--batch-size",
             "16",
+            "--onnx-model",
+            "model.onnx",
+            "--onnx-device",
+            "cuda",
+            "--onnx-max-batch-size",
+            "32",
             "--bootstrap-td-steps",
             "4",
             "--search-reanalyze-fraction",
@@ -429,9 +435,63 @@ def test_reanalyze_parser_exposes_phase7_cli_options() -> None:
     )
 
     assert args.batch_size == 16
+    assert args.onnx_model == Path("model.onnx")
+    assert args.onnx_device == "cuda"
+    assert args.onnx_max_batch_size == 32
     assert args.bootstrap_td_steps == 4
     assert args.search_reanalyze_fraction == pytest.approx(0.25)
     assert args.search_reanalyze_budget == 7
     assert args.search_reanalyze_simulations == 8
     assert args.search_reanalyze_leaf_batch_size == 3
     assert args.search_reanalyze_root_batch_size == 5
+
+
+def test_evaluate_policy_logits_values_with_onnx_uses_core_evaluator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[bytes] = []
+
+    class FakeEvalRequest:
+        def __init__(self, row_count: int, payload: bytes) -> None:
+            self.row_count = row_count
+            self.payload = payload
+
+        @staticmethod
+        def from_feature_plane_bytes(row_count: int, payload: bytes) -> "FakeEvalRequest":
+            requests.append(payload)
+            return FakeEvalRequest(row_count, payload)
+
+    class FakeOnnxEvaluator:
+        def __init__(self, path: str, *, device: str, max_batch_size: int) -> None:
+            assert path == "model.onnx"
+            assert device == "cuda"
+            assert max_batch_size == 4
+
+        def evaluate(self, request: FakeEvalRequest) -> tuple[list[list[float]], list[float]]:
+            logits = np.zeros((request.row_count, ACTION_SPACE), dtype=np.float32)
+            logits[:, PASS_ACTION] = 1.0
+            values = np.arange(request.row_count, dtype=np.float32)
+            return logits.tolist(), values.tolist()
+
+    class FakeCore:
+        EvalRequest = FakeEvalRequest
+        OnnxEvaluator = FakeOnnxEvaluator
+
+    monkeypatch.setattr(reanalyze_module, "_import_core", lambda: FakeCore)
+    features = np.stack(
+        [make_features(1), make_features(2), make_features(PASS_ACTION)],
+        axis=0,
+    )
+
+    logits, values = reanalyze_module._evaluate_policy_logits_values_with_onnx(
+        "model.onnx",
+        features,
+        batch_size=2,
+        device="cuda",
+        max_batch_size=4,
+    )
+
+    assert len(requests) == 2
+    assert logits.shape == (3, ACTION_SPACE)
+    assert logits[:, PASS_ACTION].tolist() == pytest.approx([1.0, 1.0, 1.0])
+    assert values.tolist() == pytest.approx([0.0, 1.0, 0.0])

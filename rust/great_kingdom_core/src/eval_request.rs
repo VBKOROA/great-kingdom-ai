@@ -17,6 +17,45 @@ pub struct EvalRequest {
 
 #[pymethods]
 impl EvalRequest {
+    #[staticmethod]
+    pub fn from_feature_rows(feature_rows: Vec<Vec<f32>>) -> PyResult<Self> {
+        let row_count = feature_rows.len();
+        let expected_row = FEATURE_CHANNELS * BOARD_CELLS;
+        let mut feature_values = Vec::with_capacity(row_count * expected_row);
+        for row in feature_rows {
+            if row.len() != expected_row {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "expected feature row length {expected_row}, got {}",
+                    row.len()
+                )));
+            }
+            feature_values.extend(row);
+        }
+        Ok(Self::from_feature_values(row_count, feature_values))
+    }
+
+    #[staticmethod]
+    pub fn from_feature_plane_bytes(
+        row_count: usize,
+        feature_bytes: &Bound<'_, PyBytes>,
+    ) -> PyResult<Self> {
+        let expected = row_count * FEATURE_CHANNELS * BOARD_CELLS * core::mem::size_of::<f32>();
+        let bytes = feature_bytes.as_bytes();
+        if bytes.len() != expected {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "expected {expected} feature bytes for {row_count} rows, got {}",
+                bytes.len()
+            )));
+        }
+        Ok(Self {
+            states: vec![GameState::new(); row_count],
+            feature_values: None,
+            feature_bytes: Some(bytes.to_vec()),
+            legal_mask_bytes: None,
+            game_indexes: None,
+        })
+    }
+
     #[must_use]
     pub fn len(&self) -> usize {
         self.states.len()
@@ -186,6 +225,16 @@ impl EvalRequest {
             feature_bytes: None,
             legal_mask_bytes,
             game_indexes,
+        }
+    }
+
+    fn from_feature_values(row_count: usize, feature_values: Vec<f32>) -> Self {
+        Self {
+            states: vec![GameState::new(); row_count],
+            feature_values: Some(feature_values),
+            feature_bytes: None,
+            legal_mask_bytes: None,
+            game_indexes: None,
         }
     }
 }
