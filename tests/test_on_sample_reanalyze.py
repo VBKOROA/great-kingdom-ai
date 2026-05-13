@@ -81,6 +81,40 @@ def make_episode(
     )
 
 
+def make_custom_episode(
+    *,
+    episode_id: int,
+    actions: tuple[int, ...],
+    players: tuple[int, ...],
+    winner: int,
+) -> TrajectoryEpisode:
+    transitions = tuple(
+        TrajectoryTransition(
+            episode_id=episode_id,
+            timestep=index,
+            player=players[index],
+            features=make_features(action),
+            legal_mask=legal_mask_from_features(make_features(action)),
+            action=action,
+            policy_target=make_policy(action),
+            winner=winner,
+            terminal=index == len(actions) - 1,
+            model_version=10,
+            created_iteration=10,
+            sample_weight=1.0,
+        )
+        for index, action in enumerate(actions)
+    )
+    return TrajectoryEpisode(
+        episode_id=episode_id,
+        seed=100 + episode_id,
+        transitions=transitions,
+        winner=winner,
+        end_reason=1,
+        territory_scores=(4, 1),
+    )
+
+
 def make_store(
     *,
     sample_weights: tuple[float, ...] = (1.0, 1.0, 1.0),
@@ -96,6 +130,24 @@ def make_store(
         )
     )
     return TrajectoryReplayStore.from_episodes(replay.capacity, replay.episodes)
+
+
+def make_mixed_episode_store() -> TrajectoryReplayStore:
+    episodes = (
+        make_custom_episode(
+            episode_id=0,
+            actions=(1, 2, 3, PASS_ACTION),
+            players=(1, 2, 1, 2),
+            winner=2,
+        ),
+        make_custom_episode(
+            episode_id=1,
+            actions=(4, 5, PASS_ACTION),
+            players=(2, 1, 2),
+            winner=1,
+        ),
+    )
+    return TrajectoryReplayStore.from_episodes(16, episodes)
 
 
 def make_checkpoint(tmp_path: Path) -> Path:
@@ -533,3 +585,31 @@ def test_on_sample_training_batch_supports_symmetry_augmentation(tmp_path: Path)
     assert batch.value.shape == (3,)
     assert batch.sample_weight.shape == (3,)
     assert torch.all(batch.legal_mask[batch.policy > 0.0])
+
+
+@pytest.mark.skipif(_torch_spec is None, reason="torch is not installed")
+@pytest.mark.parametrize("bootstrap_td_steps", [0, 1, 2])
+def test_on_sample_value_targets_match_snapshot_for_mixed_episode_edges(
+    tmp_path: Path,
+    bootstrap_td_steps: int,
+) -> None:
+    store = make_mixed_episode_store()
+    checkpoint = make_checkpoint(tmp_path)
+    config = ReanalyzeConfig(
+        batch_size=len(store),
+        bootstrap_td_steps=bootstrap_td_steps,
+        gamma=0.5,
+        model_version=10,
+    )
+    snapshot = build_reanalyze_snapshot_from_store(
+        store,
+        checkpoint_path=checkpoint,
+        config=config,
+    )
+    dataset = OnSampleReanalyzeDataset(store, checkpoint_path=checkpoint, config=config)
+
+    batch = dataset.sample_arrays(len(store), random.Random(11))
+
+    assert sorted(batch.indexes.tolist()) == list(range(len(store)))
+    for replay_index, value in zip(batch.indexes.tolist(), batch.values.tolist(), strict=True):
+        assert value == pytest.approx(float(snapshot.values[replay_index]))
