@@ -59,7 +59,7 @@ class PrefetchIterator(Generic[T]):
                     return
                 self._queue.put(self._producer())
         except BaseException as exc:
-            self._queue.put(_PrefetchError(exc))
+            self._queue.put(_PrefetchError(exc.with_traceback(None)))
         finally:
             self._queue.put(None)
 

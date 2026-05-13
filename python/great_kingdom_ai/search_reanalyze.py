@@ -511,7 +511,7 @@ def _root_value_from_result(result: Any) -> float | None:
         return None
     value = float(root_value())
     if not math.isfinite(value) or value < -1.0 or value > 1.0:
-        raise ValueError("search root value must be finite and in [-1, 1]")
+        return None
     return value
 
 
