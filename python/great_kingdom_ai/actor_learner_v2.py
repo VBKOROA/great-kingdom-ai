@@ -14,6 +14,7 @@ from typing import Any, Literal, NoReturn
 
 from great_kingdom_ai.onnx_export import export_checkpoint_to_onnx
 from great_kingdom_ai.pipeline_printer import PipelinePrinter
+from great_kingdom_ai.runpod_pruning import PruneItem, prune_items
 from great_kingdom_ai.rust_onnx_self_play import (
     RustOnnxSelfPlayConfig,
     RustSelfPlayRunSummary,
@@ -77,6 +78,8 @@ class LearnerV2Config:
     onnx_device: str = "cuda"
     onnx_precision: str = "fp16"
     onnx_dummy_batch_size: int = 2
+    prune_artifacts: bool = False
+    prune_keep_imported_shards: int = 0
 
 
 @dataclass(frozen=True)
@@ -99,6 +102,8 @@ class LearnerV2Summary:
     candidate_checkpoint: Path | None
     training_latest_checkpoint: Path | None
     onnx_output_path: Path | None
+    pruned_artifacts: int = 0
+    pruned_bytes: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -120,6 +125,8 @@ class LearnerV2Summary:
             "onnx_output_path": (
                 None if self.onnx_output_path is None else str(self.onnx_output_path)
             ),
+            "pruned_artifacts": self.pruned_artifacts,
+            "pruned_bytes": self.pruned_bytes,
         }
 
 
@@ -269,6 +276,8 @@ def run_learner_v2_once(
             candidate_checkpoint=None,
             training_latest_checkpoint=None,
             onnx_output_path=None,
+            pruned_artifacts=0,
+            pruned_bytes=0,
         )
 
     dataset = TrajectoryReplayDataset(replay)
@@ -313,6 +322,13 @@ def run_learner_v2_once(
     else:
         onnx_path = None
 
+    pruned_artifacts = 0
+    pruned_bytes = 0
+    if config.prune_artifacts:
+        prune_summary = _prune_learner_artifacts(config=config, printer=printer)
+        pruned_artifacts = prune_summary["items"]
+        pruned_bytes = prune_summary["bytes"]
+
     return LearnerV2Summary(
         imported_shards=[shard.shard_id for shard in pending],
         imported_transitions=imported_transitions,
@@ -324,6 +340,8 @@ def run_learner_v2_once(
         candidate_checkpoint=candidate_checkpoint,
         training_latest_checkpoint=training_latest,
         onnx_output_path=onnx_path,
+        pruned_artifacts=pruned_artifacts,
+        pruned_bytes=pruned_bytes,
     )
 
 
@@ -431,6 +449,8 @@ def build_learner_v2_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-export-onnx", action="store_true")
     parser.add_argument("--onnx-device", choices=["cpu", "cuda"], default=None)
     parser.add_argument("--onnx-precision", choices=["fp32", "fp16"], default=None)
+    parser.add_argument("--prune-artifacts", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--prune-keep-imported-shards", type=int, default=None)
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--max-cycles", type=int, default=None)
     parser.add_argument("--sleep-seconds", type=float, default=1.0)
@@ -478,6 +498,8 @@ def learner_v2_main() -> NoReturn:
         "train_checkpoint_mode": args.train_checkpoint_mode,
         "onnx_device": args.onnx_device,
         "onnx_precision": args.onnx_precision,
+        "prune_artifacts": args.prune_artifacts,
+        "prune_keep_imported_shards": args.prune_keep_imported_shards,
     }.items():
         if value is not None:
             data[key] = value
@@ -586,6 +608,61 @@ def _load_or_create_replay(path: Path, *, capacity: int) -> TrajectoryReplayStor
             return replay
         return TrajectoryReplayStore.from_episodes(capacity, replay.episodes)
     return TrajectoryReplayStore.empty(capacity)
+
+
+def _prune_learner_artifacts(
+    *,
+    config: LearnerV2Config,
+    printer: PipelinePrinter,
+) -> dict[str, int]:
+    items = _collect_imported_shard_prune_items(
+        config.work_dir,
+        keep_imported_shards=config.prune_keep_imported_shards,
+    )
+    total_bytes = sum(item.size_bytes for item in items)
+    printer.step(
+        "pruning learner artifacts "
+        f"(items={len(items)}, bytes={total_bytes}, elapsed={printer.elapsed()})"
+    )
+    prune_items(items, delete=True)
+    return {"items": len(items), "bytes": total_bytes}
+
+
+def _collect_imported_shard_prune_items(
+    work_dir: Path,
+    *,
+    keep_imported_shards: int,
+) -> list[PruneItem]:
+    if keep_imported_shards < 0:
+        raise ValueError("prune_keep_imported_shards must be non-negative")
+    paths = _paths(work_dir)
+    imported = [
+        record
+        for record in load_v2_shard_records(paths["metadata_path"])
+        if record.status == "imported" and record.shard_dir.exists()
+    ]
+    if keep_imported_shards > 0:
+        imported = sorted(
+            imported,
+            key=lambda record: (record.imported_at or record.created_at, record.shard_id),
+        )
+        imported = imported[: max(0, len(imported) - keep_imported_shards)]
+    return [
+        PruneItem(
+            path=record.shard_dir,
+            reason="imported learner shard directory",
+            size_bytes=_path_size(record.shard_dir),
+        )
+        for record in imported
+    ]
+
+
+def _path_size(path: Path) -> int:
+    if not path.exists():
+        return 0
+    if path.is_file() or path.is_symlink():
+        return path.lstat().st_size
+    return sum(child.lstat().st_size for child in path.rglob("*") if child.exists())
 
 
 def _paths(work_dir: Path) -> dict[str, Path]:
@@ -757,6 +834,8 @@ def _validate_learner_config(config: LearnerV2Config) -> None:
         raise ValueError("replay_capacity must be positive")
     if config.min_replay_transitions < 0:
         raise ValueError("min_replay_transitions must be non-negative")
+    if config.prune_keep_imported_shards < 0:
+        raise ValueError("prune_keep_imported_shards must be non-negative")
     if config.train_checkpoint_mode not in {"resume", "bootstrap"}:
         raise ValueError("train_checkpoint_mode must be one of: resume, bootstrap")
     if config.onnx_precision not in {"fp32", "fp16"}:

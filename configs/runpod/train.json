@@ -1,6 +1,6 @@
 {
-  "batch_size": 512,
-  "steps": 16,
+  "batch_size": 1024,
+  "steps": 64,
   "learning_rate": 0.0001,
   "weight_decay": 0.0001,
   "value_loss_weight": 0.5,
@@ -24,6 +24,6 @@
   "priority_target_age_weight": 0.0,
   "priority_search_reanalyzed_boost": 1.0,
   "priority_max_priority": 64.0,
-  "prefetch_batches": 2,
+  "prefetch_batches": 4,
   "ema_decay": 0.995
 }

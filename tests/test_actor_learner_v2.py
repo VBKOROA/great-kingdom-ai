@@ -218,6 +218,75 @@ def test_learner_v2_imports_pending_shards_trains_and_exports(tmp_path: Path) ->
     assert (tmp_path / "replay" / "game_logs.jsonl").is_file()
 
 
+def test_learner_v2_prunes_imported_shards_after_successful_cycle(tmp_path: Path) -> None:
+    first = run_actor_v2_once(
+        ActorV2Config(
+            work_dir=tmp_path,
+            onnx_model_path=tmp_path / "model.onnx",
+            model_version="ema",
+            games=1,
+            seed_start=0,
+            onnx_device="cpu",
+        ),
+        runner=fake_actor_runner,
+        printer=PipelinePrinter(enabled=False),
+    )
+    second = run_actor_v2_once(
+        ActorV2Config(
+            work_dir=tmp_path,
+            onnx_model_path=tmp_path / "model.onnx",
+            model_version="ema",
+            games=1,
+            seed_start=1,
+            onnx_device="cpu",
+        ),
+        runner=fake_actor_runner,
+        printer=PipelinePrinter(enabled=False),
+    )
+
+    def fake_train(
+        replay: Any,
+        config: TrainingConfig,
+        *,
+        checkpoint_path: str | Path,
+        resume_path: str | Path | None,
+        bootstrap_weights_path: str | Path | None = None,
+        log_every: int,
+        progress_callback: Any = None,
+    ) -> FakeTrainSummary:
+        del replay, config, resume_path, bootstrap_weights_path, log_every, progress_callback
+        destination = Path(checkpoint_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("candidate", encoding="utf-8")
+        return FakeTrainSummary(destination)
+
+    summary = run_learner_v2_once(
+        LearnerV2Config(
+            work_dir=tmp_path,
+            replay_capacity=16,
+            min_replay_transitions=1,
+            export_onnx=False,
+            prune_artifacts=True,
+            prune_keep_imported_shards=0,
+        ),
+        TrainingConfig(batch_size=2, steps=1, device="cpu"),
+        trainer=fake_train,
+        printer=PipelinePrinter(enabled=False),
+    )
+
+    assert summary.pruned_artifacts == 2
+    assert summary.pruned_bytes > 0
+    assert not first.shard.shard_dir.exists()
+    assert not second.shard.shard_dir.exists()
+    assert (tmp_path / "replay" / "trajectory-replay.npz").is_file()
+    assert (tmp_path / "checkpoints" / "training-latest.pt").is_file()
+    records = load_v2_shard_records(tmp_path / "shards" / "metadata.jsonl")
+    assert [record.status for record in records] == [
+        "imported",
+        "imported",
+    ]
+
+
 def test_learner_v2_waits_until_min_replay_transitions(tmp_path: Path) -> None:
     summary = run_learner_v2_once(
         LearnerV2Config(
