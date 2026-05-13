@@ -15,7 +15,12 @@ from great_kingdom_ai.on_sample_reanalyze import OnSampleReanalyzeDataset
 from great_kingdom_ai.priority_sampling import PrioritySampleResult, PrioritySamplingConfig
 from great_kingdom_ai.reanalyze import ReanalyzeConfig, build_reanalyze_snapshot_from_store
 from great_kingdom_ai.search_reanalyze import SearchReanalyzeConfig, SearchReanalyzeResult
-from great_kingdom_ai.train import TrainingConfig, create_train_state, save_checkpoint
+from great_kingdom_ai.train import (
+    TrainingConfig,
+    _sample_training_batch,
+    create_train_state,
+    save_checkpoint,
+)
 from great_kingdom_ai.trajectory_replay import (
     TrajectoryEpisode,
     TrajectoryReplayBuffer,
@@ -504,3 +509,27 @@ def test_on_sample_detects_replay_legal_mask_mismatch(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="legal masks"):
         dataset.sample_arrays(3, random.Random(0))
+
+
+@pytest.mark.skipif(_torch_spec is None, reason="torch is not installed")
+def test_on_sample_training_batch_supports_symmetry_augmentation(tmp_path: Path) -> None:
+    dataset = OnSampleReanalyzeDataset(
+        make_store(),
+        checkpoint_path=make_checkpoint(tmp_path),
+        config=ReanalyzeConfig(batch_size=3),
+    )
+
+    batch = _sample_training_batch(
+        dataset,
+        TrainingConfig(batch_size=3, steps=1, symmetry_augmentation=True),
+        random.Random(1),
+        device="cpu",
+        pin_memory=False,
+    )
+
+    assert batch.features.shape == (3, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
+    assert batch.policy.shape == (3, ACTION_SPACE)
+    assert batch.legal_mask.shape == (3, ACTION_SPACE)
+    assert batch.value.shape == (3,)
+    assert batch.sample_weight.shape == (3,)
+    assert torch.all(batch.legal_mask[batch.policy > 0.0])
