@@ -288,19 +288,68 @@ python scripts/prune_runpod_artifacts.py \
 
 ## 평가와 플레이
 
-현재 async v2의 최신 모델과 저장해 둔 snapshot을 arena에서 비교:
+현재 async v2의 최신 모델과 저장해 둔 snapshot을 arena에서 비교합니다. `.pt`를 직접 넣으면
+평가 시작 시 임시 ONNX export가 들어가므로, 반복 비교할 baseline은 ONNX로 한 번 만들어 두는
+편이 빠릅니다.
+
+baseline ONNX 준비:
+
+```bash
+great-kingdom-export-onnx \
+  --checkpoint data/runpod/train-v2-gumbel-512k/checkpoints/snapshots/baseline.pt \
+  --output data/runpod/train-v2-gumbel-512k/checkpoints/snapshots/baseline.onnx
+```
+
+학습 중 부담 적은 quick check:
 
 ```bash
 great-kingdom-evaluate \
-  --candidate data/runpod/train-v2-gumbel-512k/checkpoints/training-latest.pt \
-  --best data/runpod/train-v2-gumbel-512k/checkpoints/snapshots/baseline.pt \
-  --report data/runpod/train-v2-gumbel-512k/reports/arena-latest-vs-baseline.json \
+  --candidate data/runpod/train-v2-gumbel-512k/checkpoints/onnx/training-latest.onnx \
+  --best data/runpod/train-v2-gumbel-512k/checkpoints/snapshots/baseline.onnx \
+  --report data/runpod/train-v2-gumbel-512k/reports/arena-quick-latest-vs-baseline.json \
   --config configs/runpod/arena.json \
+  --games 20 \
+  --batch-size 20 \
+  --gumbel-simulations 16 \
+  --gumbel-max-considered-actions 8 \
+  --leaf-batch-size 512 \
+  --onnx-max-batch-size 4096 \
   --device cuda
 ```
 
-snapshot끼리 비교할 때는 `--candidate`와 `--best`에 비교할 `.pt` 파일을 각각 넣습니다.
-async v2는 자동 promote를 하지 않으므로, 가장 강한 모델은 이런 arena 비교 결과로 고릅니다.
+조금 더 믿을 만한 중간 평가:
+
+```bash
+great-kingdom-evaluate \
+  --candidate data/runpod/train-v2-gumbel-512k/checkpoints/onnx/training-latest.onnx \
+  --best data/runpod/train-v2-gumbel-512k/checkpoints/snapshots/baseline.onnx \
+  --report data/runpod/train-v2-gumbel-512k/reports/arena-40-latest-vs-baseline.json \
+  --config configs/runpod/arena.json \
+  --games 40 \
+  --batch-size 40 \
+  --gumbel-simulations 32 \
+  --gumbel-max-considered-actions 12 \
+  --leaf-batch-size 512 \
+  --onnx-max-batch-size 4096 \
+  --device cuda
+```
+
+학습을 멈추고 보는 정식 평가는 기본 arena 설정을 사용합니다.
+
+```bash
+great-kingdom-evaluate \
+  --candidate data/runpod/train-v2-gumbel-512k/checkpoints/onnx/training-latest.onnx \
+  --best data/runpod/train-v2-gumbel-512k/checkpoints/snapshots/baseline.onnx \
+  --report data/runpod/train-v2-gumbel-512k/reports/arena-full-latest-vs-baseline.json \
+  --config configs/runpod/arena.json \
+  --games 80 \
+  --batch-size 80 \
+  --device cuda
+```
+
+snapshot끼리 비교할 때는 `--candidate`와 `--best`에 비교할 `.pt` 또는 `.onnx` 파일을 각각
+넣습니다. async v2는 자동 promote를 하지 않으므로, 가장 강한 모델은 이런 arena 비교 결과로
+고릅니다.
 
 직접 대국:
 
