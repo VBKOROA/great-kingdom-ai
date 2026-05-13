@@ -7,7 +7,8 @@
   "max_self_play_games": 1000,
   "seed_start": 1000000,
   "onnx_device": "cuda",
-  "onnx_max_batch_size": 4096,
+  "onnx_precision": "fp16",
+  "onnx_max_batch_size": 8192,
   "rust_self_play_batch_size": 1000,
   "skip_arena": true,
   "promote": true,
@@ -17,7 +18,7 @@
   "train_reuse_factor": 2.0,
   "min_train_steps": 256,
   "max_train_steps": 512,
-  "reanalyze_batch_size": 4096,
+  "reanalyze_batch_size": 8192,
   "reanalyze_device": "cuda",
   "bootstrap_td_steps": 8,
   "gamma": 1.0,
@@ -25,8 +26,8 @@
   "search_reanalyze_budget": 8192,
   "search_reanalyze_simulations": 32,
   "search_reanalyze_max_considered_actions": 8,
-  "search_reanalyze_leaf_batch_size": 512,
-  "search_reanalyze_root_batch_size": 2048,
+  "search_reanalyze_leaf_batch_size": 1024,
+  "search_reanalyze_root_batch_size": 4096,
   "search_reanalyze_seed": 900000,
   "prune_artifacts": true,
   "prune_keep_targets": 2,
@@ -48,6 +49,6 @@
     "playout_cap_fast_simulations": 16,
     "playout_cap_full_max_considered_actions": 16,
     "playout_cap_fast_max_considered_actions": 4,
-    "leaf_batch_size": 256
+    "leaf_batch_size": 512
   }
 }

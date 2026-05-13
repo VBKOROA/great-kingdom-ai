@@ -64,6 +64,7 @@ class RustOnnxPipelineConfig:
     max_self_play_games: int | None = None
     seed_start: int = 0
     onnx_device: str = "cpu"
+    onnx_precision: str = "fp32"
     onnx_max_batch_size: int = 128
     rust_self_play_batch_size: int = 2
     skip_arena: bool = True
@@ -207,6 +208,7 @@ def run_rust_onnx_pipeline(
     printer.metric("completed iterations", completed_iterations)
     printer.metric("train device", train_config.device)
     printer.metric("onnx device", pipeline_config.onnx_device)
+    printer.metric("onnx precision", pipeline_config.onnx_precision)
     printer.metric(
         "self-play",
         (
@@ -234,6 +236,7 @@ def run_rust_onnx_pipeline(
                 paths["best_checkpoint"],
                 onnx_path,
                 device=train_config.device,
+                precision=pipeline_config.onnx_precision,
             )
             printer.progress("iteration", 1, phase_total, detail="onnx export complete")
 
@@ -419,6 +422,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--work-dir", type=Path, default=None)
     parser.add_argument("--iterations", type=int, default=None)
     parser.add_argument("--onnx-device", choices=["cpu", "cuda"], default=None)
+    parser.add_argument("--onnx-precision", choices=["fp32", "fp16"], default=None)
     parser.add_argument("--device", choices=["cpu", "cuda"], default=None)
     parser.add_argument("--self-play-games", type=int, default=None)
     parser.add_argument("--min-replay-samples", type=int, default=None)
@@ -448,6 +452,7 @@ def main() -> NoReturn:
         "work_dir": args.work_dir,
         "iterations": args.iterations,
         "onnx_device": args.onnx_device if args.onnx_device is not None else args.device,
+        "onnx_precision": args.onnx_precision,
         "self_play_games": args.self_play_games,
         "min_replay_samples": args.min_replay_samples,
         "max_self_play_games": args.max_self_play_games,
@@ -674,6 +679,8 @@ def _validate_config(config: RustOnnxPipelineConfig) -> None:
         raise ValueError("aggregate_replay_weight_cap must be positive")
     if config.onnx_max_batch_size <= 0:
         raise ValueError("onnx_max_batch_size must be positive")
+    if config.onnx_precision not in {"fp32", "fp16"}:
+        raise ValueError("onnx_precision must be one of: fp32, fp16")
     if config.rust_self_play_batch_size <= 0:
         raise ValueError("rust_self_play_batch_size must be positive")
     if config.train_checkpoint_mode not in {"resume", "bootstrap"}:

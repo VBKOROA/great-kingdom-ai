@@ -9,6 +9,7 @@ import pytest
 _torch_spec = importlib.util.find_spec("torch")
 _onnx_spec = importlib.util.find_spec("onnx")
 _onnxruntime_spec = importlib.util.find_spec("onnxruntime")
+_onnxconverter_spec = importlib.util.find_spec("onnxconverter_common")
 pytestmark = pytest.mark.skipif(
     _torch_spec is None or _onnx_spec is None or _onnxruntime_spec is None,
     reason="torch, onnx, and onnxruntime are required for ONNX export tests",
@@ -48,6 +49,26 @@ def test_export_checkpoint_to_onnx_uses_opset_17_and_dynamic_batch_axis(tmp_path
     assert input_batch_dim.dim_param == "batch"
     assert policy_batch_dim.dim_param == "batch"
     assert value_batch_dim.dim_param == "batch"
+
+
+@pytest.mark.skipif(
+    _onnxconverter_spec is None,
+    reason="onnxconverter-common is required for FP16 ONNX export",
+)
+def test_export_checkpoint_to_onnx_fp16_keeps_float32_io(tmp_path) -> None:
+    checkpoint_path = _save_test_checkpoint(tmp_path)
+    onnx_path = tmp_path / "model-fp16.onnx"
+
+    summary = export_checkpoint_to_onnx(checkpoint_path, onnx_path, precision="fp16")
+
+    model = onnx.load(onnx_path)
+    input_type = model.graph.input[0].type.tensor_type.elem_type
+    output_types = [output.type.tensor_type.elem_type for output in model.graph.output]
+
+    assert summary.precision == "fp16"
+    assert input_type == onnx.TensorProto.FLOAT
+    assert output_types == [onnx.TensorProto.FLOAT, onnx.TensorProto.FLOAT]
+    assert any(node.op_type == "Cast" for node in model.graph.node)
 
 
 def test_onnx_runtime_outputs_match_pytorch_checkpoint(tmp_path) -> None:

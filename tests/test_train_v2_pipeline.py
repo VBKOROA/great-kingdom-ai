@@ -112,7 +112,7 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    exported: list[tuple[Path, Path]] = []
+    exported: list[tuple[Path, Path, str]] = []
     reanalyze_calls: list[dict[str, Any]] = []
     trained_replay_types: list[str] = []
     train_steps: list[int] = []
@@ -125,8 +125,9 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
         return destination
 
     def fake_export(checkpoint_path: str | Path, output_path: str | Path, **kwargs: Any) -> object:
-        del kwargs
-        exported.append((Path(checkpoint_path), Path(output_path)))
+        exported.append(
+            (Path(checkpoint_path), Path(output_path), str(kwargs.get("precision", "fp32")))
+        )
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(output_path).write_text("onnx", encoding="utf-8")
         return object()
@@ -222,6 +223,7 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
             replay_capacity=8,
             self_play_games=1,
             min_replay_transitions=1,
+            onnx_precision="fp16",
             train_reuse_factor=1.5,
             min_train_steps=1,
             max_train_steps=None,
@@ -243,7 +245,11 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
     assert len(replay) == 2
     assert summary.replay_transitions == 2
     assert summary.latest_target_snapshot_path == tmp_path / "targets" / "latest.npz"
-    assert exported[0][0] == tmp_path / "checkpoints" / "best.pt"
+    assert exported[0] == (
+        tmp_path / "checkpoints" / "best.pt",
+        tmp_path / "checkpoints" / "onnx" / "best-000001.onnx",
+        "fp16",
+    )
     assert reanalyze_calls == [
         {
             "replay_path": tmp_path / "replay" / "trajectory-replay.npz",

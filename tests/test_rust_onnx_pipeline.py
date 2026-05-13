@@ -63,7 +63,7 @@ def test_rust_onnx_pipeline_dispatches_runner_and_imports_replay(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    exported: list[tuple[Path, Path]] = []
+    exported: list[tuple[Path, Path, str]] = []
     resume_paths: list[Path | None] = []
     bootstrap_paths: list[Path | None] = []
 
@@ -75,8 +75,9 @@ def test_rust_onnx_pipeline_dispatches_runner_and_imports_replay(
         return destination
 
     def fake_export(checkpoint_path: str | Path, output_path: str | Path, **kwargs: Any) -> object:
-        del kwargs
-        exported.append((Path(checkpoint_path), Path(output_path)))
+        exported.append(
+            (Path(checkpoint_path), Path(output_path), str(kwargs.get("precision", "fp32")))
+        )
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(output_path).write_text("onnx", encoding="utf-8")
         return object()
@@ -120,6 +121,7 @@ def test_rust_onnx_pipeline_dispatches_runner_and_imports_replay(
             iterations=1,
             replay_capacity=8,
             self_play_games=1,
+            onnx_precision="fp16",
             skip_arena=True,
             self_play=make_self_play_config(),
         ),
@@ -131,8 +133,11 @@ def test_rust_onnx_pipeline_dispatches_runner_and_imports_replay(
 
     assert len(summary.iterations) == 1
     assert summary.replay_samples == 2
-    assert exported[0][0] == tmp_path / "checkpoints" / "best.pt"
-    assert exported[0][1] == tmp_path / "checkpoints" / "onnx" / "best-000001.onnx"
+    assert exported[0] == (
+        tmp_path / "checkpoints" / "best.pt",
+        tmp_path / "checkpoints" / "onnx" / "best-000001.onnx",
+        "fp16",
+    )
     assert resume_paths == [tmp_path / "checkpoints" / "best.pt"]
     assert bootstrap_paths == [None]
     assert (tmp_path / "checkpoints" / "candidate.pt").read_text(encoding="utf-8") == "candidate"

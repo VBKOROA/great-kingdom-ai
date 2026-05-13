@@ -16,6 +16,7 @@ from great_kingdom_ai.train import load_checkpoint
 
 DEFAULT_OPSET_VERSION = 17
 DEFAULT_PARITY_TOLERANCE = 1e-5
+ONNX_PRECISIONS = ("fp32", "fp16")
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,7 @@ class OnnxExportSummary:
     output_path: Path
     opset_version: int
     dummy_batch_size: int
+    precision: str = "fp32"
     input_name: str = "features"
     output_names: tuple[str, str] = ("policy_logits", "value")
 
@@ -69,10 +71,12 @@ def export_checkpoint_to_onnx(
     opset_version: int = DEFAULT_OPSET_VERSION,
     dummy_batch_size: int = 2,
     prefer_ema: bool = True,
+    precision: str = "fp32",
 ) -> OnnxExportSummary:
-    """Export a training checkpoint to FP32 ONNX with a dynamic batch axis."""
+    """Export a training checkpoint to ONNX with dynamic batch and optional FP16 internals."""
     if dummy_batch_size < 1:
         raise ValueError("dummy_batch_size must be at least 1")
+    _validate_precision(precision)
 
     torch = _import_torch()
     checkpoint = Path(checkpoint_path)
@@ -104,11 +108,15 @@ def export_checkpoint_to_onnx(
             dynamo=False,
         )
 
+    if precision == "fp16":
+        _convert_onnx_to_fp16_keep_io(destination)
+
     return OnnxExportSummary(
         checkpoint_path=checkpoint,
         output_path=destination,
         opset_version=opset_version,
         dummy_batch_size=dummy_batch_size,
+        precision=precision,
     )
 
 
@@ -170,6 +178,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
     parser.add_argument("--opset-version", type=int, default=DEFAULT_OPSET_VERSION)
     parser.add_argument("--dummy-batch-size", type=int, default=2)
+    parser.add_argument("--precision", choices=ONNX_PRECISIONS, default="fp32")
     parser.add_argument(
         "--check-parity",
         action="store_true",
@@ -195,6 +204,7 @@ def main() -> NoReturn:
         opset_version=args.opset_version,
         dummy_batch_size=args.dummy_batch_size,
         prefer_ema=not args.no_ema,
+        precision=args.precision,
     )
     print(json.dumps({"event": "onnx_export", **export_summary.to_json_dict()}, sort_keys=True))
 
@@ -229,6 +239,24 @@ def _import_onnxruntime() -> Any:
         raise RuntimeError("onnxruntime is required for ONNX parity checks") from exc
 
 
+def _validate_precision(precision: str) -> None:
+    if precision not in ONNX_PRECISIONS:
+        choices = ", ".join(ONNX_PRECISIONS)
+        raise ValueError(f"precision must be one of: {choices}")
+
+
+def _convert_onnx_to_fp16_keep_io(path: Path) -> None:
+    try:
+        import onnx
+        from onnxconverter_common import float16
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("onnxconverter-common is required for FP16 ONNX export") from exc
+
+    model = onnx.load(path)
+    converted = float16.convert_float_to_float16(model, keep_io_types=True)
+    onnx.save(converted, path)
+
+
 if __name__ == "__main__":
     main()
 
@@ -236,6 +264,7 @@ if __name__ == "__main__":
 __all__ = [
     "DEFAULT_OPSET_VERSION",
     "DEFAULT_PARITY_TOLERANCE",
+    "ONNX_PRECISIONS",
     "OnnxExportSummary",
     "OnnxParitySummary",
     "build_parser",

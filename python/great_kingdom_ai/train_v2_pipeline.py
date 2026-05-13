@@ -66,6 +66,7 @@ class TrainV2PipelineConfig:
     max_self_play_games: int | None = None
     seed_start: int = 0
     onnx_device: str = "cpu"
+    onnx_precision: str = "fp32"
     onnx_max_batch_size: int = 128
     rust_self_play_batch_size: int = 2
     skip_arena: bool = True
@@ -183,6 +184,7 @@ def run_train_v2_pipeline(
     printer.metric("completed iterations", completed_iterations)
     printer.metric("trajectory transitions", len(replay))
     printer.metric("train device", train_config.device)
+    printer.metric("onnx precision", pipeline_config.onnx_precision)
     printer.metric("reanalyze device", _reanalyze_device(pipeline_config, train_config))
 
     for iteration in range(first_iteration, last_iteration + 1):
@@ -191,7 +193,12 @@ def run_train_v2_pipeline(
         printer.title(f"Train V2 Iteration {iteration}/{last_iteration}")
         onnx_path = paths["onnx_checkpoint_dir"] / f"best-{iteration:06d}.onnx"
         printer.step(f"exporting best checkpoint -> {onnx_path}")
-        export_checkpoint_to_onnx(paths["best_checkpoint"], onnx_path, device=train_config.device)
+        export_checkpoint_to_onnx(
+            paths["best_checkpoint"],
+            onnx_path,
+            device=train_config.device,
+            precision=pipeline_config.onnx_precision,
+        )
         printer.progress("iteration", 1, phase_total, detail="onnx export complete")
 
         self_play_summary = _generate_trajectory_self_play(
@@ -405,6 +412,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--iterations", type=int, default=None)
     parser.add_argument("--device", choices=["cpu", "cuda"], default=None)
     parser.add_argument("--onnx-device", choices=["cpu", "cuda"], default=None)
+    parser.add_argument("--onnx-precision", choices=["fp32", "fp16"], default=None)
     parser.add_argument("--reanalyze-device", choices=["cpu", "cuda"], default=None)
     parser.add_argument("--self-play-games", type=int, default=None)
     parser.add_argument("--min-replay-transitions", type=int, default=None)
@@ -437,6 +445,7 @@ def main() -> NoReturn:
         "work_dir": args.work_dir,
         "iterations": args.iterations,
         "onnx_device": args.onnx_device if args.onnx_device is not None else args.device,
+        "onnx_precision": args.onnx_precision,
         "reanalyze_device": (
             args.reanalyze_device if args.reanalyze_device is not None else args.device
         ),
@@ -719,6 +728,8 @@ def _validate_config(config: TrainV2PipelineConfig) -> None:
         raise ValueError("max_self_play_games must be at least self_play_games")
     if config.onnx_max_batch_size <= 0:
         raise ValueError("onnx_max_batch_size must be positive")
+    if config.onnx_precision not in {"fp32", "fp16"}:
+        raise ValueError("onnx_precision must be one of: fp32, fp16")
     if config.rust_self_play_batch_size <= 0:
         raise ValueError("rust_self_play_batch_size must be positive")
     if config.reanalyze_batch_size <= 0:
@@ -751,6 +762,7 @@ def _as_rust_config(config: TrainV2PipelineConfig) -> RustOnnxPipelineConfig:
         max_self_play_games=config.max_self_play_games,
         seed_start=config.seed_start,
         onnx_device=config.onnx_device,
+        onnx_precision=config.onnx_precision,
         onnx_max_batch_size=config.onnx_max_batch_size,
         rust_self_play_batch_size=config.rust_self_play_batch_size,
         skip_arena=config.skip_arena,
