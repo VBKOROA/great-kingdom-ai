@@ -9,6 +9,7 @@ import great_kingdom_ai.reanalyze as reanalyze_module
 import numpy as np
 import pytest
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS, PASS_ACTION
+from great_kingdom_ai.on_sample_reanalyze import OnSampleReanalyzeDataset
 from great_kingdom_ai.priority_sampling import PrioritySamplingConfig
 from great_kingdom_ai.reanalyze import (
     ReanalyzeConfig,
@@ -118,6 +119,33 @@ def test_reanalyze_target_snapshot_round_trips_and_samples_arrays(tmp_path: Path
     assert batch.features.shape == (2, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
     assert sorted(batch.sample_weights.tolist()) == pytest.approx([1.0, 2.0])
     assert load_training_replay(path).__class__ is ReanalyzeTargetSnapshot
+
+
+@pytest.mark.skipif(_torch_spec is None, reason="torch is not installed")
+def test_on_sample_reanalyze_matches_snapshot_bootstrap_values(tmp_path: Path) -> None:
+    replay = TrajectoryReplayBuffer(capacity=8)
+    replay.push_episode(make_episode())
+    store = TrajectoryReplayStore.from_episodes(replay.capacity, replay.episodes)
+    state = create_train_state(TrainingConfig(batch_size=2, seed=9))
+    checkpoint = save_checkpoint(state, tmp_path / "checkpoint.pt")
+    config = ReanalyzeConfig(batch_size=2, bootstrap_td_steps=1, gamma=0.5)
+
+    snapshot = build_reanalyze_snapshot_from_store(
+        store,
+        checkpoint_path=checkpoint,
+        config=config,
+    )
+    dataset = OnSampleReanalyzeDataset(
+        store,
+        checkpoint_path=checkpoint,
+        config=config,
+    )
+    batch = dataset.sample_arrays(len(store), random.Random(3))
+
+    assert sorted(batch.indexes.tolist()) == [0, 1, 2]
+    sampled_rows = zip(batch.indexes.tolist(), batch.values.tolist(), strict=True)
+    for replay_index, sampled_value in sampled_rows:
+        assert sampled_value == pytest.approx(float(snapshot.values[replay_index]))
 
 
 def test_reanalyze_target_snapshot_priority_sampling_uses_importance_weights() -> None:

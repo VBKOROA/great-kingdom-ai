@@ -19,6 +19,7 @@ from great_kingdom_ai.evaluate import (
     run_arena_checkpoints_onnx,
     save_arena_report,
 )
+from great_kingdom_ai.on_sample_reanalyze import OnSampleReanalyzeDataset
 from great_kingdom_ai.onnx_export import export_checkpoint_to_onnx
 from great_kingdom_ai.pipeline_printer import PipelinePrinter
 from great_kingdom_ai.reanalyze import (
@@ -221,7 +222,7 @@ def run_train_v2_pipeline(
 
         target_snapshot_path = paths["target_dir"] / f"targets-{iteration:06d}.npz"
         reanalyze_checkpoint = _training_source_checkpoint(pipeline_config, paths)
-        printer.step(f"reanalyzing targets -> {target_snapshot_path}")
+        printer.step(f"preparing {pipeline_config.reanalyze_mode} reanalyze targets")
         reanalyze_config = ReanalyzeConfig(
             batch_size=pipeline_config.reanalyze_batch_size,
             device=_reanalyze_device(pipeline_config, train_config),
@@ -246,30 +247,43 @@ def run_train_v2_pipeline(
                 seed=pipeline_config.search_reanalyze_seed,
             ),
         )
-        target_replay = build_reanalyze_snapshot_from_store(
-            replay,
-            checkpoint_path=reanalyze_checkpoint,
-            config=reanalyze_config,
-            progress_callback=lambda stage, current, target, detail: printer.progress(
-                f"reanalyze {stage}",
-                current,
-                target,
-                detail=detail,
-            ),
-        )
-        reanalyze_summary = _reanalyze_summary_for_snapshot(
-            target_replay,
-            replay_path=paths["trajectory_replay_path"],
-            checkpoint_path=reanalyze_checkpoint,
-            output_path=target_snapshot_path,
-        )
-        if pipeline_config.save_target_snapshots:
-            printer.progress("reanalyze save", 0, 1, detail=f"output={target_snapshot_path}")
-            target_replay.save(target_snapshot_path, compressed=reanalyze_config.compressed)
-            printer.progress("reanalyze save", 1, 1, detail=f"rows={len(target_replay)}")
-            shutil.copy2(target_snapshot_path, paths["latest_target_snapshot_path"])
+        if pipeline_config.reanalyze_mode == "snapshot":
+            target_replay = build_reanalyze_snapshot_from_store(
+                replay,
+                checkpoint_path=reanalyze_checkpoint,
+                config=reanalyze_config,
+                progress_callback=lambda stage, current, target, detail: printer.progress(
+                    f"reanalyze {stage}",
+                    current,
+                    target,
+                    detail=detail,
+                ),
+            )
+            reanalyze_summary = _reanalyze_summary_for_snapshot(
+                target_replay,
+                replay_path=paths["trajectory_replay_path"],
+                checkpoint_path=reanalyze_checkpoint,
+                output_path=target_snapshot_path,
+            )
+            if pipeline_config.save_target_snapshots:
+                printer.progress("reanalyze save", 0, 1, detail=f"output={target_snapshot_path}")
+                target_replay.save(target_snapshot_path, compressed=reanalyze_config.compressed)
+                printer.progress("reanalyze save", 1, 1, detail=f"rows={len(target_replay)}")
+                shutil.copy2(target_snapshot_path, paths["latest_target_snapshot_path"])
+            else:
+                printer.progress("reanalyze save", 1, 1, detail="skipped")
         else:
-            printer.progress("reanalyze save", 1, 1, detail="skipped")
+            target_replay = OnSampleReanalyzeDataset(
+                replay,
+                checkpoint_path=reanalyze_checkpoint,
+                config=reanalyze_config,
+            )
+            reanalyze_summary = _reanalyze_summary_for_on_sample_dataset(
+                target_replay,
+                replay_path=paths["trajectory_replay_path"],
+                output_path=target_snapshot_path,
+            )
+            printer.progress("reanalyze save", 1, 1, detail="skipped for on_sample mode")
         _release_cuda_cache(_reanalyze_device(pipeline_config, train_config))
         printer.progress("iteration", 3, phase_total, detail="reanalyze complete")
 
@@ -701,6 +715,24 @@ def _reanalyze_summary_for_snapshot(
             if snapshot.search_reanalyzed is None
             else int(snapshot.search_reanalyzed.sum())
         ),
+    )
+
+
+def _reanalyze_summary_for_on_sample_dataset(
+    dataset: OnSampleReanalyzeDataset,
+    *,
+    replay_path: Path,
+    output_path: Path,
+) -> ReanalyzeSummary:
+    return ReanalyzeSummary(
+        replay_path=replay_path,
+        checkpoint_path=dataset.checkpoint_path,
+        output_path=output_path,
+        transitions=len(dataset),
+        model_version=dataset.model_version,
+        bootstrap_td_steps=dataset.bootstrap_td_steps,
+        gamma=dataset.gamma,
+        search_reanalyzed=0,
     )
 
 

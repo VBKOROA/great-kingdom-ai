@@ -267,6 +267,103 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
     assert (tmp_path / "checkpoints" / "onnx" / "best-000001.onnx").exists()
 
 
+def test_train_v2_pipeline_uses_on_sample_reanalyze_dataset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset_calls: list[dict[str, Any]] = []
+    trained_replay_types: list[str] = []
+
+    class FakeOnSampleDataset:
+        def __init__(
+            self,
+            replay: Any,
+            *,
+            checkpoint_path: str | Path,
+            config: Any,
+        ) -> None:
+            self._size = len(replay)
+            self.checkpoint_path = Path(checkpoint_path)
+            self.model_version = int(config.model_version or 0)
+            self.bootstrap_td_steps = config.bootstrap_td_steps
+            self.gamma = config.gamma
+            dataset_calls.append(
+                {
+                    "rows": len(replay),
+                    "checkpoint_path": Path(checkpoint_path),
+                    "bootstrap_td_steps": config.bootstrap_td_steps,
+                }
+            )
+
+        def __len__(self) -> int:
+            return self._size
+
+    def fake_save_checkpoint(state: object, path: str | Path) -> Path:
+        del state
+        destination = Path(path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("best", encoding="utf-8")
+        return destination
+
+    def fake_export(checkpoint_path: str | Path, output_path: str | Path, **kwargs: Any) -> object:
+        del checkpoint_path, kwargs
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_text("onnx", encoding="utf-8")
+        return object()
+
+    def fake_train_from_replay(
+        replay: Any,
+        config: TrainingConfig,
+        *,
+        checkpoint_path: str | Path,
+        resume_path: str | Path | None,
+        bootstrap_weights_path: str | Path | None = None,
+        log_every: int,
+        progress_callback: Any = None,
+    ) -> FakeTrainSummary:
+        del config, resume_path, bootstrap_weights_path, log_every, progress_callback
+        trained_replay_types.append(type(replay).__name__)
+        destination = Path(checkpoint_path)
+        destination.write_text("candidate", encoding="utf-8")
+        return FakeTrainSummary(destination)
+
+    monkeypatch.setattr(pipeline_module, "create_train_state", lambda config: object())
+    monkeypatch.setattr(pipeline_module, "save_checkpoint", fake_save_checkpoint)
+    monkeypatch.setattr(pipeline_module, "export_checkpoint_to_onnx", fake_export)
+    monkeypatch.setattr(pipeline_module, "OnSampleReanalyzeDataset", FakeOnSampleDataset)
+    monkeypatch.setattr(pipeline_module, "train_from_replay", fake_train_from_replay)
+
+    summary = pipeline_module.run_train_v2_pipeline(
+        pipeline_config=pipeline_module.TrainV2PipelineConfig(
+            work_dir=tmp_path,
+            iterations=1,
+            replay_capacity=8,
+            self_play_games=1,
+            min_replay_transitions=1,
+            reanalyze_mode="on_sample",
+            save_target_snapshots=False,
+            skip_arena=True,
+            always_promote=True,
+            self_play=SelfPlayConfig(policy_target_c_visit=5.0, policy_target_c_scale=0.25),
+        ),
+        train_config=TrainingConfig(batch_size=1, steps=1, device="cpu"),
+        arena_config=ArenaConfig(games=1, device="cpu"),
+        printer=PipelinePrinter(enabled=False),
+        rust_self_play_runner=fake_runner,
+    )
+
+    assert dataset_calls == [
+        {
+            "rows": 2,
+            "checkpoint_path": tmp_path / "checkpoints" / "best.pt",
+            "bootstrap_td_steps": 4,
+        }
+    ]
+    assert trained_replay_types == ["FakeOnSampleDataset"]
+    assert summary.latest_target_snapshot_path is None
+    assert not (tmp_path / "targets" / "targets-000001.npz").exists()
+
+
 def test_train_config_for_iteration_scales_steps_from_new_transitions() -> None:
     config = pipeline_module._train_config_for_iteration(
         TrainingConfig(batch_size=512, steps=999),
