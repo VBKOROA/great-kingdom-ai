@@ -783,6 +783,11 @@ def _reanalyze_summary_for_on_sample_dataset(
         sampled_batches=stats.sampled_batches,
         sampled_rows=stats.sampled_rows,
         policy_reanalyzed=stats.policy_reanalyzed,
+        sampled_rows_per_batch=stats.sampled_rows_per_batch,
+        value_eval_seconds=stats.value_eval_seconds,
+        search_seconds=stats.search_seconds,
+        policy_reanalyze_ratio_applied=stats.policy_reanalyze_ratio_applied,
+        stale_policy_fallbacks=stats.stale_policy_fallbacks,
         bootstrap_horizon_counts=stats.bootstrap_horizon_counts,
         bootstrap_source_counts=stats.bootstrap_source_counts,
     )

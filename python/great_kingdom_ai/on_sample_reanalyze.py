@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import random
+import time
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,6 +48,12 @@ class OnSampleReanalyzeStats:
     sampled_batches: int
     sampled_rows: int
     policy_reanalyzed: int
+    search_reanalyzed: int
+    sampled_rows_per_batch: float
+    value_eval_seconds: float
+    search_seconds: float
+    policy_reanalyze_ratio_applied: float
+    stale_policy_fallbacks: int
     bootstrap_horizon_counts: dict[int, int]
     bootstrap_source_counts: dict[str, int]
 
@@ -55,6 +62,12 @@ class OnSampleReanalyzeStats:
             "sampled_batches": self.sampled_batches,
             "sampled_rows": self.sampled_rows,
             "policy_reanalyzed": self.policy_reanalyzed,
+            "search_reanalyzed": self.search_reanalyzed,
+            "sampled_rows_per_batch": self.sampled_rows_per_batch,
+            "value_eval_seconds": self.value_eval_seconds,
+            "search_seconds": self.search_seconds,
+            "policy_reanalyze_ratio_applied": self.policy_reanalyze_ratio_applied,
+            "stale_policy_fallbacks": self.stale_policy_fallbacks,
             "bootstrap_horizon_counts": {
                 str(horizon): count
                 for horizon, count in sorted(self.bootstrap_horizon_counts.items())
@@ -90,6 +103,9 @@ class OnSampleReanalyzeDataset:
         self._sampled_batches = 0
         self._sampled_rows = 0
         self._policy_reanalyzed = 0
+        self._stale_policy_fallbacks = 0
+        self._value_eval_seconds = 0.0
+        self._search_seconds = 0.0
         self._bootstrap_horizon_counts: Counter[int] = Counter()
         self._bootstrap_source_counts: Counter[str] = Counter()
         self._onnx_evaluator = (
@@ -134,10 +150,22 @@ class OnSampleReanalyzeDataset:
         return len(self._replay)
 
     def target_stats(self) -> OnSampleReanalyzeStats:
+        sampled_rows_per_batch = (
+            0.0 if self._sampled_batches == 0 else self._sampled_rows / self._sampled_batches
+        )
+        policy_reanalyze_ratio_applied = (
+            0.0 if self._sampled_rows == 0 else self._policy_reanalyzed / self._sampled_rows
+        )
         return OnSampleReanalyzeStats(
             sampled_batches=self._sampled_batches,
             sampled_rows=self._sampled_rows,
             policy_reanalyzed=self._policy_reanalyzed,
+            search_reanalyzed=self._policy_reanalyzed,
+            sampled_rows_per_batch=sampled_rows_per_batch,
+            value_eval_seconds=self._value_eval_seconds,
+            search_seconds=self._search_seconds,
+            policy_reanalyze_ratio_applied=policy_reanalyze_ratio_applied,
+            stale_policy_fallbacks=self._stale_policy_fallbacks,
             bootstrap_horizon_counts=dict(self._bootstrap_horizon_counts),
             bootstrap_source_counts=dict(self._bootstrap_source_counts),
         )
@@ -360,7 +388,7 @@ class OnSampleReanalyzeDataset:
         )
         if self._config.value_bootstrap_source == "value_head":
             return value_head_values
-        search_result = refresh_sampled_policies_with_search(
+        search_result = self._refresh_with_search(
             transitions=self._replay.transition_refs(bootstrap_rows),
             policies=np.ascontiguousarray(
                 self._replay.policy_targets[bootstrap_rows],
@@ -402,7 +430,7 @@ class OnSampleReanalyzeDataset:
             selected_features,
             selected_legal_masks,
         )
-        search_result = refresh_sampled_policies_with_search(
+        search_result = self._refresh_with_search(
             transitions=self._replay.transition_refs(selected_replay_rows),
             policies=np.ascontiguousarray(policies[selected_positions], dtype=np.float32),
             policy_logits=policy_logits,
@@ -415,27 +443,41 @@ class OnSampleReanalyzeDataset:
         refreshed = policies.copy()
         refreshed[selected_positions] = search_result.policies
         search_reanalyzed[selected_positions] = search_result.search_reanalyzed
+        self._stale_policy_fallbacks += int(
+            len(selected_positions) - np.count_nonzero(search_result.search_reanalyzed)
+        )
         return np.ascontiguousarray(refreshed, dtype=np.float32), search_reanalyzed
+
+    def _refresh_with_search(self, **kwargs: Any) -> Any:
+        start = time.perf_counter()
+        try:
+            return refresh_sampled_policies_with_search(**kwargs)
+        finally:
+            self._search_seconds += time.perf_counter() - start
 
     def _evaluate_logits_values(
         self,
         features: np.ndarray,
         legal_masks: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray]:
-        if self._onnx_evaluator is None:
-            return _evaluate_policy_logits_values(
-                self._model,
+        start = time.perf_counter()
+        try:
+            if self._onnx_evaluator is None:
+                return _evaluate_policy_logits_values(
+                    self._model,
+                    features,
+                    legal_masks,
+                    batch_size=self._config.batch_size,
+                    device=self._config.device,
+                )
+            return _evaluate_policy_logits_values_with_onnx(
+                cast(Any, self._onnx_evaluator),
                 features,
-                legal_masks,
                 batch_size=self._config.batch_size,
-                device=self._config.device,
+                device=self._config.onnx_device or self._config.device,
             )
-        return _evaluate_policy_logits_values_with_onnx(
-            cast(Any, self._onnx_evaluator),
-            features,
-            batch_size=self._config.batch_size,
-            device=self._config.onnx_device or self._config.device,
-        )
+        finally:
+            self._value_eval_seconds += time.perf_counter() - start
 
 
 def _initial_priorities(sample_weights: np.ndarray) -> np.ndarray:

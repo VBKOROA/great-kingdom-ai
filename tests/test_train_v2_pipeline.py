@@ -309,6 +309,12 @@ def test_train_v2_pipeline_uses_on_sample_reanalyze_dataset(
                     "sampled_batches": 1,
                     "sampled_rows": 2,
                     "policy_reanalyzed": 1,
+                    "search_reanalyzed": 1,
+                    "sampled_rows_per_batch": 2.0,
+                    "value_eval_seconds": 0.25,
+                    "search_seconds": 0.5,
+                    "policy_reanalyze_ratio_applied": 0.5,
+                    "stale_policy_fallbacks": 0,
                     "bootstrap_horizon_counts": {1: 2},
                     "bootstrap_source_counts": {"value_head": 2},
                 },
@@ -383,6 +389,10 @@ def test_train_v2_pipeline_uses_on_sample_reanalyze_dataset(
     assert summary.iterations[0].reanalyze.to_dict()["reanalyze_mode"] == "on_sample"
     assert summary.iterations[0].reanalyze.to_dict()["sampled_batches"] == 1
     assert summary.iterations[0].reanalyze.to_dict()["search_reanalyzed"] == 1
+    assert summary.iterations[0].reanalyze.to_dict()["sampled_rows_per_batch"] == 2.0
+    assert summary.iterations[0].reanalyze.to_dict()["value_eval_seconds"] == 0.25
+    assert summary.iterations[0].reanalyze.to_dict()["search_seconds"] == 0.5
+    assert summary.iterations[0].reanalyze.to_dict()["policy_reanalyze_ratio_applied"] == 0.5
     assert summary.iterations[0].reanalyze.to_dict()["bootstrap_horizon_counts"] == {"1": 2}
     assert not (tmp_path / "targets" / "targets-000001.npz").exists()
 

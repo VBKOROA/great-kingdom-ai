@@ -494,6 +494,7 @@ def test_train_from_replay_saves_checkpoint_and_resume_advances_step(tmp_path) -
     assert second_checkpoint.is_file()
     assert resumed.losses[-1]["total"] > 0.0
     assert "policy_kl" in resumed.losses[-1]
+    assert resumed.losses[-1]["train_step_seconds"] > 0.0
 
 
 def test_train_from_replay_can_bootstrap_weights_without_resuming_step(tmp_path) -> None:

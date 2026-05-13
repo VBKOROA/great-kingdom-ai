@@ -423,3 +423,10 @@ def test_on_sample_sampled_search_uses_rust_core_path(
     expected_values = {0: -0.35, 1: -1.0, 2: 1.0}
     for replay_index, value in zip(batch.indexes.tolist(), batch.values.tolist(), strict=True):
         assert value == pytest.approx(expected_values[replay_index])
+    stats = dataset.target_stats()
+    assert stats.sampled_rows_per_batch == pytest.approx(3.0)
+    assert stats.policy_reanalyze_ratio_applied == pytest.approx(1.0)
+    assert stats.search_reanalyzed == 3
+    assert stats.stale_policy_fallbacks == 0
+    assert stats.value_eval_seconds > 0.0
+    assert stats.search_seconds > 0.0

@@ -109,6 +109,11 @@ class ReanalyzeSummary:
     sampled_batches: int = 0
     sampled_rows: int = 0
     policy_reanalyzed: int = 0
+    sampled_rows_per_batch: float = 0.0
+    value_eval_seconds: float = 0.0
+    search_seconds: float = 0.0
+    policy_reanalyze_ratio_applied: float = 0.0
+    stale_policy_fallbacks: int = 0
     bootstrap_horizon_counts: dict[int, int] = field(default_factory=dict)
     bootstrap_source_counts: dict[str, int] = field(default_factory=dict)
 
@@ -128,6 +133,11 @@ class ReanalyzeSummary:
             "sampled_batches": self.sampled_batches,
             "sampled_rows": self.sampled_rows,
             "policy_reanalyzed": self.policy_reanalyzed,
+            "sampled_rows_per_batch": self.sampled_rows_per_batch,
+            "value_eval_seconds": self.value_eval_seconds,
+            "search_seconds": self.search_seconds,
+            "policy_reanalyze_ratio_applied": self.policy_reanalyze_ratio_applied,
+            "stale_policy_fallbacks": self.stale_policy_fallbacks,
             "bootstrap_horizon_counts": {
                 str(horizon): count
                 for horizon, count in sorted(self.bootstrap_horizon_counts.items())

@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 import random
+import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
@@ -574,7 +575,9 @@ def train_from_replay(
         _iter_training_batches(replay, config, rng, torch=torch),
         strict=True,
     ):
+        train_step_start = time.perf_counter()
         loss = train_step(state, batch, config)
+        train_step_seconds = time.perf_counter() - train_step_start
         state = TrainState(
             model=state.model,
             optimizer=state.optimizer,
@@ -591,6 +594,7 @@ def train_from_replay(
             should_log = False
         if should_log:
             loss_values = loss.to_float_dict()
+            loss_values["train_step_seconds"] = train_step_seconds
             losses.append({"step": float(state.step), **loss_values})
             if progress_callback is not None:
                 progress_callback(state.step - start_step, config.steps, loss_values)
