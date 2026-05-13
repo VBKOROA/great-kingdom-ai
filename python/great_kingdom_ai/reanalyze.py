@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import math
 import random
@@ -682,12 +683,11 @@ def _eval_request_from_feature_array(core: Any, features: np.ndarray) -> Any:
 
 def _import_core() -> Any:
     try:
-        import great_kingdom_core as core
+        return importlib.import_module("great_kingdom_core")
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             "great_kingdom_core is not installed. Build it with maturin before ONNX reanalyze."
         ) from exc
-    return core
 
 
 def _bootstrap_targets_from_refreshed_values(
