@@ -55,6 +55,8 @@ class OnSampleReanalyzeStats:
     search_seconds: float
     policy_reanalyze_ratio_applied: float
     stale_policy_fallbacks: int
+    mcts_root_cache_hits: int
+    mcts_root_cache_misses: int
     bootstrap_horizon_counts: dict[int, int]
     bootstrap_source_counts: dict[str, int]
 
@@ -69,6 +71,8 @@ class OnSampleReanalyzeStats:
             "search_seconds": self.search_seconds,
             "policy_reanalyze_ratio_applied": self.policy_reanalyze_ratio_applied,
             "stale_policy_fallbacks": self.stale_policy_fallbacks,
+            "mcts_root_cache_hits": self.mcts_root_cache_hits,
+            "mcts_root_cache_misses": self.mcts_root_cache_misses,
             "bootstrap_horizon_counts": {
                 str(horizon): count
                 for horizon, count in sorted(self.bootstrap_horizon_counts.items())
@@ -107,6 +111,9 @@ class OnSampleReanalyzeDataset:
         self._stale_policy_fallbacks = 0
         self._value_eval_seconds = 0.0
         self._search_seconds = 0.0
+        self._mcts_root_cache: dict[int, np.float32] = {}
+        self._mcts_root_cache_hits = 0
+        self._mcts_root_cache_misses = 0
         self._bootstrap_horizon_counts: Counter[int] = Counter()
         self._bootstrap_source_counts: Counter[str] = Counter()
         self._onnx_evaluator_local = threading.local()
@@ -159,6 +166,8 @@ class OnSampleReanalyzeDataset:
             search_seconds=self._search_seconds,
             policy_reanalyze_ratio_applied=policy_reanalyze_ratio_applied,
             stale_policy_fallbacks=self._stale_policy_fallbacks,
+            mcts_root_cache_hits=self._mcts_root_cache_hits,
+            mcts_root_cache_misses=self._mcts_root_cache_misses,
             bootstrap_horizon_counts=dict(self._bootstrap_horizon_counts),
             bootstrap_source_counts=dict(self._bootstrap_source_counts),
         )
@@ -380,6 +389,9 @@ class OnSampleReanalyzeDataset:
         bootstrap_rows: list[int],
         bootstrap_features: np.ndarray,
     ) -> np.ndarray:
+        if self._config.value_bootstrap_source == "mcts_root":
+            return self._mcts_root_values_for_rows(bootstrap_rows, bootstrap_features)
+
         bootstrap_legal_masks = np.ascontiguousarray(
             self._legal_masks_for_rows(bootstrap_rows, bootstrap_features),
             dtype=np.bool_,
@@ -388,12 +400,44 @@ class OnSampleReanalyzeDataset:
             bootstrap_features,
             bootstrap_legal_masks,
         )
-        if self._config.value_bootstrap_source == "value_head":
-            return value_head_values
+        return value_head_values
+
+    def _mcts_root_values_for_rows(
+        self,
+        bootstrap_rows: list[int],
+        bootstrap_features: np.ndarray,
+    ) -> np.ndarray:
+        values = np.empty((len(bootstrap_rows),), dtype=np.float32)
+        missing_positions: list[int] = []
+        missing_rows: list[int] = []
+        for position, replay_row in enumerate(bootstrap_rows):
+            cached = self._mcts_root_cache.get(replay_row)
+            if cached is None:
+                missing_positions.append(position)
+                missing_rows.append(replay_row)
+            else:
+                values[position] = cached
+        self._mcts_root_cache_hits += len(bootstrap_rows) - len(missing_rows)
+        self._mcts_root_cache_misses += len(missing_rows)
+        if not missing_rows:
+            return np.ascontiguousarray(values, dtype=np.float32)
+
+        missing_features = np.ascontiguousarray(
+            bootstrap_features[missing_positions],
+            dtype=np.float32,
+        )
+        missing_legal_masks = np.ascontiguousarray(
+            self._legal_masks_for_rows(missing_rows, missing_features),
+            dtype=np.bool_,
+        )
+        policy_logits, value_head_values = self._evaluate_logits_values(
+            missing_features,
+            missing_legal_masks,
+        )
         search_result = self._refresh_with_search(
-            transitions=self._replay.transition_refs(bootstrap_rows),
+            transitions=self._replay.transition_refs(missing_rows),
             policies=np.ascontiguousarray(
-                self._replay.policy_targets[bootstrap_rows],
+                self._replay.policy_targets[missing_rows],
                 dtype=np.float32,
             ),
             policy_logits=policy_logits,
@@ -405,7 +449,17 @@ class OnSampleReanalyzeDataset:
         )
         if search_result.root_values is None or not np.isfinite(search_result.root_values).all():
             raise RuntimeError("MCTS root bootstrap requires root values from search results")
-        return np.ascontiguousarray(search_result.root_values, dtype=np.float32)
+        root_values = np.ascontiguousarray(search_result.root_values, dtype=np.float32)
+        for position, replay_row, root_value in zip(
+            missing_positions,
+            missing_rows,
+            root_values,
+            strict=True,
+        ):
+            value = np.float32(root_value)
+            self._mcts_root_cache[replay_row] = value
+            values[position] = value
+        return np.ascontiguousarray(values, dtype=np.float32)
 
     def _refresh_sampled_policies(
         self,

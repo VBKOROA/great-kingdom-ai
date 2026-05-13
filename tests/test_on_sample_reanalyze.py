@@ -506,6 +506,52 @@ def test_on_sample_mcts_root_bootstrap_matches_snapshot_row_for_row(
 
 
 @pytest.mark.skipif(_torch_spec is None, reason="torch is not installed")
+def test_on_sample_caches_mcts_root_bootstrap_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = make_store()
+    checkpoint = make_checkpoint(tmp_path)
+    search_rows: list[list[int]] = []
+
+    def fake_refresh_sampled_policies_with_search(**kwargs: object) -> SearchReanalyzeResult:
+        policies = np.asarray(kwargs["policies"], dtype=np.float32)
+        transitions = kwargs["transitions"]
+        rows = [ref[0].transitions[ref[1]].timestep for ref in transitions]
+        search_rows.append(rows)
+        return SearchReanalyzeResult(
+            policies=policies.copy(),
+            search_reanalyzed=np.ones((policies.shape[0],), dtype=np.bool_),
+            selected_indexes=tuple(range(policies.shape[0])),
+            root_values=np.asarray([0.25 + 0.1 * row for row in rows], dtype=np.float32),
+        )
+
+    monkeypatch.setattr(
+        on_sample_reanalyze_module,
+        "refresh_sampled_policies_with_search",
+        fake_refresh_sampled_policies_with_search,
+    )
+    dataset = OnSampleReanalyzeDataset(
+        store,
+        checkpoint_path=checkpoint,
+        config=ReanalyzeConfig(
+            batch_size=3,
+            bootstrap_td_steps=1,
+            value_bootstrap_source="mcts_root",
+        ),
+    )
+
+    first = dataset._sampled_bootstrap_targets([0])
+    second = dataset._sampled_bootstrap_targets([0])
+    stats = dataset.target_stats()
+
+    assert first.tolist() == pytest.approx(second.tolist())
+    assert search_rows == [[1]]
+    assert stats.mcts_root_cache_hits == 1
+    assert stats.mcts_root_cache_misses == 1
+
+
+@pytest.mark.skipif(_torch_spec is None, reason="torch is not installed")
 def test_on_sample_sampled_search_uses_rust_core_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

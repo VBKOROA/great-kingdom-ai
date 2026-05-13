@@ -114,6 +114,8 @@ class ReanalyzeSummary:
     search_seconds: float = 0.0
     policy_reanalyze_ratio_applied: float = 0.0
     stale_policy_fallbacks: int = 0
+    mcts_root_cache_hits: int = 0
+    mcts_root_cache_misses: int = 0
     bootstrap_horizon_counts: dict[int, int] = field(default_factory=dict)
     bootstrap_source_counts: dict[str, int] = field(default_factory=dict)
 
@@ -138,6 +140,8 @@ class ReanalyzeSummary:
             "search_seconds": self.search_seconds,
             "policy_reanalyze_ratio_applied": self.policy_reanalyze_ratio_applied,
             "stale_policy_fallbacks": self.stale_policy_fallbacks,
+            "mcts_root_cache_hits": self.mcts_root_cache_hits,
+            "mcts_root_cache_misses": self.mcts_root_cache_misses,
             "bootstrap_horizon_counts": {
                 str(horizon): count
                 for horizon, count in sorted(self.bootstrap_horizon_counts.items())

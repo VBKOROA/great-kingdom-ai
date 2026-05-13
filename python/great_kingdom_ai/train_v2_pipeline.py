@@ -857,6 +857,8 @@ def _reanalyze_summary_for_on_sample_dataset(
         search_seconds=stats.search_seconds,
         policy_reanalyze_ratio_applied=stats.policy_reanalyze_ratio_applied,
         stale_policy_fallbacks=stats.stale_policy_fallbacks,
+        mcts_root_cache_hits=stats.mcts_root_cache_hits,
+        mcts_root_cache_misses=stats.mcts_root_cache_misses,
         bootstrap_horizon_counts=stats.bootstrap_horizon_counts,
         bootstrap_source_counts=stats.bootstrap_source_counts,
     )
