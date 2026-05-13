@@ -1,4 +1,5 @@
 #!/bin/bash
+INTERVAL=${1:-10}
 while true; do
     clear
     echo "=== 시스템 모니터링 ($(date +%H:%M:%S)) ==="
@@ -15,5 +16,5 @@ while true; do
     nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu --format=csv,noheader | \
     awk -F', ' '{print "VRAM 사용량: "$1" / "$2" | GPU 사용률: "$3}'
     
-    sleep 10
+    sleep $INTERVAL
 done
