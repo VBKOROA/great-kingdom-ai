@@ -78,6 +78,7 @@ class TrainV2PipelineConfig:
     dynamic_horizon_enabled: bool = False
     dynamic_horizon_tau: float = 0.3
     dynamic_horizon_total_steps: int | None = None
+    value_bootstrap_source: str = "value_head"
     reanalyze_mode: str = "snapshot"
     policy_reanalyze_ratio: float = 0.0
     search_reanalyze_fraction: float = 0.0
@@ -238,6 +239,7 @@ def run_train_v2_pipeline(
             dynamic_horizon_enabled=pipeline_config.dynamic_horizon_enabled,
             dynamic_horizon_tau=pipeline_config.dynamic_horizon_tau,
             dynamic_horizon_total_steps=pipeline_config.dynamic_horizon_total_steps,
+            value_bootstrap_source=pipeline_config.value_bootstrap_source,
             policy_reanalyze_ratio=pipeline_config.policy_reanalyze_ratio,
             model_version=iteration,
             compressed=False,
@@ -456,6 +458,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dynamic-horizon-tau", type=float, default=None)
     parser.add_argument("--dynamic-horizon-total-steps", type=int, default=None)
     parser.add_argument(
+        "--value-bootstrap-source",
+        choices=["value_head", "mcts_root"],
+        default=None,
+    )
+    parser.add_argument(
         "--reanalyze-mode",
         choices=["snapshot", "on_sample"],
         default=None,
@@ -504,6 +511,7 @@ def main() -> NoReturn:
         "dynamic_horizon_enabled": args.dynamic_horizon_enabled,
         "dynamic_horizon_tau": args.dynamic_horizon_tau,
         "dynamic_horizon_total_steps": args.dynamic_horizon_total_steps,
+        "value_bootstrap_source": args.value_bootstrap_source,
         "reanalyze_mode": args.reanalyze_mode,
         "policy_reanalyze_ratio": args.policy_reanalyze_ratio,
         "train_reuse_factor": args.train_reuse_factor,
@@ -843,6 +851,8 @@ def _validate_config(config: TrainV2PipelineConfig) -> None:
         raise ValueError(
             "dynamic_horizon_total_steps is required when dynamic horizon is enabled"
         )
+    if config.value_bootstrap_source not in {"value_head", "mcts_root"}:
+        raise ValueError("value_bootstrap_source must be one of: value_head, mcts_root")
     if config.train_checkpoint_mode not in {"resume", "bootstrap"}:
         raise ValueError("train_checkpoint_mode must be one of: resume, bootstrap")
     if config.train_reuse_factor is not None:

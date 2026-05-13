@@ -220,9 +220,9 @@ class OnSampleReanalyzeDataset:
             self._replay.features[bootstrap_rows],
             dtype=np.float32,
         )
-        _, bootstrap_values = self._evaluate_logits_values(
+        bootstrap_values = self._bootstrap_values_for_rows(
+            bootstrap_rows,
             bootstrap_features,
-            np.ascontiguousarray(self._replay.legal_masks[bootstrap_rows], dtype=np.bool_),
         )
         for batch_row, replay_row, target_row, effective_td_steps in pending:
             bootstrap = float(bootstrap_values[bootstrap_offsets[target_row]])
@@ -230,6 +230,38 @@ class OnSampleReanalyzeDataset:
                 bootstrap = -bootstrap
             targets[batch_row] = np.float32((gamma**effective_td_steps) * bootstrap)
         return np.ascontiguousarray(targets, dtype=np.float32)
+
+    def _bootstrap_values_for_rows(
+        self,
+        bootstrap_rows: list[int],
+        bootstrap_features: np.ndarray,
+    ) -> np.ndarray:
+        bootstrap_legal_masks = np.ascontiguousarray(
+            self._replay.legal_masks[bootstrap_rows],
+            dtype=np.bool_,
+        )
+        policy_logits, value_head_values = self._evaluate_logits_values(
+            bootstrap_features,
+            bootstrap_legal_masks,
+        )
+        if self._config.value_bootstrap_source == "value_head":
+            return value_head_values
+        search_result = refresh_sampled_policies_with_search(
+            transitions=self._replay.transition_refs(bootstrap_rows),
+            policies=np.ascontiguousarray(
+                self._replay.policy_targets[bootstrap_rows],
+                dtype=np.float32,
+            ),
+            policy_logits=policy_logits,
+            refreshed_values=value_head_values,
+            model=self._model,
+            device=self._config.device,
+            onnx_evaluator=self._onnx_evaluator,
+            config=self._config.search,
+        )
+        if search_result.root_values is None or not np.isfinite(search_result.root_values).all():
+            raise RuntimeError("MCTS root bootstrap requires root values from search results")
+        return np.ascontiguousarray(search_result.root_values, dtype=np.float32)
 
     def _refresh_sampled_policies(
         self,

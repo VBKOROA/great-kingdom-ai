@@ -11,7 +11,10 @@ use super::{
     config::GumbelConfig,
     evaluator::{GumbelEvaluator, OnnxGumbelEvaluator, PythonGumbelEvaluator},
     node::GumbelNode,
-    policy::{log_priors_from_logits, log_priors_from_priors, root_improved_policy_target},
+    policy::{
+        log_priors_from_logits, log_priors_from_priors, root_improved_policy_target,
+        root_search_value,
+    },
     result::GumbelResult,
     sampling::sample_root_candidates,
     search::{
@@ -830,6 +833,7 @@ impl GumbelSelfPlayBatch {
                     selected_action: None,
                     policy_target: [0.0; ACTION_SPACE],
                     visit_counts: [0; ACTION_SPACE],
+                    root_value: 0.0,
                 });
                 continue;
             };
@@ -857,6 +861,7 @@ impl GumbelSelfPlayBatch {
                 selected_action,
                 policy_target: improved.policy_target,
                 visit_counts: root.visit_counts(),
+                root_value: root_search_value(root),
             });
         }
         Ok(results)

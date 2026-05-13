@@ -89,6 +89,7 @@ class SearchReanalyzeResult:
     policies: np.ndarray
     search_reanalyzed: np.ndarray
     selected_indexes: tuple[int, ...]
+    root_values: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -201,10 +202,13 @@ def _refresh_selected_policies_with_search(
             policies=policies.copy(),
             search_reanalyzed=search_reanalyzed,
             selected_indexes=(),
+            root_values=None,
         )
 
     core = _import_core()
     refreshed = policies.copy()
+    root_values = np.full((policies.shape[0],), np.nan, dtype=np.float32)
+    root_values_available = True
     evaluator = (
         None
         if onnx_evaluator is not None
@@ -265,6 +269,11 @@ def _refresh_selected_policies_with_search(
                 raise ValueError("batch search did not return a result for selected row")
             refreshed[row_index] = _policy_target_from_result(result)
             search_reanalyzed[row_index] = True
+            root_value = _root_value_from_result(result)
+            if root_value is None:
+                root_values_available = False
+            else:
+                root_values[row_index] = root_value
         _report_progress(
             progress_callback,
             "search",
@@ -277,6 +286,7 @@ def _refresh_selected_policies_with_search(
         policies=refreshed,
         search_reanalyzed=search_reanalyzed,
         selected_indexes=selected_indexes,
+        root_values=root_values if root_values_available else None,
     )
 
 
@@ -493,6 +503,16 @@ def _policy_target_from_result(result: Any) -> np.ndarray:
     if np.any(policy < 0.0) or not np.isclose(policy.sum(), 1.0):
         raise ValueError("search policy target must be normalized and non-negative")
     return policy
+
+
+def _root_value_from_result(result: Any) -> float | None:
+    root_value = getattr(result, "root_value", None)
+    if root_value is None:
+        return None
+    value = float(root_value())
+    if not math.isfinite(value) or value < -1.0 or value > 1.0:
+        raise ValueError("search root value must be finite and in [-1, 1]")
+    return value
 
 
 def _report_progress(

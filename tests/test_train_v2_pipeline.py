@@ -398,6 +398,8 @@ def test_train_v2_parser_exposes_reanalyze_mode() -> None:
             "0.25",
             "--dynamic-horizon-total-steps",
             "50",
+            "--value-bootstrap-source",
+            "mcts_root",
         ]
     )
 
@@ -406,6 +408,7 @@ def test_train_v2_parser_exposes_reanalyze_mode() -> None:
     assert args.dynamic_horizon_enabled is True
     assert args.dynamic_horizon_tau == pytest.approx(0.25)
     assert args.dynamic_horizon_total_steps == 50
+    assert args.value_bootstrap_source == "mcts_root"
 
 
 def test_train_v2_pipeline_rejects_unknown_reanalyze_mode() -> None:
@@ -433,6 +436,16 @@ def test_train_v2_pipeline_requires_dynamic_horizon_total_steps() -> None:
         pipeline_module._validate_config(
             pipeline_module.TrainV2PipelineConfig(
                 dynamic_horizon_enabled=True,
+                self_play=SelfPlayConfig(policy_target_c_visit=5.0, policy_target_c_scale=0.25),
+            )
+        )
+
+
+def test_train_v2_pipeline_rejects_invalid_value_bootstrap_source() -> None:
+    with pytest.raises(ValueError, match="value_bootstrap_source"):
+        pipeline_module._validate_config(
+            pipeline_module.TrainV2PipelineConfig(
+                value_bootstrap_source="invalid",
                 self_play=SelfPlayConfig(policy_target_c_visit=5.0, policy_target_c_scale=0.25),
             )
         )

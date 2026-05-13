@@ -26,6 +26,7 @@ from great_kingdom_ai.replay_buffer import FEATURE_SHAPE, ReplaySample
 from great_kingdom_ai.search_reanalyze import (
     SearchReanalyzeConfig,
     refresh_policies_with_search,
+    refresh_sampled_policies_with_search,
 )
 from great_kingdom_ai.self_play_data import value_target_for_player
 from great_kingdom_ai.trajectory_replay import (
@@ -50,6 +51,7 @@ class ReanalyzeConfig:
     dynamic_horizon_enabled: bool = False
     dynamic_horizon_tau: float = 0.3
     dynamic_horizon_total_steps: int | None = None
+    value_bootstrap_source: str = "value_head"
     policy_reanalyze_ratio: float = 0.0
     model_version: int | None = None
     compressed: bool = True
@@ -72,6 +74,8 @@ class ReanalyzeConfig:
             raise ValueError(
                 "dynamic_horizon_total_steps is required when dynamic horizon is enabled"
             )
+        if self.value_bootstrap_source not in {"value_head", "mcts_root"}:
+            raise ValueError("value_bootstrap_source must be one of: value_head, mcts_root")
         if not math.isfinite(self.policy_reanalyze_ratio) or not 0.0 <= (
             self.policy_reanalyze_ratio
         ) <= 1.0:
@@ -425,9 +429,22 @@ def build_reanalyze_snapshot_from_store(
         1,
         f"td_steps={config.bootstrap_td_steps}, gamma={config.gamma:g}",
     )
+    bootstrap_values = (
+        refreshed_values
+        if config.value_bootstrap_source == "value_head"
+        else _mcts_root_bootstrap_values_from_store(
+            replay,
+            policy_logits=policy_logits,
+            refreshed_values=refreshed_values,
+            model=state.model,
+            device=config.device,
+            onnx_evaluator=onnx_evaluator,
+            config=config.search,
+        )
+    )
     values = _bootstrap_targets_from_store(
         replay,
-        refreshed_values,
+        bootstrap_values,
         td_steps=config.bootstrap_td_steps,
         gamma=config.gamma,
         model_version=model_version,
@@ -532,6 +549,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dynamic-horizon-tau", type=float, default=0.3)
     parser.add_argument("--dynamic-horizon-total-steps", type=int, default=None)
     parser.add_argument(
+        "--value-bootstrap-source",
+        choices=["value_head", "mcts_root"],
+        default="value_head",
+    )
+    parser.add_argument(
         "--model-version",
         type=int,
         default=None,
@@ -571,6 +593,7 @@ def main() -> NoReturn:
         dynamic_horizon_enabled=args.dynamic_horizon_enabled,
         dynamic_horizon_tau=args.dynamic_horizon_tau,
         dynamic_horizon_total_steps=args.dynamic_horizon_total_steps,
+        value_bootstrap_source=args.value_bootstrap_source,
         model_version=args.model_version,
         compressed=not args.no_compress,
         search=SearchReanalyzeConfig(
@@ -764,6 +787,31 @@ def _bootstrap_targets_from_refreshed_values(
             targets[row] = np.float32((gamma**effective_td_steps) * bootstrap)
         row_offset += len(episode.transitions)
     return targets
+
+
+def _mcts_root_bootstrap_values_from_store(
+    replay: TrajectoryReplayStore,
+    *,
+    policy_logits: np.ndarray,
+    refreshed_values: np.ndarray,
+    model: Any,
+    device: str,
+    onnx_evaluator: Any | None,
+    config: SearchReanalyzeConfig,
+) -> np.ndarray:
+    search_result = refresh_sampled_policies_with_search(
+        transitions=replay.transition_refs(list(range(len(replay)))),
+        policies=np.ascontiguousarray(replay.policy_targets, dtype=np.float32),
+        policy_logits=policy_logits,
+        refreshed_values=refreshed_values,
+        model=model,
+        device=device,
+        onnx_evaluator=onnx_evaluator,
+        config=config,
+    )
+    if search_result.root_values is None or not np.isfinite(search_result.root_values).all():
+        raise RuntimeError("MCTS root bootstrap requires root values from search results")
+    return np.ascontiguousarray(search_result.root_values, dtype=np.float32)
 
 
 def _bootstrap_targets_from_store(

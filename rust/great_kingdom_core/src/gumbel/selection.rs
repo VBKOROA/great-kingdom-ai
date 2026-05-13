@@ -127,6 +127,19 @@ pub(crate) fn completed_q_values(
     prior_probs: &[f32],
     node_raw_value: f32,
 ) -> Vec<f32> {
+    let mixed_value = mixed_value(edges, prior_probs, node_raw_value);
+
+    edges
+        .iter()
+        .map(|edge| edge.mean_q().unwrap_or(mixed_value))
+        .collect()
+}
+
+pub(crate) fn mixed_value(
+    edges: &[InnerEdgeStats],
+    prior_probs: &[f32],
+    node_raw_value: f32,
+) -> f32 {
     let total_visits = edges.iter().map(|edge| edge.visit_count).sum::<u32>();
     let visited_prior_sum = edges
         .iter()
@@ -149,10 +162,7 @@ pub(crate) fn completed_q_values(
         (node_raw_value + total_visits as f32 * weighted_q) / (total_visits as f32 + 1.0)
     };
 
-    edges
-        .iter()
-        .map(|edge| edge.mean_q().unwrap_or(mixed_value))
-        .collect()
+    mixed_value
 }
 
 pub(crate) fn transformed_completed_q(

@@ -6,7 +6,7 @@ use crate::game::ACTION_SPACE;
 
 use super::{
     node::GumbelNode,
-    selection::{completed_q_values, prior_probabilities, transformed_completed_q},
+    selection::{completed_q_values, mixed_value, prior_probabilities, transformed_completed_q},
 };
 
 pub(crate) const PRIOR_EPSILON: f32 = 1.0e-8;
@@ -193,6 +193,17 @@ pub(crate) fn root_policy_target_logits(
         .zip(q_bonus)
         .map(|(action, bonus)| (*action, log_priors[*action] + bonus))
         .collect()
+}
+
+#[must_use]
+pub(crate) fn root_search_value(root: &GumbelNode) -> f32 {
+    let edge_stats = root
+        .edges
+        .iter()
+        .map(|edge| edge.inner_stats())
+        .collect::<Vec<_>>();
+    let prior_probs = prior_probabilities(&edge_stats);
+    mixed_value(&edge_stats, &prior_probs, root.node_value)
 }
 
 fn validate_policy_len(row: &[f32], name: &str) -> PyResult<()> {

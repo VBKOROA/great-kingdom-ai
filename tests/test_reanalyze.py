@@ -245,6 +245,49 @@ def test_on_sample_reanalyze_refreshes_policy_targets_by_batch_ratio(
             )
 
 
+@pytest.mark.skipif(_torch_spec is None, reason="torch is not installed")
+def test_on_sample_reanalyze_can_bootstrap_from_mcts_root_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from great_kingdom_ai.search_reanalyze import SearchReanalyzeResult
+
+    replay = TrajectoryReplayBuffer(capacity=8)
+    replay.push_episode(make_episode())
+    store = TrajectoryReplayStore.from_episodes(replay.capacity, replay.episodes)
+    state = create_train_state(TrainingConfig(batch_size=2, seed=9))
+    checkpoint = save_checkpoint(state, tmp_path / "checkpoint.pt")
+
+    def fake_refresh_sampled_policies_with_search(**kwargs: object) -> SearchReanalyzeResult:
+        policies = np.asarray(kwargs["policies"], dtype=np.float32)
+        row_count = policies.shape[0]
+        return SearchReanalyzeResult(
+            policies=policies.copy(),
+            search_reanalyzed=np.ones((row_count,), dtype=np.bool_),
+            selected_indexes=tuple(range(row_count)),
+            root_values=np.full((row_count,), 0.75, dtype=np.float32),
+        )
+
+    monkeypatch.setattr(
+        on_sample_reanalyze_module,
+        "refresh_sampled_policies_with_search",
+        fake_refresh_sampled_policies_with_search,
+    )
+    dataset = OnSampleReanalyzeDataset(
+        store,
+        checkpoint_path=checkpoint,
+        config=ReanalyzeConfig(
+            batch_size=2,
+            bootstrap_td_steps=1,
+            value_bootstrap_source="mcts_root",
+        ),
+    )
+
+    values = dataset._sampled_bootstrap_targets([0, 1, 2])
+
+    assert values.tolist() == pytest.approx([-0.75, -1.0, 1.0])
+
+
 def test_reanalyze_target_snapshot_priority_sampling_uses_importance_weights() -> None:
     features = np.stack([make_features(1), make_features(PASS_ACTION)], axis=0)
     policies = np.stack([make_policy(1), make_policy(PASS_ACTION)], axis=0)
@@ -422,6 +465,9 @@ def test_build_reanalyze_snapshot_can_refresh_policy_targets_with_search(
         def policy_target(self) -> list[float]:
             return make_policy(PASS_ACTION).tolist()
 
+        def root_value(self) -> float:
+            return 0.25
+
     class FakeGameState:
         def __init__(self) -> None:
             self.actions: list[int] = []
@@ -510,6 +556,9 @@ def test_refresh_policies_with_search_can_use_onnx_evaluator(
         def policy_target(self) -> list[float]:
             return make_policy(PASS_ACTION).tolist()
 
+        def root_value(self) -> float:
+            return 0.25
+
     class FakeGameState:
         def __init__(self) -> None:
             self.actions: list[int] = []
@@ -583,6 +632,8 @@ def test_refresh_policies_with_search_can_use_onnx_evaluator(
 
     assert result.search_reanalyzed.tolist() == [True, True, True]
     assert result.policies[0].tolist() == pytest.approx(make_policy(PASS_ACTION).tolist())
+    assert result.root_values is not None
+    assert result.root_values.tolist() == pytest.approx([0.25, 0.25, 0.25])
 
     sampled_result = search_reanalyze.refresh_sampled_policies_with_search(
         transitions=((episode, 0), (episode, 2)),
@@ -599,6 +650,8 @@ def test_refresh_policies_with_search_can_use_onnx_evaluator(
     assert sampled_result.policies[1].tolist() == pytest.approx(
         make_policy(PASS_ACTION).tolist()
     )
+    assert sampled_result.root_values is not None
+    assert sampled_result.root_values.tolist() == pytest.approx([0.25, 0.25])
 
 
 def test_search_reanalyze_reconstruction_validation_is_opt_in(
@@ -717,6 +770,8 @@ def test_reanalyze_parser_exposes_phase7_cli_options() -> None:
             "0.25",
             "--dynamic-horizon-total-steps",
             "120",
+            "--value-bootstrap-source",
+            "mcts_root",
             "--search-reanalyze-fraction",
             "0.25",
             "--search-reanalyze-budget",
@@ -738,6 +793,7 @@ def test_reanalyze_parser_exposes_phase7_cli_options() -> None:
     assert args.dynamic_horizon_enabled is True
     assert args.dynamic_horizon_tau == pytest.approx(0.25)
     assert args.dynamic_horizon_total_steps == 120
+    assert args.value_bootstrap_source == "mcts_root"
     assert args.search_reanalyze_fraction == pytest.approx(0.25)
     assert args.search_reanalyze_budget == 7
     assert args.search_reanalyze_simulations == 8
