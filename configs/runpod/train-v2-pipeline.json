@@ -23,7 +23,7 @@
   "bootstrap_td_steps": 8,
   "gamma": 1.0,
   "search_reanalyze_fraction": 0.5,
-  "search_reanalyze_budget": 8192,
+  "search_reanalyze_budget": 16384,
   "search_reanalyze_simulations": 32,
   "search_reanalyze_max_considered_actions": 8,
   "search_reanalyze_leaf_batch_size": 1024,
