@@ -24,7 +24,8 @@ from great_kingdom_ai.pipeline_printer import PipelinePrinter
 from great_kingdom_ai.reanalyze import (
     ReanalyzeConfig,
     ReanalyzeSummary,
-    reanalyze_replay_store,
+    ReanalyzeTargetSnapshot,
+    build_reanalyze_snapshot_from_store,
 )
 from great_kingdom_ai.runpod_pruning import collect_prune_items, prune_items
 from great_kingdom_ai.rust_onnx_self_play import (
@@ -80,6 +81,7 @@ class TrainV2PipelineConfig:
     search_reanalyze_leaf_batch_size: int = 8
     search_reanalyze_root_batch_size: int = 128
     search_reanalyze_seed: int = 0
+    save_target_snapshots: bool = True
     prune_artifacts: bool = False
     prune_keep_targets: int = 2
     prune_keep_candidates: int = 3
@@ -219,35 +221,34 @@ def run_train_v2_pipeline(
         target_snapshot_path = paths["target_dir"] / f"targets-{iteration:06d}.npz"
         reanalyze_checkpoint = _training_source_checkpoint(pipeline_config, paths)
         printer.step(f"reanalyzing targets -> {target_snapshot_path}")
-        reanalyze_summary = reanalyze_replay_store(
-            replay=replay,
-            replay_path=paths["trajectory_replay_path"],
-            checkpoint_path=reanalyze_checkpoint,
-            output_path=target_snapshot_path,
-            config=ReanalyzeConfig(
-                batch_size=pipeline_config.reanalyze_batch_size,
-                device=_reanalyze_device(pipeline_config, train_config),
-                onnx_model_path=str(onnx_path),
-                onnx_device=pipeline_config.onnx_device,
-                onnx_max_batch_size=pipeline_config.onnx_max_batch_size,
-                bootstrap_td_steps=pipeline_config.bootstrap_td_steps,
-                gamma=pipeline_config.gamma,
-                model_version=iteration,
-                compressed=False,
-                search=SearchReanalyzeConfig(
-                    fraction=pipeline_config.search_reanalyze_fraction,
-                    budget=pipeline_config.search_reanalyze_budget,
-                    simulations=pipeline_config.search_reanalyze_simulations,
-                    max_considered_actions=(
-                        pipeline_config.search_reanalyze_max_considered_actions
-                    ),
-                    policy_target_c_visit=pipeline_config.self_play.policy_target_c_visit,
-                    policy_target_c_scale=pipeline_config.self_play.policy_target_c_scale,
-                    leaf_batch_size=pipeline_config.search_reanalyze_leaf_batch_size,
-                    root_batch_size=pipeline_config.search_reanalyze_root_batch_size,
-                    seed=pipeline_config.search_reanalyze_seed,
+        reanalyze_config = ReanalyzeConfig(
+            batch_size=pipeline_config.reanalyze_batch_size,
+            device=_reanalyze_device(pipeline_config, train_config),
+            onnx_model_path=str(onnx_path),
+            onnx_device=pipeline_config.onnx_device,
+            onnx_max_batch_size=pipeline_config.onnx_max_batch_size,
+            bootstrap_td_steps=pipeline_config.bootstrap_td_steps,
+            gamma=pipeline_config.gamma,
+            model_version=iteration,
+            compressed=False,
+            search=SearchReanalyzeConfig(
+                fraction=pipeline_config.search_reanalyze_fraction,
+                budget=pipeline_config.search_reanalyze_budget,
+                simulations=pipeline_config.search_reanalyze_simulations,
+                max_considered_actions=(
+                    pipeline_config.search_reanalyze_max_considered_actions
                 ),
+                policy_target_c_visit=pipeline_config.self_play.policy_target_c_visit,
+                policy_target_c_scale=pipeline_config.self_play.policy_target_c_scale,
+                leaf_batch_size=pipeline_config.search_reanalyze_leaf_batch_size,
+                root_batch_size=pipeline_config.search_reanalyze_root_batch_size,
+                seed=pipeline_config.search_reanalyze_seed,
             ),
+        )
+        target_replay = build_reanalyze_snapshot_from_store(
+            replay,
+            checkpoint_path=reanalyze_checkpoint,
+            config=reanalyze_config,
             progress_callback=lambda stage, current, target, detail: printer.progress(
                 f"reanalyze {stage}",
                 current,
@@ -255,7 +256,19 @@ def run_train_v2_pipeline(
                 detail=detail,
             ),
         )
-        shutil.copy2(target_snapshot_path, paths["latest_target_snapshot_path"])
+        reanalyze_summary = _reanalyze_summary_for_snapshot(
+            target_replay,
+            replay_path=paths["trajectory_replay_path"],
+            checkpoint_path=reanalyze_checkpoint,
+            output_path=target_snapshot_path,
+        )
+        if pipeline_config.save_target_snapshots:
+            printer.progress("reanalyze save", 0, 1, detail=f"output={target_snapshot_path}")
+            target_replay.save(target_snapshot_path, compressed=reanalyze_config.compressed)
+            printer.progress("reanalyze save", 1, 1, detail=f"rows={len(target_replay)}")
+            shutil.copy2(target_snapshot_path, paths["latest_target_snapshot_path"])
+        else:
+            printer.progress("reanalyze save", 1, 1, detail="skipped")
         _release_cuda_cache(_reanalyze_device(pipeline_config, train_config))
         printer.progress("iteration", 3, phase_total, detail="reanalyze complete")
 
@@ -264,7 +277,6 @@ def run_train_v2_pipeline(
             new_transitions=new_transitions,
             pipeline_config=pipeline_config,
         )
-        target_replay = _load_target_snapshot(target_snapshot_path)
         candidate_checkpoint = paths["candidate_dir"] / f"candidate-{iteration:06d}.pt"
         printer.metric(
             "train steps",
@@ -370,7 +382,8 @@ def run_train_v2_pipeline(
         trajectory_replay_path=paths["trajectory_replay_path"],
         latest_target_snapshot_path=(
             paths["latest_target_snapshot_path"]
-            if paths["latest_target_snapshot_path"].exists()
+            if pipeline_config.save_target_snapshots
+            and paths["latest_target_snapshot_path"].exists()
             else None
         ),
     )
@@ -415,6 +428,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-train-steps", type=int, default=None)
     parser.add_argument("--search-reanalyze-fraction", type=float, default=None)
     parser.add_argument("--search-reanalyze-budget", type=int, default=None)
+    parser.add_argument(
+        "--save-target-snapshots",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
     parser.add_argument("--prune-artifacts", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--prune-keep-targets", type=int, default=None)
     parser.add_argument("--prune-keep-candidates", type=int, default=None)
@@ -450,6 +468,7 @@ def main() -> NoReturn:
         "max_train_steps": args.max_train_steps,
         "search_reanalyze_fraction": args.search_reanalyze_fraction,
         "search_reanalyze_budget": args.search_reanalyze_budget,
+        "save_target_snapshots": args.save_target_snapshots,
         "prune_artifacts": args.prune_artifacts,
         "prune_keep_targets": args.prune_keep_targets,
         "prune_keep_candidates": args.prune_keep_candidates,
@@ -653,6 +672,29 @@ def _load_target_snapshot(path: Path) -> Any:
     from great_kingdom_ai.reanalyze import ReanalyzeTargetSnapshot
 
     return ReanalyzeTargetSnapshot.load(path)
+
+
+def _reanalyze_summary_for_snapshot(
+    snapshot: ReanalyzeTargetSnapshot,
+    *,
+    replay_path: Path,
+    checkpoint_path: Path,
+    output_path: Path,
+) -> ReanalyzeSummary:
+    return ReanalyzeSummary(
+        replay_path=replay_path,
+        checkpoint_path=checkpoint_path,
+        output_path=output_path,
+        transitions=len(snapshot),
+        model_version=snapshot.model_version,
+        bootstrap_td_steps=snapshot.bootstrap_td_steps,
+        gamma=snapshot.gamma,
+        search_reanalyzed=(
+            0
+            if snapshot.search_reanalyzed is None
+            else int(snapshot.search_reanalyzed.sum())
+        ),
+    )
 
 
 def _training_source_checkpoint(config: TrainV2PipelineConfig, paths: dict[str, Path]) -> Path:

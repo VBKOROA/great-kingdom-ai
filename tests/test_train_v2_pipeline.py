@@ -9,7 +9,7 @@ import pytest
 from great_kingdom_ai.evaluate import ArenaConfig
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS, PASS_ACTION
 from great_kingdom_ai.pipeline_printer import PipelinePrinter
-from great_kingdom_ai.reanalyze import ReanalyzeSummary, ReanalyzeTargetSnapshot
+from great_kingdom_ai.reanalyze import ReanalyzeTargetSnapshot
 from great_kingdom_ai.rust_onnx_self_play import RustOnnxSelfPlayConfig, RustSelfPlayRunSummary
 from great_kingdom_ai.self_play import GameLog, MoveLog, SelfPlayConfig
 from great_kingdom_ai.train import TrainingConfig
@@ -132,15 +132,12 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
         Path(output_path).write_text("onnx", encoding="utf-8")
         return object()
 
-    def fake_reanalyze_replay_store(
-        *,
+    def fake_build_reanalyze_snapshot_from_store(
         replay: Any,
-        replay_path: str | Path,
         checkpoint_path: str | Path,
-        output_path: str | Path,
         config: Any,
         progress_callback: Any = None,
-    ) -> ReanalyzeSummary:
+    ) -> ReanalyzeTargetSnapshot:
         if progress_callback is not None:
             progress_callback("fake", 1, 1, "done")
         features = replay.features.copy()
@@ -166,12 +163,9 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
             checkpoint_path=str(checkpoint_path),
             policy_logits=np.zeros((len(replay), ACTION_SPACE), dtype=np.float32),
         )
-        snapshot.save(output_path, compressed=False)
         reanalyze_calls.append(
             {
-                "replay_path": Path(replay_path),
                 "checkpoint_path": Path(checkpoint_path),
-                "output_path": Path(output_path),
                 "onnx_model_path": config.onnx_model_path,
                 "onnx_device": config.onnx_device,
                 "onnx_max_batch_size": config.onnx_max_batch_size,
@@ -180,15 +174,7 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
                 "search_policy_target_c_scale": config.search.policy_target_c_scale,
             }
         )
-        return ReanalyzeSummary(
-            replay_path=Path(replay_path),
-            checkpoint_path=Path(checkpoint_path),
-            output_path=Path(output_path),
-            transitions=len(replay),
-            model_version=config.model_version or 0,
-            bootstrap_td_steps=config.bootstrap_td_steps,
-            gamma=config.gamma,
-        )
+        return snapshot
 
     def fake_train_from_replay(
         replay: Any,
@@ -212,7 +198,11 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
     monkeypatch.setattr(pipeline_module, "create_train_state", lambda config: object())
     monkeypatch.setattr(pipeline_module, "save_checkpoint", fake_save_checkpoint)
     monkeypatch.setattr(pipeline_module, "export_checkpoint_to_onnx", fake_export)
-    monkeypatch.setattr(pipeline_module, "reanalyze_replay_store", fake_reanalyze_replay_store)
+    monkeypatch.setattr(
+        pipeline_module,
+        "build_reanalyze_snapshot_from_store",
+        fake_build_reanalyze_snapshot_from_store,
+    )
     monkeypatch.setattr(pipeline_module, "train_from_replay", fake_train_from_replay)
     old_target = write_text(tmp_path / "targets" / "targets-000000.npz")
     old_candidate = write_text(tmp_path / "checkpoints" / "candidates" / "candidate-000000.pt")
@@ -255,9 +245,7 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
     )
     assert reanalyze_calls == [
         {
-            "replay_path": tmp_path / "replay" / "trajectory-replay.npz",
             "checkpoint_path": tmp_path / "checkpoints" / "best.pt",
-            "output_path": tmp_path / "targets" / "targets-000001.npz",
             "onnx_model_path": str(tmp_path / "checkpoints" / "onnx" / "best-000001.onnx"),
             "onnx_device": "cpu",
             "onnx_max_batch_size": 128,

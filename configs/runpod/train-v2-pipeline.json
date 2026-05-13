@@ -29,6 +29,7 @@
   "search_reanalyze_leaf_batch_size": 1024,
   "search_reanalyze_root_batch_size": 16384,
   "search_reanalyze_seed": 900000,
+  "save_target_snapshots": false,
   "prune_artifacts": true,
   "prune_keep_targets": 2,
   "prune_keep_candidates": 10,
