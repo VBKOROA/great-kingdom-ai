@@ -99,7 +99,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=1024, help="evaluation batch size")
     parser.add_argument("--device", choices=["cpu", "cuda"], default=None)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--prefer-ema", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--before-weights",
+        choices=["ema", "raw"],
+        default="ema",
+        help="weights to load from --before checkpoint",
+    )
+    parser.add_argument(
+        "--after-weights",
+        choices=["ema", "raw"],
+        default="ema",
+        help="weights to load from --after checkpoint",
+    )
     parser.add_argument(
         "--imported-transitions",
         type=int,
@@ -137,8 +148,16 @@ def main() -> NoReturn:
         seed=args.seed,
     )
     targets = terminal_value_targets(replay)
-    before_model = load_checkpoint(args.before, device=device, prefer_ema=args.prefer_ema).model
-    after_model = load_checkpoint(args.after, device=device, prefer_ema=args.prefer_ema).model
+    before_model = load_checkpoint(
+        args.before,
+        device=device,
+        prefer_ema=args.before_weights == "ema",
+    ).model
+    after_model = load_checkpoint(
+        args.after,
+        device=device,
+        prefer_ema=args.after_weights == "ema",
+    ).model
     before_model.eval()
     after_model.eval()
 
@@ -162,7 +181,8 @@ def main() -> NoReturn:
         "replay": str(args.replay),
         "before": str(args.before),
         "after": str(args.after),
-        "prefer_ema": args.prefer_ema,
+        "before_weights": args.before_weights,
+        "after_weights": args.after_weights,
         "device": device,
         "sampling_pressure": asdict(pressure),
         "replay_metadata": replay_metadata_summary(replay),
