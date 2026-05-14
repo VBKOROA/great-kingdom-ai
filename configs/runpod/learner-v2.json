@@ -2,6 +2,7 @@
   "work_dir": "data/runpod/train-v2-gumbel-512k",
   "replay_capacity": 512000,
   "shard_cache_size": 16,
+  "sample_shards_per_batch": 8,
   "min_replay_transitions": 8192,
   "source_checkpoint": null,
   "candidate_checkpoint": null,
