@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import math
 import os
@@ -552,15 +553,19 @@ def _run_actor_cli(config: ActorV2Config, args: argparse.Namespace) -> list[dict
     summaries = []
     cycles = args.max_cycles if args.loop else 1
     cycle = 0
-    seed_cursor = _next_actor_seed_start(config)
     while cycles is None or cycle < cycles:
+        seed_start = (
+            config.seed_start
+            if config.shard_id is not None
+            else _reserve_actor_seed_start(config)
+        )
         shard_config = ActorV2Config(
             work_dir=config.work_dir,
             onnx_model_path=config.onnx_model_path,
             model_version=config.model_version,
             shard_id=config.shard_id if not args.loop else None,
             games=config.games,
-            seed_start=seed_cursor,
+            seed_start=seed_start,
             onnx_device=config.onnx_device,
             onnx_max_batch_size=config.onnx_max_batch_size,
             rust_self_play_batch_size=config.rust_self_play_batch_size,
@@ -571,7 +576,6 @@ def _run_actor_cli(config: ActorV2Config, args: argparse.Namespace) -> list[dict
             printer=PipelinePrinter(enabled=not args.json),
         )
         summaries.append(summary.to_dict())
-        seed_cursor = summary.shard.seed_start + summary.shard.games
         cycle += 1
         if not args.loop or (cycles is not None and cycle >= cycles):
             break
@@ -863,6 +867,43 @@ def _next_actor_seed_start(config: ActorV2Config) -> int:
     return next_seed
 
 
+def _reserve_actor_seed_start(config: ActorV2Config) -> int:
+    paths = _paths(config.work_dir)
+    paths["shard_root"].mkdir(parents=True, exist_ok=True)
+    lock_path = paths["actor_seed_lock_path"]
+    state_path = paths["actor_seed_state_path"]
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            state = _load_actor_seed_state(state_path)
+            key = config.model_version
+            metadata_next = _next_actor_seed_start(config)
+            reserved_start = max(
+                config.seed_start,
+                int(state.get(key, config.seed_start)),
+                metadata_next,
+            )
+            state[key] = reserved_start + config.games
+            _save_actor_seed_state(state_path, state)
+            return reserved_start
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _load_actor_seed_state(path: Path) -> dict[str, int]:
+    if not path.exists():
+        return {}
+    data = _load_json_object(path, "actor seed state")
+    return {str(key): int(value) for key, value in data.items()}
+
+
+def _save_actor_seed_state(path: Path, state: dict[str, int]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_name(f".{path.name}.tmp")
+    temporary_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    temporary_path.replace(path)
+
+
 def _prune_learner_artifacts(
     *,
     config: LearnerV2Config,
@@ -922,6 +963,8 @@ def _paths(work_dir: Path) -> dict[str, Path]:
     return {
         "shard_root": work_dir / "shards",
         "metadata_path": work_dir / "shards" / "metadata.jsonl",
+        "actor_seed_lock_path": work_dir / "shards" / "actor-seed.lock",
+        "actor_seed_state_path": work_dir / "shards" / "actor-seed-state.json",
         "replay_path": work_dir / "replay" / "trajectory-replay.npz",
         "game_log_path": work_dir / "replay" / "game_logs.jsonl",
         "candidate_checkpoint": work_dir / "checkpoints" / "candidate.pt",

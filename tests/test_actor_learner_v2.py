@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from typing import Any
 
@@ -165,6 +166,31 @@ def test_actor_v2_next_seed_resumes_from_metadata(tmp_path: Path) -> None:
 
     assert second.shard.seed_start == 1000064
     assert next_seed == 1000128
+
+
+def test_actor_v2_cli_reserves_seed_ranges_across_restarts(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(actor_learner_v2_module, "run_rust_onnx_self_play", fake_actor_runner)
+    args = argparse.Namespace(loop=True, max_cycles=2, sleep_seconds=0.0, json=True)
+    config = ActorV2Config(
+        work_dir=tmp_path,
+        onnx_model_path=tmp_path / "model.onnx",
+        model_version="training-latest",
+        games=2,
+        seed_start=100,
+        onnx_device="cpu",
+    )
+
+    first = actor_learner_v2_module._run_actor_cli(config, args)
+    second = actor_learner_v2_module._run_actor_cli(config, args)
+
+    assert [summary["shard"]["seed_start"] for summary in first] == [100, 102]
+    assert [summary["shard"]["seed_start"] for summary in second] == [104, 106]
+    assert json.loads((tmp_path / "shards" / "actor-seed-state.json").read_text()) == {
+        "training-latest": 108
+    }
 
 
 def test_learner_v2_imports_pending_shards_trains_and_exports(tmp_path: Path) -> None:
