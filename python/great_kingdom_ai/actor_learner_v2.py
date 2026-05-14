@@ -267,6 +267,7 @@ def run_learner_v2_once(
     for shard in pending:
         printer.step(f"importing shard {shard.shard_id}")
         shard_replay = TrajectoryReplayStore.load(shard.replay_path)
+        _drop_async_unused_replay_arrays(shard_replay)
         replay.extend_episodes(shard_replay.episodes)
         imported_transitions += len(shard_replay)
         imported_games += shard_replay.episode_count
@@ -609,6 +610,7 @@ def _run_learner_continuous_cli(
     paths = _paths(config.work_dir)
     _ensure_learner_dirs(paths)
     replay = _load_or_create_replay(paths["replay_path"], capacity=config.replay_capacity)
+    _drop_async_unused_replay_arrays(replay)
     train = train_from_replay
     export_onnx = export_checkpoint_to_onnx
     summaries: list[dict[str, Any]] = []
@@ -636,6 +638,7 @@ def _run_learner_continuous_cli(
         for shard in pending:
             printer.step(f"importing shard {shard.shard_id}")
             shard_replay = TrajectoryReplayStore.load(shard.replay_path)
+            _drop_async_unused_replay_arrays(shard_replay)
             replay.extend_episodes(shard_replay.episodes)
             imported_transitions += len(shard_replay)
             imported_games += shard_replay.episode_count
@@ -796,7 +799,9 @@ def _save_trajectory_shard(
 ) -> None:
     shard_dir.mkdir(parents=True, exist_ok=True)
     transitions = sum(len(episode.transitions) for episode in episodes)
-    TrajectoryReplayStore.from_episodes(max(1, transitions), episodes).save(
+    replay = TrajectoryReplayStore.from_episodes(max(1, transitions), episodes)
+    _drop_async_unused_replay_arrays(replay)
+    replay.save(
         shard_dir / "trajectory-replay.npz",
         compressed=False,
     )
@@ -826,9 +831,19 @@ def _load_or_create_replay(path: Path, *, capacity: int) -> TrajectoryReplayStor
     if path.exists():
         replay = TrajectoryReplayStore.load(path)
         if replay.capacity == capacity:
+            _drop_async_unused_replay_arrays(replay)
             return replay
-        return TrajectoryReplayStore.from_episodes(capacity, replay.episodes)
+        resized = TrajectoryReplayStore.from_episodes(capacity, replay.episodes)
+        _drop_async_unused_replay_arrays(resized)
+        return resized
     return TrajectoryReplayStore.empty(capacity)
+
+
+def _drop_async_unused_replay_arrays(replay: TrajectoryReplayStore) -> None:
+    replay.root_policy_logits = None
+    replay.root_policy_logits_present = None
+    replay.next_features = None
+    replay.next_features_present = None
 
 
 def _continuous_train_steps(

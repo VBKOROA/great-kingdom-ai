@@ -58,6 +58,8 @@ def make_episode(seed: int) -> TrajectoryEpisode:
                 legal_mask=legal_mask_from_features(features),
                 action=action,
                 policy_target=make_policy(action),
+                root_policy_logits=np.zeros((ACTION_SPACE,), dtype=np.float32),
+                next_features=features.copy(),
                 winner=1,
                 terminal=timestep == 1,
             )
@@ -124,6 +126,8 @@ def test_actor_v2_writes_trajectory_shard_metadata(tmp_path: Path) -> None:
     assert summary.shard.replay_path.is_file()
     replay = TrajectoryReplayStore.load(summary.shard.replay_path)
     assert len(replay) == 4
+    assert replay.root_policy_logits is None
+    assert replay.next_features is None
     assert pending_v2_shards(tmp_path / "shards" / "metadata.jsonl")[0].shard_id == (
         summary.shard.shard_id
     )
