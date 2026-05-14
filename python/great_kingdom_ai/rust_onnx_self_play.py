@@ -189,16 +189,16 @@ def _run_one_batch(
                         root_policy_logits_by_game[game_index],
                     )
                 )
-            trajectory_rows[game_index].append(
-                (
-                    turn,
-                    players[game_index],
-                    features_by_game[game_index],
-                    action,
-                    policy,
-                    root_policy_logits_by_game[game_index],
+                trajectory_rows[game_index].append(
+                    (
+                        turn,
+                        players[game_index],
+                        features_by_game[game_index],
+                        action,
+                        policy,
+                        root_policy_logits_by_game[game_index],
+                    )
                 )
-            )
             moves[game_index].append(
                 MoveLog(turn=turn, player=players[game_index], action=action)
             )
@@ -246,12 +246,12 @@ def _run_one_batch(
         )
         transitions: list[TrajectoryTransition] = []
         rows = trajectory_rows[game_index]
-        for index, (turn, player, features, action, policy, root_policy_logits) in enumerate(rows):
+        for index, (_turn, player, features, action, policy, root_policy_logits) in enumerate(rows):
             next_features = rows[index + 1][2] if index + 1 < len(rows) else None
             transitions.append(
                 TrajectoryTransition(
                     episode_id=seed,
-                    timestep=turn,
+                    timestep=index,
                     player=player,
                     features=features,
                     legal_mask=legal_mask_from_features(features),
@@ -267,16 +267,17 @@ def _run_one_batch(
                     created_iteration=0,
                 )
             )
-        episodes.append(
-            TrajectoryEpisode(
-                episode_id=seed,
-                seed=seed,
-                transitions=tuple(transitions),
-                winner=int(winner),
-                end_reason=int(end_reason),
-                territory_scores=territory_scores[game_index],
+        if transitions:
+            episodes.append(
+                TrajectoryEpisode(
+                    episode_id=seed,
+                    seed=seed,
+                    transitions=tuple(transitions),
+                    winner=int(winner),
+                    end_reason=int(end_reason),
+                    territory_scores=territory_scores[game_index],
+                )
             )
-        )
     return logs, samples, episodes
 
 
