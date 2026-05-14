@@ -14,29 +14,14 @@ from great_kingdom_ai.trajectory_replay import TrajectoryReplayStore
 
 
 class ShardIndexSource(Protocol):
-    @property
-    def shard_id(self) -> str: ...
-
-    @property
-    def replay_path(self) -> Path: ...
-
-    @property
-    def log_path(self) -> Path: ...
-
-    @property
-    def model_version(self) -> str: ...
-
-    @property
-    def model_path(self) -> Path: ...
-
-    @property
-    def seed_start(self) -> int: ...
-
-    @property
-    def games(self) -> int: ...
-
-    @property
-    def created_at(self) -> str: ...
+    shard_id: str
+    replay_path: Path
+    log_path: Path
+    model_version: str
+    model_path: Path
+    seed_start: int
+    games: int
+    created_at: str
 
 
 @dataclass(frozen=True)
