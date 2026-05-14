@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import shutil
 import time
 from collections.abc import Callable
@@ -976,9 +977,12 @@ def _train_checkpoint_kwargs(
 
 def _append_event(metadata_path: Path, event: dict[str, Any]) -> None:
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
-    with metadata_path.open("a", encoding="utf-8") as file:
-        file.write(json.dumps(event, sort_keys=True))
-        file.write("\n")
+    line = (json.dumps(event, sort_keys=True) + "\n").encode("utf-8")
+    fd = os.open(metadata_path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o644)
+    try:
+        os.write(fd, line)
+    finally:
+        os.close(fd)
 
 
 def _record_from_completed_event(event: dict[str, Any]) -> V2ShardRecord:
