@@ -23,9 +23,10 @@ from great_kingdom_ai.rust_onnx_self_play import (
     RustSelfPlayRunSummary,
     run_rust_onnx_self_play,
 )
-from great_kingdom_ai.self_play import GameLog, MoveLog, SelfPlayConfig
+from great_kingdom_ai.self_play import GameLog, SelfPlayConfig
+from great_kingdom_ai.shard_indexed_dataset import ShardIndexedTrajectoryDataset
+from great_kingdom_ai.shard_replay_index import ShardReplayIndex
 from great_kingdom_ai.train import TrainingConfig, load_training_config, train_from_replay
-from great_kingdom_ai.trajectory_dataset import TrajectoryReplayDataset
 from great_kingdom_ai.trajectory_replay import TrajectoryEpisode, TrajectoryReplayStore
 
 ShardStatus = Literal["completed", "imported"]
@@ -82,7 +83,8 @@ class LearnerV2Config:
     onnx_precision: str = "fp16"
     onnx_dummy_batch_size: int = 2
     prune_artifacts: bool = False
-    prune_keep_imported_shards: int = 0
+    prune_evicted_shards: bool = True
+    prune_keep_evicted_shards: int = 0
     train_reuse_factor: float = 16.0
 
 
@@ -231,19 +233,25 @@ def run_learner_v2_once(
     export_onnx = onnx_exporter if onnx_exporter is not None else export_checkpoint_to_onnx
     paths = _paths(config.work_dir)
     _ensure_learner_dirs(paths)
+    index = ShardReplayIndex.load_or_create(
+        paths["replay_index_dir"],
+        capacity=config.replay_capacity,
+    )
     pending = pending_v2_shards(paths["metadata_path"])
 
     printer.title("Learner V2")
     printer.metric("work dir", config.work_dir)
     printer.metric("pending shards", len(pending))
+    printer.metric("replay backend", "shard_index")
     printer.metric("replay capacity", config.replay_capacity)
+    printer.metric("replay transitions", len(index))
     printer.metric("min replay rows", config.min_replay_transitions)
     printer.metric("train batch", train_config.batch_size)
     printer.metric("train steps", train_config.steps)
     printer.metric("recent window", train_config.recent_sample_window)
     printer.metric("recent fraction", train_config.recent_sample_fraction)
     printer.metric("ema decay", train_config.ema_decay)
-    if not pending:
+    if not pending and len(index) == 0:
         cycle_seconds = time.monotonic() - cycle_started_at
         printer.done(f"waiting for shards: pending=0, cycle={cycle_seconds:.1f}s")
         return LearnerV2Summary(
@@ -261,43 +269,40 @@ def run_learner_v2_once(
             pruned_bytes=0,
             cycle_seconds=cycle_seconds,
         )
-    replay = _load_or_create_replay(paths["replay_path"], capacity=config.replay_capacity)
     imported_transitions = 0
     imported_games = 0
     for shard in pending:
-        printer.step(f"importing shard {shard.shard_id}")
-        shard_replay = TrajectoryReplayStore.load(shard.replay_path)
-        _drop_async_unused_replay_arrays(shard_replay)
-        replay.extend_episodes(shard_replay.episodes)
-        imported_transitions += len(shard_replay)
-        imported_games += shard_replay.episode_count
+        printer.step(f"indexing shard {shard.shard_id}")
+        indexed = index.add_shard(shard)
+        imported_transitions += indexed.rows
+        imported_games += indexed.episodes
         _append_event(
             paths["metadata_path"],
             {
                 "event": "shard_imported",
                 "shard_id": shard.shard_id,
                 "imported_at": _utc_now(),
-                "imported_transitions": len(shard_replay),
-                "replay_transitions": len(replay),
+                "imported_transitions": indexed.rows,
+                "replay_transitions": len(index),
             },
         )
-    replay.save(paths["replay_path"], compressed=False)
-    _append_game_logs(paths["game_log_path"], pending)
+    evicted = index.evict_to_capacity()
     printer.metric("imported games", imported_games)
     printer.metric("imported rows", imported_transitions)
-    printer.metric("replay transitions", len(replay))
+    printer.metric("evicted shards", len(evicted))
+    printer.metric("replay transitions", len(index))
 
-    if len(replay) < config.min_replay_transitions:
+    if len(index) < config.min_replay_transitions:
         cycle_seconds = time.monotonic() - cycle_started_at
         printer.done(
-            f"waiting for replay: {len(replay)}/{config.min_replay_transitions} "
+            f"waiting for replay: {len(index)}/{config.min_replay_transitions} "
             f"transitions, cycle={cycle_seconds:.1f}s"
         )
         return LearnerV2Summary(
             imported_shards=[shard.shard_id for shard in pending],
             imported_transitions=imported_transitions,
             imported_games=imported_games,
-            replay_transitions=len(replay),
+            replay_transitions=len(index),
             trained=False,
             train_start_step=None,
             train_end_step=None,
@@ -309,7 +314,7 @@ def run_learner_v2_once(
             cycle_seconds=cycle_seconds,
         )
 
-    dataset = TrajectoryReplayDataset(replay)
+    dataset = ShardIndexedTrajectoryDataset(index)
     candidate_checkpoint = _candidate_checkpoint(config)
     training_latest = _training_latest_checkpoint(config)
     kwargs = _train_checkpoint_kwargs(
@@ -323,12 +328,7 @@ def run_learner_v2_once(
         checkpoint_path=candidate_checkpoint,
         **kwargs,
         log_every=max(1, train_config.steps // 10),
-        progress_callback=lambda current, target, loss: printer.progress(
-            "train",
-            current,
-            target,
-            detail=_format_train_loss_detail(loss),
-        ),
+        progress_callback=_train_progress_callback(printer),
     )
     training_latest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(candidate_checkpoint, training_latest)
@@ -364,7 +364,7 @@ def run_learner_v2_once(
         imported_shards=[shard.shard_id for shard in pending],
         imported_transitions=imported_transitions,
         imported_games=imported_games,
-        replay_transitions=len(replay),
+        replay_transitions=len(index),
         trained=True,
         train_start_step=int(train_summary.start_step),
         train_end_step=int(train_summary.end_step),
@@ -482,7 +482,12 @@ def build_learner_v2_parser() -> argparse.ArgumentParser:
     parser.add_argument("--onnx-device", choices=["cpu", "cuda"], default=None)
     parser.add_argument("--onnx-precision", choices=["fp32", "fp16"], default=None)
     parser.add_argument("--prune-artifacts", action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument("--prune-keep-imported-shards", type=int, default=None)
+    parser.add_argument(
+        "--prune-evicted-shards",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument("--prune-keep-evicted-shards", type=int, default=None)
     parser.add_argument("--train-reuse-factor", type=float, default=None)
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--max-cycles", type=int, default=None)
@@ -532,7 +537,8 @@ def learner_v2_main() -> NoReturn:
         "onnx_device": args.onnx_device,
         "onnx_precision": args.onnx_precision,
         "prune_artifacts": args.prune_artifacts,
-        "prune_keep_imported_shards": args.prune_keep_imported_shards,
+        "prune_evicted_shards": args.prune_evicted_shards,
+        "prune_keep_evicted_shards": args.prune_keep_evicted_shards,
         "train_reuse_factor": args.train_reuse_factor,
     }.items():
         if value is not None:
@@ -609,8 +615,10 @@ def _run_learner_continuous_cli(
     _validate_learner_config(config)
     paths = _paths(config.work_dir)
     _ensure_learner_dirs(paths)
-    replay = _load_or_create_replay(paths["replay_path"], capacity=config.replay_capacity)
-    _drop_async_unused_replay_arrays(replay)
+    index = ShardReplayIndex.load_or_create(
+        paths["replay_index_dir"],
+        capacity=config.replay_capacity,
+    )
     train = train_from_replay
     export_onnx = export_checkpoint_to_onnx
     summaries: list[dict[str, Any]] = []
@@ -629,41 +637,40 @@ def _run_learner_continuous_cli(
         printer.title("Learner V2 Continuous")
         printer.metric("work dir", config.work_dir)
         printer.metric("pending shards", len(pending))
-        printer.metric("replay transitions", len(replay))
+        printer.metric("replay backend", "shard_index")
+        printer.metric("replay transitions", len(index))
         printer.metric("train batch", train_config.batch_size)
         printer.metric("max train steps", train_config.steps)
         printer.metric("reuse factor", config.train_reuse_factor)
         printer.metric("budget samples", int(train_budget_samples))
 
         for shard in pending:
-            printer.step(f"importing shard {shard.shard_id}")
-            shard_replay = TrajectoryReplayStore.load(shard.replay_path)
-            _drop_async_unused_replay_arrays(shard_replay)
-            replay.extend_episodes(shard_replay.episodes)
-            imported_transitions += len(shard_replay)
-            imported_games += shard_replay.episode_count
+            printer.step(f"indexing shard {shard.shard_id}")
+            indexed = index.add_shard(shard)
+            imported_transitions += indexed.rows
+            imported_games += indexed.episodes
             _append_event(
                 paths["metadata_path"],
                 {
                     "event": "shard_imported",
                     "shard_id": shard.shard_id,
                     "imported_at": _utc_now(),
-                    "imported_transitions": len(shard_replay),
-                    "replay_transitions": len(replay),
+                    "imported_transitions": indexed.rows,
+                    "replay_transitions": len(index),
                 },
             )
 
+        evicted = index.evict_to_capacity()
         if pending:
-            replay.save(paths["replay_path"], compressed=False)
-            _append_game_logs(paths["game_log_path"], pending)
             train_budget_samples += imported_transitions * config.train_reuse_factor
             printer.metric("imported games", imported_games)
             printer.metric("imported rows", imported_transitions)
+            printer.metric("evicted shards", len(evicted))
             printer.metric("budget samples", int(train_budget_samples))
 
         train_steps = _continuous_train_steps(
             train_budget_samples=train_budget_samples,
-            replay_transitions=len(replay),
+            replay_transitions=len(index),
             train_config=train_config,
             min_replay_transitions=config.min_replay_transitions,
         )
@@ -684,7 +691,7 @@ def _run_learner_continuous_cli(
                     "seed": train_config.seed + train_chunks,
                 }
             )
-            dataset = TrajectoryReplayDataset(replay)
+            dataset = ShardIndexedTrajectoryDataset(index)
             candidate_checkpoint = _candidate_checkpoint(config)
             training_latest = _training_latest_checkpoint(config)
             kwargs = _train_checkpoint_kwargs(
@@ -701,12 +708,7 @@ def _run_learner_continuous_cli(
                 checkpoint_path=candidate_checkpoint,
                 **kwargs,
                 log_every=max(1, effective_train_config.steps // 10),
-                progress_callback=lambda current, target, loss, p=printer: p.progress(
-                    "train",
-                    current,
-                    target,
-                    detail=_format_train_loss_detail(loss),
-                ),
+                progress_callback=_train_progress_callback(printer),
             )
             train_budget_samples = max(
                 0.0,
@@ -741,9 +743,9 @@ def _run_learner_continuous_cli(
             train_start_step = int(train_summary.start_step)
             train_end_step = int(train_summary.end_step)
             train_chunks += 1
-        elif len(replay) < config.min_replay_transitions:
+        elif len(index) < config.min_replay_transitions:
             printer.done(
-                f"waiting for replay: {len(replay)}/{config.min_replay_transitions} "
+                f"waiting for replay: {len(index)}/{config.min_replay_transitions} "
                 "transitions"
             )
         elif train_budget_samples < train_config.batch_size:
@@ -760,7 +762,7 @@ def _run_learner_continuous_cli(
             imported_shards=[shard.shard_id for shard in pending],
             imported_transitions=imported_transitions,
             imported_games=imported_games,
-            replay_transitions=len(replay),
+            replay_transitions=len(index),
             trained=trained,
             train_start_step=train_start_step,
             train_end_step=train_end_step,
@@ -779,7 +781,7 @@ def _run_learner_continuous_cli(
         has_train_work = (
             _continuous_train_steps(
                 train_budget_samples=train_budget_samples,
-                replay_transitions=len(replay),
+                replay_transitions=len(index),
                 train_config=train_config,
                 min_replay_transitions=config.min_replay_transitions,
             )
@@ -807,36 +809,6 @@ def _save_trajectory_shard(
     )
     with (shard_dir / "game_logs.json").open("w", encoding="utf-8") as file:
         json.dump([log.to_dict() for log in logs], file, indent=2, sort_keys=True)
-
-
-def _append_game_logs(path: Path, shards: list[V2ShardRecord]) -> None:
-    if not shards:
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as output:
-        for shard in shards:
-            for log in _load_game_logs(shard.log_path):
-                output.write(json.dumps(log.to_dict(), sort_keys=True))
-                output.write("\n")
-
-
-def _load_game_logs(path: Path) -> list[GameLog]:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, list):
-        raise ValueError(f"{path} must contain a JSON list")
-    return [_game_log_from_dict(dict(item)) for item in data if isinstance(item, dict)]
-
-
-def _load_or_create_replay(path: Path, *, capacity: int) -> TrajectoryReplayStore:
-    if path.exists():
-        replay = TrajectoryReplayStore.load(path)
-        if replay.capacity == capacity:
-            _drop_async_unused_replay_arrays(replay)
-            return replay
-        resized = TrajectoryReplayStore.from_episodes(capacity, replay.episodes)
-        _drop_async_unused_replay_arrays(resized)
-        return resized
-    return TrajectoryReplayStore.empty(capacity)
 
 
 def _drop_async_unused_replay_arrays(replay: TrajectoryReplayStore) -> None:
@@ -870,6 +842,20 @@ def _format_train_loss_detail(loss: dict[str, float]) -> str:
             f" kl={loss['policy_kl']:.4f}"
         )
     return detail
+
+
+def _train_progress_callback(
+    printer: PipelinePrinter,
+) -> Callable[[int, int, dict[str, float]], None]:
+    def callback(current: int, target: int, loss: dict[str, float]) -> None:
+        printer.progress(
+            "train",
+            current,
+            target,
+            detail=_format_train_loss_detail(loss),
+        )
+
+    return callback
 
 
 def _next_actor_seed_start(config: ActorV2Config) -> int:
@@ -924,9 +910,12 @@ def _prune_learner_artifacts(
     config: LearnerV2Config,
     printer: PipelinePrinter,
 ) -> dict[str, int]:
-    items = _collect_imported_shard_prune_items(
+    if not config.prune_evicted_shards:
+        return {"items": 0, "bytes": 0}
+    items = _collect_evicted_shard_prune_items(
         config.work_dir,
-        keep_imported_shards=config.prune_keep_imported_shards,
+        keep_evicted_shards=config.prune_keep_evicted_shards,
+        replay_capacity=config.replay_capacity,
     )
     total_bytes = sum(item.size_bytes for item in items)
     printer.step(
@@ -937,32 +926,37 @@ def _prune_learner_artifacts(
     return {"items": len(items), "bytes": total_bytes}
 
 
-def _collect_imported_shard_prune_items(
+def _collect_evicted_shard_prune_items(
     work_dir: Path,
     *,
-    keep_imported_shards: int,
+    keep_evicted_shards: int,
+    replay_capacity: int,
 ) -> list[PruneItem]:
-    if keep_imported_shards < 0:
-        raise ValueError("prune_keep_imported_shards must be non-negative")
+    if keep_evicted_shards < 0:
+        raise ValueError("prune_keep_evicted_shards must be non-negative")
     paths = _paths(work_dir)
-    imported = [
+    index = ShardReplayIndex.load_or_create(
+        paths["replay_index_dir"],
+        capacity=replay_capacity,
+    )
+    evicted = [
         record
-        for record in load_v2_shard_records(paths["metadata_path"])
-        if record.status == "imported" and record.shard_dir.exists()
+        for record in index.evicted_records
+        if record.replay_path.parent.exists()
     ]
-    if keep_imported_shards > 0:
-        imported = sorted(
-            imported,
-            key=lambda record: (record.imported_at or record.created_at, record.shard_id),
+    if keep_evicted_shards > 0:
+        evicted = sorted(
+            evicted,
+            key=lambda record: (record.evicted_at or record.created_at, record.shard_id),
         )
-        imported = imported[: max(0, len(imported) - keep_imported_shards)]
+        evicted = evicted[: max(0, len(evicted) - keep_evicted_shards)]
     return [
         PruneItem(
-            path=record.shard_dir,
-            reason="imported learner shard directory",
-            size_bytes=_path_size(record.shard_dir),
+            path=record.replay_path.parent,
+            reason="evicted learner shard directory",
+            size_bytes=_path_size(record.replay_path.parent),
         )
-        for record in imported
+        for record in evicted
     ]
 
 
@@ -980,8 +974,7 @@ def _paths(work_dir: Path) -> dict[str, Path]:
         "metadata_path": work_dir / "shards" / "metadata.jsonl",
         "actor_seed_lock_path": work_dir / "shards" / "actor-seed.lock",
         "actor_seed_state_path": work_dir / "shards" / "actor-seed-state.json",
-        "replay_path": work_dir / "replay" / "trajectory-replay.npz",
-        "game_log_path": work_dir / "replay" / "game_logs.jsonl",
+        "replay_index_dir": work_dir / "replay-index",
         "candidate_checkpoint": work_dir / "checkpoints" / "candidate.pt",
         "training_latest_checkpoint": work_dir / "checkpoints" / "training-latest.pt",
         "best_checkpoint": work_dir / "checkpoints" / "best.pt",
@@ -990,7 +983,7 @@ def _paths(work_dir: Path) -> dict[str, Path]:
 
 
 def _ensure_learner_dirs(paths: dict[str, Path]) -> None:
-    paths["replay_path"].parent.mkdir(parents=True, exist_ok=True)
+    paths["replay_index_dir"].mkdir(parents=True, exist_ok=True)
     paths["candidate_checkpoint"].parent.mkdir(parents=True, exist_ok=True)
     paths["onnx_output_path"].parent.mkdir(parents=True, exist_ok=True)
 
@@ -1106,25 +1099,6 @@ def _load_json_object(path: str | Path, label: str) -> dict[str, Any]:
     return data
 
 
-def _game_log_from_dict(data: dict[str, Any]) -> GameLog:
-    moves = [
-        MoveLog(
-            turn=int(move["turn"]),
-            player=int(move["player"]),
-            action=int(move["action"]),
-        )
-        for move in data["moves"]
-    ]
-    territory = data["territory_scores"]
-    return GameLog(
-        seed=int(data["seed"]),
-        moves=moves,
-        winner=int(data["winner"]),
-        end_reason=int(data["end_reason"]),
-        territory_scores=(int(territory[0]), int(territory[1])),
-    )
-
-
 def _json_payload(summaries: list[dict[str, Any]], compact: bool) -> str:
     payload: dict[str, Any] = {"summaries": summaries}
     if len(summaries) == 1:
@@ -1148,8 +1122,8 @@ def _validate_learner_config(config: LearnerV2Config) -> None:
         raise ValueError("replay_capacity must be positive")
     if config.min_replay_transitions < 0:
         raise ValueError("min_replay_transitions must be non-negative")
-    if config.prune_keep_imported_shards < 0:
-        raise ValueError("prune_keep_imported_shards must be non-negative")
+    if config.prune_keep_evicted_shards < 0:
+        raise ValueError("prune_keep_evicted_shards must be non-negative")
     if not math.isfinite(config.train_reuse_factor) or config.train_reuse_factor < 0.0:
         raise ValueError("train_reuse_factor must be non-negative")
     if config.train_checkpoint_mode not in {"resume", "bootstrap"}:

@@ -22,6 +22,7 @@ from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.pipeline_printer import PipelinePrinter
 from great_kingdom_ai.rust_onnx_self_play import RustOnnxSelfPlayConfig, RustSelfPlayRunSummary
 from great_kingdom_ai.self_play import GameLog, MoveLog
+from great_kingdom_ai.shard_replay_index import ShardReplayIndex
 from great_kingdom_ai.train import TrainingConfig
 from great_kingdom_ai.trajectory_replay import (
     TrajectoryEpisode,
@@ -290,11 +291,15 @@ def test_learner_v2_imports_pending_shards_trains_and_exports(tmp_path: Path) ->
     ) == "onnx"
     records = load_v2_shard_records(tmp_path / "shards" / "metadata.jsonl")
     assert [record.status for record in records] == ["imported"]
-    assert (tmp_path / "replay" / "trajectory-replay.npz").is_file()
-    assert (tmp_path / "replay" / "game_logs.jsonl").is_file()
+    index = ShardReplayIndex.load_or_create(tmp_path / "replay-index", capacity=16)
+    assert [record.shard_id for record in index.active_records] == [
+        "ema-seed-00000000-games-0002"
+    ]
+    assert not (tmp_path / "replay" / "trajectory-replay.npz").exists()
+    assert not (tmp_path / "replay" / "game_logs.jsonl").exists()
 
 
-def test_learner_v2_prunes_imported_shards_after_successful_cycle(tmp_path: Path) -> None:
+def test_learner_v2_prunes_evicted_shards_after_successful_cycle(tmp_path: Path) -> None:
     first = run_actor_v2_once(
         ActorV2Config(
             work_dir=tmp_path,
@@ -339,28 +344,31 @@ def test_learner_v2_prunes_imported_shards_after_successful_cycle(tmp_path: Path
     summary = run_learner_v2_once(
         LearnerV2Config(
             work_dir=tmp_path,
-            replay_capacity=16,
+            replay_capacity=2,
             min_replay_transitions=1,
             export_onnx=False,
             prune_artifacts=True,
-            prune_keep_imported_shards=0,
+            prune_evicted_shards=True,
+            prune_keep_evicted_shards=0,
         ),
         TrainingConfig(batch_size=2, steps=1, device="cpu"),
         trainer=fake_train,
         printer=PipelinePrinter(enabled=False),
     )
 
-    assert summary.pruned_artifacts == 2
+    assert summary.pruned_artifacts == 1
     assert summary.pruned_bytes > 0
     assert not first.shard.shard_dir.exists()
-    assert not second.shard.shard_dir.exists()
-    assert (tmp_path / "replay" / "trajectory-replay.npz").is_file()
+    assert second.shard.shard_dir.exists()
+    assert not (tmp_path / "replay" / "trajectory-replay.npz").exists()
     assert (tmp_path / "checkpoints" / "training-latest.pt").is_file()
     records = load_v2_shard_records(tmp_path / "shards" / "metadata.jsonl")
     assert [record.status for record in records] == [
         "imported",
         "imported",
     ]
+    index = ShardReplayIndex.load_or_create(tmp_path / "replay-index", capacity=2)
+    assert [record.shard_id for record in index.active_records] == [second.shard.shard_id]
 
 
 def test_learner_v2_waits_until_min_replay_transitions(tmp_path: Path) -> None:
