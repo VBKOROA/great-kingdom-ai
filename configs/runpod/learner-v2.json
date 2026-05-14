@@ -5,7 +5,7 @@
   "source_checkpoint": null,
   "candidate_checkpoint": null,
   "training_latest_checkpoint": null,
-  "train_checkpoint_mode": "bootstrap",
+  "train_checkpoint_mode": "resume",
   "export_onnx": true,
   "onnx_output_path": "data/runpod/train-v2-gumbel-512k/checkpoints/onnx/training-latest.onnx",
   "onnx_device": "cuda",
@@ -13,5 +13,5 @@
   "onnx_dummy_batch_size": 2,
   "prune_artifacts": true,
   "prune_keep_imported_shards": 0,
-  "train_reuse_factor": 4.0
+  "train_reuse_factor": 8.0
 }
