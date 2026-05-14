@@ -324,7 +324,7 @@ def run_learner_v2_once(
             "train",
             current,
             target,
-            detail=f"loss={loss['total']:.4f}",
+            detail=_format_train_loss_detail(loss),
         ),
     )
     training_latest.parent.mkdir(parents=True, exist_ok=True)
@@ -697,7 +697,7 @@ def _run_learner_continuous_cli(
                     "train",
                     current,
                     target,
-                    detail=f"loss={loss['total']:.4f}",
+                    detail=_format_train_loss_detail(loss),
                 ),
             )
             train_budget_samples = max(
@@ -839,6 +839,17 @@ def _continuous_train_steps(
         return 0
     budget_steps = math.floor(train_budget_samples / train_config.batch_size)
     return max(0, min(train_config.steps, budget_steps))
+
+
+def _format_train_loss_detail(loss: dict[str, float]) -> str:
+    detail = f"loss={loss['total']:.4f}"
+    if {"policy", "value", "policy_kl"}.issubset(loss):
+        detail += (
+            f" policy={loss['policy']:.4f}"
+            f" value={loss['value']:.4f}"
+            f" kl={loss['policy_kl']:.4f}"
+        )
+    return detail
 
 
 def _next_actor_seed_start(config: ActorV2Config) -> int:
