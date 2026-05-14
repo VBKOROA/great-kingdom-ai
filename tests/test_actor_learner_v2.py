@@ -230,6 +230,7 @@ def test_learner_v2_imports_pending_shards_trains_and_exports(tmp_path: Path) ->
             {
                 "replay_rows": len(replay),
                 "batch_shape": batch.features.shape,
+                "cache_max_size": replay.cache_info["max_size"],
                 "resume_path": resume_path,
                 "bootstrap_weights_path": bootstrap_weights_path,
             }
@@ -260,6 +261,7 @@ def test_learner_v2_imports_pending_shards_trains_and_exports(tmp_path: Path) ->
         LearnerV2Config(
             work_dir=tmp_path,
             replay_capacity=16,
+            shard_cache_size=3,
             min_replay_transitions=1,
             onnx_device="cpu",
         ),
@@ -278,6 +280,7 @@ def test_learner_v2_imports_pending_shards_trains_and_exports(tmp_path: Path) ->
         {
             "replay_rows": 4,
             "batch_shape": (2, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE),
+            "cache_max_size": 3,
             "resume_path": None,
             "bootstrap_weights_path": None,
         }
