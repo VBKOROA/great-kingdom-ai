@@ -73,7 +73,6 @@ class LearnerV2Config:
     work_dir: Path = Path("data/runpod/async-v2")
     replay_capacity: int = 512000
     shard_cache_size: int = 16
-    sample_shards_per_batch: int | None = 8
     min_replay_transitions: int = 8192
     source_checkpoint: Path | None = None
     candidate_checkpoint: Path | None = None
@@ -247,7 +246,6 @@ def run_learner_v2_once(
     printer.metric("replay backend", "shard_index")
     printer.metric("replay capacity", config.replay_capacity)
     printer.metric("shard cache size", config.shard_cache_size)
-    printer.metric("sample shards per batch", config.sample_shards_per_batch)
     printer.metric("replay transitions", len(index))
     printer.metric("min replay rows", config.min_replay_transitions)
     printer.metric("train batch", train_config.batch_size)
@@ -318,11 +316,7 @@ def run_learner_v2_once(
             cycle_seconds=cycle_seconds,
         )
 
-    dataset = ShardIndexedTrajectoryDataset(
-        index,
-        cache_shards=config.shard_cache_size,
-        sample_shards_per_batch=config.sample_shards_per_batch,
-    )
+    dataset = ShardIndexedTrajectoryDataset(index, cache_shards=config.shard_cache_size)
     candidate_checkpoint = _candidate_checkpoint(config)
     training_latest = _training_latest_checkpoint(config)
     kwargs = _train_checkpoint_kwargs(
@@ -482,7 +476,6 @@ def build_learner_v2_parser() -> argparse.ArgumentParser:
     parser.add_argument("--work-dir", type=Path, default=None)
     parser.add_argument("--replay-capacity", type=int, default=None)
     parser.add_argument("--shard-cache-size", type=int, default=None)
-    parser.add_argument("--sample-shards-per-batch", type=int, default=None)
     parser.add_argument("--min-replay-transitions", type=int, default=None)
     parser.add_argument("--source-checkpoint", type=Path, default=None)
     parser.add_argument("--train-checkpoint-mode", choices=["resume", "bootstrap"], default=None)
@@ -542,7 +535,6 @@ def learner_v2_main() -> NoReturn:
         "work_dir": args.work_dir,
         "replay_capacity": args.replay_capacity,
         "shard_cache_size": args.shard_cache_size,
-        "sample_shards_per_batch": args.sample_shards_per_batch,
         "min_replay_transitions": args.min_replay_transitions,
         "source_checkpoint": args.source_checkpoint,
         "train_checkpoint_mode": args.train_checkpoint_mode,
@@ -652,7 +644,6 @@ def _run_learner_continuous_cli(
         printer.metric("replay backend", "shard_index")
         printer.metric("replay transitions", len(index))
         printer.metric("shard cache size", config.shard_cache_size)
-        printer.metric("sample shards per batch", config.sample_shards_per_batch)
         printer.metric("train batch", train_config.batch_size)
         printer.metric("max train steps", train_config.steps)
         printer.metric("reuse factor", config.train_reuse_factor)
@@ -708,7 +699,6 @@ def _run_learner_continuous_cli(
             dataset = ShardIndexedTrajectoryDataset(
                 index,
                 cache_shards=config.shard_cache_size,
-                sample_shards_per_batch=config.sample_shards_per_batch,
             )
             candidate_checkpoint = _candidate_checkpoint(config)
             training_latest = _training_latest_checkpoint(config)
@@ -1140,8 +1130,6 @@ def _validate_learner_config(config: LearnerV2Config) -> None:
         raise ValueError("replay_capacity must be positive")
     if config.shard_cache_size <= 0:
         raise ValueError("shard_cache_size must be positive")
-    if config.sample_shards_per_batch is not None and config.sample_shards_per_batch <= 0:
-        raise ValueError("sample_shards_per_batch must be positive")
     if config.min_replay_transitions < 0:
         raise ValueError("min_replay_transitions must be non-negative")
     if config.prune_keep_evicted_shards < 0:
