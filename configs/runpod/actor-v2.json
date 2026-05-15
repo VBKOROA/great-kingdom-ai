@@ -9,7 +9,7 @@
   "rust_self_play_batch_size": 512,
   "self_play": {
     "max_turns": 112,
-    "gumbel_simulations": 256,
+    "gumbel_simulations": 128,
     "gumbel_max_considered_actions": 32,
     "gumbel_c_visit": 50.0,
     "gumbel_c_scale": 0.25,
@@ -19,7 +19,7 @@
     "gumbel_seed": 700000,
     "playout_cap_randomization": true,
     "playout_cap_full_search_fraction": 0.25,
-    "playout_cap_full_simulations": 256,
+    "playout_cap_full_simulations": 128,
     "playout_cap_fast_simulations": 16,
     "playout_cap_full_max_considered_actions": 32,
     "playout_cap_fast_max_considered_actions": 4,
