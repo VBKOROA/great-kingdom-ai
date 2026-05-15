@@ -44,6 +44,7 @@ great-kingdom-learner = "great_kingdom_ai.actor_learner_processes:learner_main"
 great-kingdom-actor-v2 = "great_kingdom_ai.actor_learner_v2:actor_v2_main"
 great-kingdom-learner-v2 = "great_kingdom_ai.actor_learner_v2:learner_v2_main"
 great-kingdom-init-async-v2 = "great_kingdom_ai.actor_learner_v2:factory_init_v2_main"
+great-kingdom-replay-monitor-v2 = "great_kingdom_ai.replay_monitor:main"
 
 [tool.setuptools.packages.find]
 where = ["python"]
