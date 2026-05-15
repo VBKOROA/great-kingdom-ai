@@ -497,6 +497,41 @@ def test_train_from_replay_saves_checkpoint_and_resume_advances_step(tmp_path) -
     assert resumed.losses[-1]["train_step_seconds"] > 0.0
 
 
+def test_train_from_replay_can_override_resumed_optimizer_lr_once(tmp_path) -> None:
+    replay = make_replay(size=8)
+    first_checkpoint = tmp_path / "first.pt"
+    second_checkpoint = tmp_path / "second.pt"
+
+    train_from_replay(
+        replay,
+        TrainingConfig(batch_size=4, steps=2, learning_rate=1e-3, seed=11),
+        checkpoint_path=first_checkpoint,
+    )
+    train_from_replay(
+        replay,
+        TrainingConfig(batch_size=4, steps=1, learning_rate=1e-3, seed=11),
+        checkpoint_path=second_checkpoint,
+        resume_path=first_checkpoint,
+        resume_optimizer_lr_override=5e-5,
+    )
+
+    checkpoint = torch.load(second_checkpoint, map_location="cpu", weights_only=False)
+    assert checkpoint["optimizer_state"]["param_groups"][0]["lr"] == pytest.approx(5e-5)
+    assert checkpoint["scheduler_state"]["_last_lr"][0] == pytest.approx(5e-5)
+    assert checkpoint["scheduler_state"]["base_lrs"][0] == pytest.approx(5e-5)
+
+
+def test_train_from_replay_rejects_optimizer_lr_override_without_resume(tmp_path) -> None:
+    replay = make_replay(size=8)
+
+    with pytest.raises(ValueError, match="requires resume_path"):
+        train_from_replay(
+            replay,
+            TrainingConfig(batch_size=4, steps=1),
+            resume_optimizer_lr_override=5e-5,
+        )
+
+
 def test_train_from_replay_can_bootstrap_weights_without_resuming_step(tmp_path) -> None:
     replay = make_replay(size=8)
     first_checkpoint = tmp_path / "first.pt"

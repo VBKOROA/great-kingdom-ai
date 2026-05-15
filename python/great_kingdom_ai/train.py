@@ -331,6 +331,7 @@ def load_checkpoint(
     amp: bool = False,
     ema_decay: float | None = None,
     prefer_ema: bool = False,
+    optimizer_lr_override: float | None = None,
 ) -> TrainState:
     torch = _import_torch()
     from great_kingdom_ai.model import ModelConfig, PolicyValueNetwork
@@ -364,6 +365,8 @@ def load_checkpoint(
     )
     scheduler.load_state_dict(checkpoint["scheduler_state"])
     _restore_optimizer_lrs_from_scheduler(optimizer, scheduler)
+    if optimizer_lr_override is not None:
+        _override_optimizer_learning_rate(optimizer, scheduler, optimizer_lr_override)
     scaler = _create_grad_scaler_for_device(torch, device, enabled=amp)
     scaler_state = checkpoint.get("scaler_state")
     if scaler is not None and scaler_state is not None:
@@ -491,6 +494,23 @@ def _restore_optimizer_lrs_from_scheduler(
         group["lr"] = learning_rate
 
 
+def _override_optimizer_learning_rate(
+    optimizer: Optimizer,
+    scheduler: LRScheduler,
+    learning_rate: float,
+) -> None:
+    if not math.isfinite(learning_rate) or learning_rate <= 0.0:
+        raise ValueError("optimizer_lr_override must be finite and positive")
+    for group in optimizer.param_groups:
+        group["lr"] = learning_rate
+        if "initial_lr" in group:
+            group["initial_lr"] = learning_rate
+    if hasattr(scheduler, "base_lrs"):
+        scheduler.base_lrs = [learning_rate for _ in scheduler.base_lrs]
+    if hasattr(scheduler, "_last_lr"):
+        scheduler._last_lr = [learning_rate for _ in optimizer.param_groups]
+
+
 def _create_ema_model(model: PolicyValueNetwork) -> PolicyValueNetwork:
     import copy
 
@@ -533,6 +553,7 @@ def train_from_replay(
     checkpoint_path: str | Path | None = None,
     resume_path: str | Path | None = None,
     bootstrap_weights_path: str | Path | None = None,
+    resume_optimizer_lr_override: float | None = None,
     log_every: int = 0,
     progress_callback: Callable[[int, int, dict[str, float]], None] | None = None,
 ) -> TrainSummary:
@@ -542,6 +563,8 @@ def train_from_replay(
         raise ValueError("prefetch_batches must be non-negative")
     if resume_path is not None and bootstrap_weights_path is not None:
         raise ValueError("resume_path and bootstrap_weights_path are mutually exclusive")
+    if resume_optimizer_lr_override is not None and resume_path is None:
+        raise ValueError("resume_optimizer_lr_override requires resume_path")
 
     torch = _import_torch()
     torch.manual_seed(config.seed)
@@ -566,6 +589,7 @@ def train_from_replay(
             steps=config.steps,
             amp=config.amp,
             ema_decay=config.ema_decay,
+            optimizer_lr_override=resume_optimizer_lr_override,
         )
 
     start_step = state.step

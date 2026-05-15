@@ -320,6 +320,7 @@ def run_learner_v2_once(
     *,
     trainer: Callable[..., Any] | None = None,
     onnx_exporter: Callable[..., Any] | None = None,
+    resume_optimizer_lr_override: float | None = None,
     printer: PipelinePrinter | None = None,
 ) -> LearnerV2Summary:
     cycle_started_at = time.monotonic()
@@ -415,11 +416,15 @@ def run_learner_v2_once(
         source_checkpoint=_source_checkpoint(config),
     )
     printer.step(f"training candidate -> {candidate_checkpoint}")
+    train_kwargs: dict[str, Any] = {**kwargs}
+    if resume_optimizer_lr_override is not None:
+        train_kwargs["resume_optimizer_lr_override"] = resume_optimizer_lr_override
+        printer.metric("optimizer lr override", resume_optimizer_lr_override)
     train_summary = train(
         dataset,
         train_config,
         checkpoint_path=candidate_checkpoint,
-        **kwargs,
+        **train_kwargs,
         log_every=max(1, train_config.steps // 10),
         progress_callback=lambda current, target, loss: printer.progress(
             "train",
@@ -583,6 +588,16 @@ def build_learner_v2_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prune-artifacts", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--prune-keep-imported-shards", type=int, default=None)
     parser.add_argument("--train-reuse-factor", type=float, default=None)
+    parser.add_argument(
+        "--lr-override",
+        "--override-optimizer-lr",
+        type=float,
+        default=None,
+        help=(
+            "Override the resumed optimizer learning rate for the first training call only. "
+            "This is a CLI-only one-shot override and is not saved to learner config."
+        ),
+    )
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--max-cycles", type=int, default=None)
     parser.add_argument("--sleep-seconds", type=float, default=1.0)
@@ -760,6 +775,7 @@ def _run_learner_cli(
     summary = run_learner_v2_once(
         config,
         train_config,
+        resume_optimizer_lr_override=args.override_optimizer_lr,
         printer=PipelinePrinter(enabled=not args.json),
     )
     summaries.append(summary.to_dict())
@@ -780,6 +796,7 @@ def _run_learner_continuous_cli(
     export_onnx = export_checkpoint_to_onnx
     summaries: list[dict[str, Any]] = []
     train_budget_samples = 0.0
+    resume_optimizer_lr_override = args.override_optimizer_lr
     cycles = args.max_cycles
     cycle = 0
     train_chunks = 0
@@ -860,11 +877,17 @@ def _run_learner_continuous_cli(
                 f"training candidate -> {candidate_checkpoint} "
                 f"(steps={train_steps}, budget={int(train_budget_samples)})"
             )
+            train_kwargs: dict[str, Any] = {
+                **kwargs,
+            }
+            if resume_optimizer_lr_override is not None:
+                train_kwargs["resume_optimizer_lr_override"] = resume_optimizer_lr_override
+                printer.metric("optimizer lr override", resume_optimizer_lr_override)
             train_summary = train(
                 dataset,
                 effective_train_config,
                 checkpoint_path=candidate_checkpoint,
-                **kwargs,
+                **train_kwargs,
                 log_every=max(1, effective_train_config.steps // 10),
                 progress_callback=lambda current, target, loss, p=printer: p.progress(
                     "train",
@@ -873,6 +896,7 @@ def _run_learner_continuous_cli(
                     detail=_format_train_loss_detail(loss),
                 ),
             )
+            resume_optimizer_lr_override = None
             train_budget_samples = max(
                 0.0,
                 train_budget_samples - train_steps * train_config.batch_size,
