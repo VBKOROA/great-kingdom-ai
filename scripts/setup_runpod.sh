@@ -169,6 +169,32 @@ activate_path.write_text(text, encoding="utf-8")
 PY
 }
 
+check_runpod_torch() {
+  python - <<'PY'
+import os
+from pathlib import Path
+
+import torch
+
+venv_dir = Path(os.environ["VIRTUAL_ENV"]).resolve()
+torch_path = Path(torch.__file__).resolve()
+
+print(f"torch={torch.__version__}")
+print(f"torch_cuda={torch.version.cuda}")
+print(f"torch_path={torch_path}")
+print(f"cuda_available={torch.cuda.is_available()}")
+if torch.cuda.is_available():
+    print(f"cuda_device={torch.cuda.get_device_name(0)}")
+
+if torch_path == venv_dir or venv_dir in torch_path.parents:
+    raise SystemExit(
+        "Venv-local torch was found. This Runpod setup expects the base image PyTorch "
+        f"from system site-packages, not a wheel installed under {venv_dir}. "
+        f"Remove {venv_dir} and rerun this script."
+    )
+PY
+}
+
 # Python 확인 및 설치
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
   echo "Python 명령을 찾을 수 없습니다: $PYTHON_BIN"
@@ -186,20 +212,16 @@ echo "Creating venv with system site packages: $VENV_DIR"
 "$PYTHON_BIN" -m venv "$VENV_DIR" --system-site-packages
 source "$VENV_DIR/bin/activate"
 
-echo "Installing project dev dependencies without replacing Runpod's PyTorch"
+echo "Checking Runpod PyTorch visible from venv before dependency install"
+check_runpod_torch
+
+echo "Installing project dependencies without replacing Runpod's PyTorch"
 python -m pip install --upgrade pip
-python -m pip install -e '.[dev,ai]'
+python -m pip install -e '.[dev]'
+python -m pip install 'onnx>=1.17' 'onnxconverter-common>=1.14'
 
 echo "Checking PyTorch/CUDA visible from venv"
-python - <<'PY'
-import torch
-
-print(f"torch={torch.__version__}")
-print(f"torch_cuda={torch.version.cuda}")
-print(f"cuda_available={torch.cuda.is_available()}")
-if torch.cuda.is_available():
-    print(f"cuda_device={torch.cuda.get_device_name(0)}")
-PY
+check_runpod_torch
 
 echo "Configuring CUDA library path for Rust ONNX Runtime"
 configure_cuda_library_path
