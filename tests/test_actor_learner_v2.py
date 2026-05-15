@@ -528,6 +528,85 @@ def test_learner_v2_continuous_consumes_optimizer_lr_override_once(
     assert train_calls == [5e-5, None]
 
 
+def test_learner_v2_continuous_keeps_optimizer_lr_override_while_waiting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    train_calls: list[float | None] = []
+
+    def fake_train(
+        replay: Any,
+        config: TrainingConfig,
+        *,
+        checkpoint_path: str | Path,
+        resume_path: str | Path | None,
+        bootstrap_weights_path: str | Path | None = None,
+        resume_optimizer_lr_override: float | None = None,
+        log_every: int,
+        progress_callback: Any = None,
+    ) -> FakeTrainSummary:
+        del replay, config, resume_path, bootstrap_weights_path, log_every, progress_callback
+        train_calls.append(resume_optimizer_lr_override)
+        destination = Path(checkpoint_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("candidate", encoding="utf-8")
+        return FakeTrainSummary(destination)
+
+    def fake_export(
+        checkpoint_path: str | Path,
+        output_path: str | Path,
+        **kwargs: Any,
+    ) -> None:
+        del checkpoint_path, kwargs
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_text("onnx", encoding="utf-8")
+
+    sleep_calls = 0
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal sleep_calls
+        del seconds
+        sleep_calls += 1
+        if sleep_calls == 1:
+            run_actor_v2_once(
+                ActorV2Config(
+                    work_dir=tmp_path,
+                    onnx_model_path=tmp_path / "model.onnx",
+                    model_version="ema",
+                    games=2,
+                    seed_start=0,
+                    onnx_device="cpu",
+                ),
+                runner=fake_actor_runner,
+                printer=PipelinePrinter(enabled=False),
+            )
+
+    monkeypatch.setattr(actor_learner_v2_module, "train_from_replay", fake_train)
+    monkeypatch.setattr(actor_learner_v2_module, "export_checkpoint_to_onnx", fake_export)
+    monkeypatch.setattr(actor_learner_v2_module.time, "sleep", fake_sleep)
+
+    args = argparse.Namespace(
+        loop=True,
+        max_cycles=2,
+        json=True,
+        sleep_seconds=0.0,
+        override_optimizer_lr=5e-5,
+    )
+    actor_learner_v2_module._run_learner_continuous_cli(
+        LearnerV2Config(
+            work_dir=tmp_path,
+            replay_capacity=32,
+            min_replay_transitions=1,
+            train_reuse_factor=2.0,
+            onnx_device="cpu",
+        ),
+        TrainingConfig(batch_size=2, steps=1, device="cpu"),
+        args,
+    )
+
+    assert train_calls == [5e-5]
+
+
 def test_learner_v2_prunes_imported_shards_after_successful_cycle(tmp_path: Path) -> None:
     first = run_actor_v2_once(
         ActorV2Config(

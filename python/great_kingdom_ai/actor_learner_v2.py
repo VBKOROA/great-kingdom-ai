@@ -591,6 +591,7 @@ def build_learner_v2_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--lr-override",
         "--override-optimizer-lr",
+        dest="override_optimizer_lr",
         type=float,
         default=None,
         help=(
