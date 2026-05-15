@@ -7,8 +7,10 @@ from typing import Any
 
 import great_kingdom_ai.actor_learner_v2 as actor_learner_v2_module
 import numpy as np
+import pytest
 from great_kingdom_ai.actor_learner_v2 import (
     ActorV2Config,
+    FactoryInitV2Config,
     LearnerV2Config,
     _continuous_train_steps,
     _next_actor_seed_start,
@@ -16,6 +18,7 @@ from great_kingdom_ai.actor_learner_v2 import (
     load_v2_shard_records,
     pending_v2_shards,
     run_actor_v2_once,
+    run_factory_init_v2_once,
     run_learner_v2_once,
 )
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS, PASS_ACTION
@@ -105,6 +108,84 @@ class FakeTrainSummary:
         self.end_step = 7
         self.checkpoint_path = checkpoint_path
         self.losses: list[dict[str, float]] = []
+
+
+class FakeFactoryState:
+    step = 0
+
+
+def test_factory_init_v2_writes_initial_checkpoint_and_onnx(tmp_path: Path) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_state_factory(config: TrainingConfig) -> FakeFactoryState:
+        calls.append({"model_preset": config.model_preset, "device": config.device})
+        return FakeFactoryState()
+
+    def fake_save(state: Any, path: str | Path) -> Path:
+        assert isinstance(state, FakeFactoryState)
+        destination = Path(path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("checkpoint", encoding="utf-8")
+        return destination
+
+    def fake_export(checkpoint_path: str | Path, output_path: str | Path, **kwargs: Any) -> None:
+        calls.append(
+            {
+                "checkpoint_path": Path(checkpoint_path),
+                "output_path": Path(output_path),
+                "kwargs": kwargs,
+            }
+        )
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_text("onnx", encoding="utf-8")
+
+    summary = run_factory_init_v2_once(
+        FactoryInitV2Config(work_dir=tmp_path, onnx_device="cpu", onnx_precision="fp32"),
+        TrainingConfig(model_preset="small", device="cpu"),
+        state_factory=fake_state_factory,
+        checkpoint_saver=fake_save,
+        onnx_exporter=fake_export,
+        printer=PipelinePrinter(enabled=False),
+    )
+
+    assert summary.checkpoint_path == tmp_path / "checkpoints" / "training-latest.pt"
+    assert summary.onnx_output_path == (
+        tmp_path / "checkpoints" / "onnx" / "training-latest.onnx"
+    )
+    assert summary.step == 0
+    assert summary.overwritten is False
+    assert summary.to_dict()["model_preset"] == "small"
+    assert summary.checkpoint_path.read_text(encoding="utf-8") == "checkpoint"
+    assert summary.onnx_output_path.read_text(encoding="utf-8") == "onnx"
+    assert calls == [
+        {"model_preset": "small", "device": "cpu"},
+        {
+            "checkpoint_path": summary.checkpoint_path,
+            "output_path": summary.onnx_output_path.with_suffix(".onnx.tmp"),
+            "kwargs": {
+                "device": "cpu",
+                "precision": "fp32",
+                "dummy_batch_size": 2,
+                "prefer_ema": True,
+            },
+        },
+    ]
+
+
+def test_factory_init_v2_refuses_to_overwrite_outputs(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "checkpoints" / "training-latest.pt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("existing", encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="factory init output already exists"):
+        run_factory_init_v2_once(
+            FactoryInitV2Config(work_dir=tmp_path),
+            TrainingConfig(),
+            state_factory=lambda config: FakeFactoryState(),
+            checkpoint_saver=lambda state, path: Path(path),
+            onnx_exporter=lambda *args, **kwargs: None,
+            printer=PipelinePrinter(enabled=False),
+        )
 
 
 def test_actor_v2_writes_trajectory_shard_metadata(tmp_path: Path) -> None:

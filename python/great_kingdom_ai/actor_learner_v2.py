@@ -24,7 +24,13 @@ from great_kingdom_ai.rust_onnx_self_play import (
     run_rust_onnx_self_play,
 )
 from great_kingdom_ai.self_play import GameLog, MoveLog, SelfPlayConfig
-from great_kingdom_ai.train import TrainingConfig, load_training_config, train_from_replay
+from great_kingdom_ai.train import (
+    TrainingConfig,
+    create_train_state,
+    load_training_config,
+    save_checkpoint,
+    train_from_replay,
+)
 from great_kingdom_ai.trajectory_dataset import TrajectoryReplayDataset
 from great_kingdom_ai.trajectory_replay import TrajectoryEpisode, TrajectoryReplayStore
 
@@ -88,6 +94,17 @@ class LearnerV2Config:
 
 
 @dataclass(frozen=True)
+class FactoryInitV2Config:
+    work_dir: Path = Path("data/runpod/async-v2")
+    checkpoint_path: Path | None = None
+    onnx_output_path: Path | None = None
+    overwrite: bool = False
+    onnx_device: str = "cpu"
+    onnx_precision: str = "fp32"
+    onnx_dummy_batch_size: int = 2
+
+
+@dataclass(frozen=True)
 class ActorV2Summary:
     shard: V2ShardRecord
 
@@ -135,6 +152,80 @@ class LearnerV2Summary:
             "pruned_bytes": self.pruned_bytes,
             "cycle_seconds": self.cycle_seconds,
         }
+
+
+@dataclass(frozen=True)
+class FactoryInitV2Summary:
+    checkpoint_path: Path
+    onnx_output_path: Path
+    model_preset: str
+    step: int
+    overwritten: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "checkpoint_path": str(self.checkpoint_path),
+            "onnx_output_path": str(self.onnx_output_path),
+            "model_preset": self.model_preset,
+            "step": self.step,
+            "overwritten": self.overwritten,
+        }
+
+
+def run_factory_init_v2_once(
+    config: FactoryInitV2Config,
+    train_config: TrainingConfig,
+    *,
+    state_factory: Callable[[TrainingConfig], Any] | None = None,
+    checkpoint_saver: Callable[[Any, str | Path], Path] | None = None,
+    onnx_exporter: Callable[..., Any] | None = None,
+    printer: PipelinePrinter | None = None,
+) -> FactoryInitV2Summary:
+    _validate_factory_init_config(config)
+    printer = printer if printer is not None else PipelinePrinter()
+    make_state = state_factory if state_factory is not None else create_train_state
+    save = checkpoint_saver if checkpoint_saver is not None else save_checkpoint
+    export_onnx = onnx_exporter if onnx_exporter is not None else export_checkpoint_to_onnx
+    checkpoint_path = _factory_checkpoint_path(config)
+    onnx_path = _factory_onnx_output_path(config)
+    existing_outputs = [path for path in (checkpoint_path, onnx_path) if path.exists()]
+    if existing_outputs and not config.overwrite:
+        existing = ", ".join(str(path) for path in existing_outputs)
+        raise FileExistsError(f"factory init output already exists: {existing}")
+
+    printer.title("Async V2 Factory Init")
+    printer.metric("work dir", config.work_dir)
+    printer.metric("checkpoint", checkpoint_path)
+    printer.metric("onnx", onnx_path)
+    printer.metric("model preset", train_config.model_preset)
+    printer.metric("train device", train_config.device)
+    printer.metric("onnx device", config.onnx_device)
+    printer.metric("onnx precision", config.onnx_precision)
+
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    onnx_path.parent.mkdir(parents=True, exist_ok=True)
+    printer.step(f"creating factory checkpoint -> {checkpoint_path}")
+    state = make_state(train_config)
+    saved_checkpoint = Path(save(state, checkpoint_path))
+    printer.step(f"exporting factory ONNX -> {onnx_path}")
+    temporary_onnx_path = onnx_path.with_suffix(f"{onnx_path.suffix}.tmp")
+    export_onnx(
+        saved_checkpoint,
+        temporary_onnx_path,
+        device=config.onnx_device,
+        precision=config.onnx_precision,
+        dummy_batch_size=config.onnx_dummy_batch_size,
+        prefer_ema=True,
+    )
+    temporary_onnx_path.replace(onnx_path)
+    printer.done(f"factory async v2 artifacts ready in {printer.elapsed()}")
+    return FactoryInitV2Summary(
+        checkpoint_path=saved_checkpoint,
+        onnx_output_path=onnx_path,
+        model_preset=train_config.model_preset,
+        step=int(getattr(state, "step", 0)),
+        overwritten=bool(existing_outputs),
+    )
 
 
 def run_actor_v2_once(
@@ -495,6 +586,70 @@ def build_learner_v2_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sleep-seconds", type=float, default=1.0)
     parser.add_argument("--json", action="store_true")
     return parser
+
+
+def build_factory_init_v2_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="great-kingdom-init-async-v2",
+        description="Create factory checkpoint and ONNX artifacts for async v2.",
+    )
+    parser.add_argument("--train-config", type=Path, default=Path("configs/runpod/train.json"))
+    parser.add_argument("--work-dir", type=Path, default=None)
+    parser.add_argument("--checkpoint", type=Path, default=None)
+    parser.add_argument("--onnx-output", type=Path, default=None)
+    parser.add_argument("--device", choices=["cpu", "cuda"], default=None)
+    parser.add_argument(
+        "--model-preset",
+        choices=[
+            "small",
+            "medium",
+            "medium_plus",
+            "strong",
+            "large",
+            "large_policy",
+            "large_plus",
+        ],
+        default=None,
+    )
+    parser.add_argument("--ema-decay", type=float, default=None)
+    parser.add_argument("--onnx-device", choices=["cpu", "cuda"], default=None)
+    parser.add_argument("--onnx-precision", choices=["fp32", "fp16"], default=None)
+    parser.add_argument("--onnx-dummy-batch-size", type=int, default=None)
+    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--json", action="store_true")
+    return parser
+
+
+def factory_init_v2_main() -> NoReturn:
+    args = build_factory_init_v2_parser().parse_args()
+    train = load_training_config(args.train_config)
+    train_data = asdict(train)
+    if args.device is not None:
+        train_data["device"] = args.device
+    if args.model_preset is not None:
+        train_data["model_preset"] = args.model_preset
+    if args.ema_decay is not None:
+        train_data["ema_decay"] = args.ema_decay
+    config = FactoryInitV2Config(
+        work_dir=args.work_dir or FactoryInitV2Config.work_dir,
+        checkpoint_path=args.checkpoint,
+        onnx_output_path=args.onnx_output,
+        overwrite=args.overwrite,
+        onnx_device=args.onnx_device or FactoryInitV2Config.onnx_device,
+        onnx_precision=args.onnx_precision or FactoryInitV2Config.onnx_precision,
+        onnx_dummy_batch_size=(
+            args.onnx_dummy_batch_size
+            if args.onnx_dummy_batch_size is not None
+            else FactoryInitV2Config.onnx_dummy_batch_size
+        ),
+    )
+    summary = run_factory_init_v2_once(
+        config,
+        TrainingConfig(**train_data),
+        printer=PipelinePrinter(enabled=not args.json),
+    )
+    print(_json_payload([summary.to_dict()], args.json))
+    raise SystemExit(0)
 
 
 def actor_v2_main() -> NoReturn:
@@ -1057,6 +1212,14 @@ def _onnx_output_path(config: LearnerV2Config) -> Path:
     return config.onnx_output_path or _paths(config.work_dir)["onnx_output_path"]
 
 
+def _factory_checkpoint_path(config: FactoryInitV2Config) -> Path:
+    return config.checkpoint_path or _paths(config.work_dir)["training_latest_checkpoint"]
+
+
+def _factory_onnx_output_path(config: FactoryInitV2Config) -> Path:
+    return config.onnx_output_path or _paths(config.work_dir)["onnx_output_path"]
+
+
 def _train_checkpoint_kwargs(
     *,
     train_checkpoint_mode: str,
@@ -1200,18 +1363,31 @@ def _validate_learner_config(config: LearnerV2Config) -> None:
         raise ValueError("onnx_dummy_batch_size must be positive")
 
 
+def _validate_factory_init_config(config: FactoryInitV2Config) -> None:
+    if config.onnx_device not in {"cpu", "cuda"}:
+        raise ValueError("onnx_device must be one of: cpu, cuda")
+    if config.onnx_precision not in {"fp32", "fp16"}:
+        raise ValueError("onnx_precision must be one of: fp32, fp16")
+    if config.onnx_dummy_batch_size <= 0:
+        raise ValueError("onnx_dummy_batch_size must be positive")
+
+
 __all__ = [
     "ActorV2Config",
     "ActorV2Summary",
+    "FactoryInitV2Config",
+    "FactoryInitV2Summary",
     "LearnerV2Config",
     "LearnerV2Summary",
     "V2ShardRecord",
     "actor_v2_main",
+    "factory_init_v2_main",
     "learner_v2_main",
     "load_actor_v2_config",
     "load_learner_v2_config",
     "load_v2_shard_records",
     "pending_v2_shards",
     "run_actor_v2_once",
+    "run_factory_init_v2_once",
     "run_learner_v2_once",
 ]
