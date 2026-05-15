@@ -5,12 +5,17 @@ SOURCE=${1:-data/runpod/train-v2-gumbel-512k/checkpoints/training-latest.pt}
 DEST_DIR=${2:-data/runpod/train-v2-gumbel-512k/checkpoints/snapshots}
 INTERVAL_SECONDS=${3:-600}
 KEEP_COUNT=${4:-0}
+STABLE_CHECK_SECONDS=${SNAPSHOT_STABLE_CHECK_SECONDS:-2}
+RETRY_SECONDS=${SNAPSHOT_RETRY_SECONDS:-30}
+RETRY_SLEEP_SECONDS=${SNAPSHOT_RETRY_SLEEP_SECONDS:-1}
 
 mkdir -p "$DEST_DIR"
 
 echo "snapshot source: $SOURCE"
 echo "snapshot dir:    $DEST_DIR"
 echo "interval:        ${INTERVAL_SECONDS}s"
+echo "stable check:    ${STABLE_CHECK_SECONDS}s"
+echo "retry window:    ${RETRY_SECONDS}s"
 if [ "$KEEP_COUNT" -gt 0 ]; then
     echo "keep count:      $KEEP_COUNT"
 else
@@ -25,17 +30,48 @@ file_signature() {
     stat -c "%s:%Y" "$SOURCE"
 }
 
-wait_for_stable_source() {
+copy_stable_source() {
+    local destination=$1
+    local temporary=$2
     local before
     local after
+    local copied
+    local deadline
+    local status="missing"
 
-    before=$(file_signature)
-    if [ "$before" = "missing" ]; then
-        return 1
-    fi
-    sleep 2
-    after=$(file_signature)
-    [ "$before" = "$after" ]
+    deadline=$((SECONDS + RETRY_SECONDS))
+    while [ "$SECONDS" -le "$deadline" ]; do
+        before=$(file_signature)
+        if [ "$before" = "missing" ]; then
+            status="missing"
+            sleep "$RETRY_SLEEP_SECONDS"
+            continue
+        fi
+
+        sleep "$STABLE_CHECK_SECONDS"
+        after=$(file_signature)
+        if [ "$before" != "$after" ]; then
+            status="changing"
+            sleep "$RETRY_SLEEP_SECONDS"
+            continue
+        fi
+
+        cp "$SOURCE" "$temporary"
+        copied=$(file_signature)
+        if [ "$after" != "$copied" ]; then
+            status="changed during copy"
+            rm -f "$temporary"
+            sleep "$RETRY_SLEEP_SECONDS"
+            continue
+        fi
+
+        mv "$temporary" "$destination"
+        return 0
+    done
+
+    rm -f "$temporary"
+    echo "$status"
+    return 1
 }
 
 prune_old_snapshots() {
@@ -61,13 +97,11 @@ while true; do
     destination="$DEST_DIR/training-latest-$timestamp.pt"
     temporary="$destination.tmp"
 
-    if wait_for_stable_source; then
-        cp "$SOURCE" "$temporary"
-        mv "$temporary" "$destination"
+    if failure_reason=$(copy_stable_source "$destination" "$temporary"); then
         echo "[$(date +%H:%M:%S)] saved $destination"
         prune_old_snapshots
     else
-        echo "[$(date +%H:%M:%S)] skipped: source missing or changing"
+        echo "[$(date +%H:%M:%S)] skipped after retry: source $failure_reason"
     fi
 
     sleep "$INTERVAL_SECONDS"
