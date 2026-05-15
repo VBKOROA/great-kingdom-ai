@@ -105,8 +105,7 @@ source .venv/bin/activate
 ```bash
 great-kingdom-actor-v2 \
   --actor-config configs/runpod/actor-v2.json \
-  --loop \
-  --sleep-seconds 1
+  --loop 
 ```
 
 actor는 재시작 시 `shards/metadata.jsonl`을 보고 같은 `model_version`의 다음 seed부터
@@ -120,7 +119,7 @@ great-kingdom-learner-v2 \
   --learner-config configs/runpod/learner-v2.json \
   --train-config configs/runpod/train.json \
   --loop \
-  --sleep-seconds 5
+  --sleep-seconds 3
 ```
 
 터미널 3: 시스템 모니터링
