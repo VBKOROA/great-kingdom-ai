@@ -103,6 +103,7 @@ source .venv/bin/activate
 터미널 1: actor
 
 ```bash
+source .venv/bin/activate
 great-kingdom-actor-v2 \
   --actor-config configs/runpod/actor-v2.json \
   --loop 
@@ -115,6 +116,7 @@ actor는 재시작 시 `shards/metadata.jsonl`을 보고 같은 `model_version`�
 터미널 2: learner
 
 ```bash
+source .venv/bin/activate
 great-kingdom-learner-v2 \
   --learner-config configs/runpod/learner-v2.json \
   --train-config configs/runpod/train.json \
