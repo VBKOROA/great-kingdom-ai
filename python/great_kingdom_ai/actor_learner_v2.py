@@ -10,7 +10,7 @@ import os
 import shutil
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, NoReturn
@@ -58,6 +58,7 @@ class ActorV2Config:
     work_dir: Path = Path("data/runpod/async-v2")
     onnx_model_path: Path = Path("data/runpod/async-v2/checkpoints/onnx/training-latest.onnx")
     model_version: str = "latest"
+    model_iteration: int | None = None
     shard_id: str | None = None
     games: int = 64
     seed_start: int = 0
@@ -161,6 +162,8 @@ def run_actor_v2_once(
     printer.metric("work dir", config.work_dir)
     printer.metric("onnx model", config.onnx_model_path)
     printer.metric("model version", config.model_version)
+    if config.model_iteration is not None:
+        printer.metric("model iteration", config.model_iteration)
     printer.metric("games", config.games)
     printer.metric("seed start", config.seed_start)
     printer.metric("onnx device", config.onnx_device)
@@ -175,6 +178,8 @@ def run_actor_v2_once(
             output_dir=shard_dir,
             games=config.games,
             seed_start=config.seed_start,
+            model_version=_transition_model_version(config),
+            created_iteration=_transition_created_iteration(config),
             onnx_device=config.onnx_device,
             onnx_max_batch_size=config.onnx_max_batch_size,
             rust_self_play_batch_size=config.rust_self_play_batch_size,
@@ -189,7 +194,7 @@ def run_actor_v2_once(
 
     _save_trajectory_shard(
         shard_dir,
-        episodes=summary.trajectory_episodes,
+        episodes=_with_transition_model_metadata(summary.trajectory_episodes, config),
         logs=summary.game_logs,
     )
     record = V2ShardRecord(
@@ -452,6 +457,7 @@ def build_actor_v2_parser() -> argparse.ArgumentParser:
     parser.add_argument("--work-dir", type=Path, default=None)
     parser.add_argument("--onnx-model", type=Path, default=None)
     parser.add_argument("--model-version", default=None)
+    parser.add_argument("--model-iteration", type=int, default=None)
     parser.add_argument("--games", type=int, default=None)
     parser.add_argument("--seed-start", type=int, default=None)
     parser.add_argument("--onnx-device", choices=["cpu", "cuda"], default=None)
@@ -499,6 +505,7 @@ def actor_v2_main() -> NoReturn:
         "work_dir": args.work_dir,
         "onnx_model_path": args.onnx_model,
         "model_version": args.model_version,
+        "model_iteration": args.model_iteration,
         "games": args.games,
         "seed_start": args.seed_start,
         "onnx_device": args.onnx_device,
@@ -564,6 +571,7 @@ def _run_actor_cli(config: ActorV2Config, args: argparse.Namespace) -> list[dict
             work_dir=config.work_dir,
             onnx_model_path=config.onnx_model_path,
             model_version=config.model_version,
+            model_iteration=config.model_iteration,
             shard_id=config.shard_id if not args.loop else None,
             games=config.games,
             seed_start=seed_start,
@@ -840,10 +848,40 @@ def _load_or_create_replay(path: Path, *, capacity: int) -> TrajectoryReplayStor
 
 
 def _drop_async_unused_replay_arrays(replay: TrajectoryReplayStore) -> None:
-    replay.root_policy_logits = None
-    replay.root_policy_logits_present = None
     replay.next_features = None
     replay.next_features_present = None
+
+
+def _with_transition_model_metadata(
+    episodes: tuple[TrajectoryEpisode, ...],
+    config: ActorV2Config,
+) -> tuple[TrajectoryEpisode, ...]:
+    model_version = _transition_model_version(config)
+    created_iteration = _transition_created_iteration(config)
+    return tuple(
+        replace(
+            episode,
+            transitions=tuple(
+                replace(
+                    transition,
+                    model_version=model_version,
+                    created_iteration=created_iteration,
+                )
+                for transition in episode.transitions
+            ),
+        )
+        for episode in episodes
+    )
+
+
+def _transition_model_version(config: ActorV2Config) -> int:
+    if config.model_iteration is not None:
+        return int(config.model_iteration)
+    return 0
+
+
+def _transition_created_iteration(config: ActorV2Config) -> int:
+    return _transition_model_version(config)
 
 
 def _continuous_train_steps(
@@ -1137,6 +1175,8 @@ def _validate_actor_config(config: ActorV2Config) -> None:
         raise ValueError("games must be positive")
     if config.seed_start < 0:
         raise ValueError("seed_start must be non-negative")
+    if config.model_iteration is not None and config.model_iteration < 0:
+        raise ValueError("model_iteration must be non-negative")
     if config.onnx_max_batch_size <= 0:
         raise ValueError("onnx_max_batch_size must be positive")
     if config.rust_self_play_batch_size <= 0:

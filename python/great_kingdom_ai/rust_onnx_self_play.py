@@ -26,6 +26,8 @@ class RustOnnxSelfPlayConfig:
     output_dir: Path
     games: int = 2
     seed_start: int = 0
+    model_version: int = 0
+    created_iteration: int = 0
     onnx_device: str = "cpu"
     onnx_max_batch_size: int = 128
     rust_self_play_batch_size: int = 2
@@ -262,9 +264,9 @@ def _run_one_batch(
                     next_features=next_features,
                     winner=int(winner),
                     terminal=index == len(rows) - 1,
-                    model_version=0,
+                    model_version=config.model_version,
                     search_config_hash="",
-                    created_iteration=0,
+                    created_iteration=config.created_iteration,
                 )
             )
         if transitions:

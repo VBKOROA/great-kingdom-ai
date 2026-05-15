@@ -113,6 +113,7 @@ def test_actor_v2_writes_trajectory_shard_metadata(tmp_path: Path) -> None:
             work_dir=tmp_path,
             onnx_model_path=tmp_path / "model.onnx",
             model_version="ema",
+            model_iteration=42,
             games=2,
             seed_start=10,
             onnx_device="cpu",
@@ -126,7 +127,10 @@ def test_actor_v2_writes_trajectory_shard_metadata(tmp_path: Path) -> None:
     assert summary.shard.replay_path.is_file()
     replay = TrajectoryReplayStore.load(summary.shard.replay_path)
     assert len(replay) == 4
-    assert replay.root_policy_logits is None
+    assert replay.root_policy_logits is not None
+    assert replay.root_policy_logits.shape == (4, ACTION_SPACE)
+    assert replay.model_versions.tolist() == [42, 42, 42, 42]
+    assert replay.created_iterations.tolist() == [42, 42, 42, 42]
     assert replay.next_features is None
     assert pending_v2_shards(tmp_path / "shards" / "metadata.jsonl")[0].shard_id == (
         summary.shard.shard_id
@@ -290,7 +294,9 @@ def test_learner_v2_imports_pending_shards_trains_and_exports(tmp_path: Path) ->
     ) == "onnx"
     records = load_v2_shard_records(tmp_path / "shards" / "metadata.jsonl")
     assert [record.status for record in records] == ["imported"]
-    assert (tmp_path / "replay" / "trajectory-replay.npz").is_file()
+    replay = TrajectoryReplayStore.load(tmp_path / "replay" / "trajectory-replay.npz")
+    assert replay.root_policy_logits is not None
+    assert replay.next_features is None
     assert (tmp_path / "replay" / "game_logs.jsonl").is_file()
 
 
