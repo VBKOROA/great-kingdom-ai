@@ -188,6 +188,34 @@ def test_factory_init_v2_refuses_to_overwrite_outputs(tmp_path: Path) -> None:
         )
 
 
+def test_factory_init_v2_checks_onnx_dependencies_before_writing(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    import_calls: list[str] = []
+
+    def fake_import_module(name: str) -> Any:
+        import_calls.append(name)
+        if name == "onnx":
+            raise ModuleNotFoundError(name)
+        return object()
+
+    monkeypatch.setattr(actor_learner_v2_module.importlib, "import_module", fake_import_module)
+
+    with pytest.raises(RuntimeError, match="factory ONNX export dependencies are missing"):
+        run_factory_init_v2_once(
+            FactoryInitV2Config(work_dir=tmp_path, onnx_precision="fp16"),
+            TrainingConfig(),
+            state_factory=lambda config: FakeFactoryState(),
+            checkpoint_saver=lambda state, path: Path(path),
+            onnx_exporter=lambda *args, **kwargs: None,
+            printer=PipelinePrinter(enabled=False),
+        )
+
+    assert import_calls == ["onnx", "onnxconverter_common"]
+    assert not (tmp_path / "checkpoints" / "training-latest.pt").exists()
+
+
 def test_actor_v2_writes_trajectory_shard_metadata(tmp_path: Path) -> None:
     summary = run_actor_v2_once(
         ActorV2Config(

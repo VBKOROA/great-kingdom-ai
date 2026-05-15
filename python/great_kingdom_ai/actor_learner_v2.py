@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import importlib
 import json
 import math
 import os
@@ -192,6 +193,7 @@ def run_factory_init_v2_once(
     if existing_outputs and not config.overwrite:
         existing = ", ".join(str(path) for path in existing_outputs)
         raise FileExistsError(f"factory init output already exists: {existing}")
+    _require_factory_onnx_export_dependencies(config.onnx_precision)
 
     printer.title("Async V2 Factory Init")
     printer.metric("work dir", config.work_dir)
@@ -1370,6 +1372,27 @@ def _validate_factory_init_config(config: FactoryInitV2Config) -> None:
         raise ValueError("onnx_precision must be one of: fp32, fp16")
     if config.onnx_dummy_batch_size <= 0:
         raise ValueError("onnx_dummy_batch_size must be positive")
+
+
+def _require_factory_onnx_export_dependencies(precision: str) -> None:
+    missing = []
+    for module_name, package_name in (("onnx", "onnx"),):
+        try:
+            importlib.import_module(module_name)
+        except ModuleNotFoundError:
+            missing.append(package_name)
+    if precision == "fp16":
+        try:
+            importlib.import_module("onnxconverter_common")
+        except ModuleNotFoundError:
+            missing.append("onnxconverter-common")
+    if missing:
+        packages = " ".join(missing)
+        raise RuntimeError(
+            "factory ONNX export dependencies are missing; install them with "
+            f"`python -m pip install {packages}` or reinstall the project with "
+            "`python -m pip install -e '.[ai]'`"
+        )
 
 
 __all__ = [

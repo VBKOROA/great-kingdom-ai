@@ -188,7 +188,7 @@ source "$VENV_DIR/bin/activate"
 
 echo "Installing project dev dependencies without replacing Runpod's PyTorch"
 python -m pip install --upgrade pip
-python -m pip install -e '.[dev]'
+python -m pip install -e '.[dev,ai]'
 
 echo "Checking PyTorch/CUDA visible from venv"
 python - <<'PY'

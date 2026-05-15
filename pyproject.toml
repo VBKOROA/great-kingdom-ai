@@ -14,13 +14,13 @@ dependencies = [
 
 [project.optional-dependencies]
 ai = [
+  "onnx>=1.17",
+  "onnxconverter-common>=1.14",
   "torch>=2.6",
 ]
 dev = [
   "maturin>=1.8",
   "mypy>=1.13",
-  "onnx>=1.17",
-  "onnxconverter-common>=1.14",
   "onnxruntime>=1.20",
   "pytest>=8.3",
   "ruff>=0.8",
