@@ -9,7 +9,7 @@
   "rust_self_play_batch_size": 512,
   "self_play": {
     "max_turns": 112,
-    "gumbel_simulations": 128,
+    "gumbel_simulations": 96,
     "gumbel_max_considered_actions": 8,
     "gumbel_c_visit": 50.0,
     "gumbel_c_scale": 0.1,
