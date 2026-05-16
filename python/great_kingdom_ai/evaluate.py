@@ -57,6 +57,8 @@ class ArenaBatchLike(Protocol):
 
     def candidate_players(self) -> list[int] | bytes: ...
 
+    def seeds(self) -> list[int] | bytes: ...
+
     def search_active_with_logits_and_evaluator(
         self,
         policy_logits: list[list[float]],
@@ -106,6 +108,7 @@ class ArenaConfig:
     policy_target_c_scale: float = 0.25
     policy_target_temperature: float = 1.0
     gumbel_seed: int = 0
+    paired_seeds: bool = False
     leaf_batch_size: int = 8
     device: str = "cpu"
     promotion_threshold: float = 0.55
@@ -276,7 +279,7 @@ def run_arena(
     games = []
     for index in range(config.games):
         game = play_arena_game(
-            seed=config.seed_start + index,
+            seed=_arena_game_seed(config, index),
             candidate_model=candidate_model,
             best_model=best_model,
             candidate_player=BLUE if index % 2 == 0 else ORANGE,
@@ -312,7 +315,11 @@ def run_arena_batched(
         batch = create_core_arena_batch(
             config,
             game_count=chunk_size,
-            seed_start=config.seed_start + chunk_start,
+            seed_start=(
+                config.seed_start
+                if config.paired_seeds
+                else config.seed_start + chunk_start
+            ),
             game_index_start=chunk_start,
         )
         moves: list[list[MoveLog]] = [[] for _ in range(chunk_size)]
@@ -724,6 +731,7 @@ def create_core_arena_batch(
             policy_target_temperature=config.policy_target_temperature,
             policy_target_c_visit=config.policy_target_c_visit,
             policy_target_c_scale=config.policy_target_c_scale,
+            paired_seeds=config.paired_seeds,
         ),
     )
 
@@ -815,6 +823,11 @@ def _apply_arena_batch_turn_gumbel_scale(
 
 def _other_player(player: int) -> int:
     return ORANGE if player == BLUE else BLUE
+
+
+def _arena_game_seed(config: ArenaConfig, game_index: int) -> int:
+    seed_offset = game_index // 2 if config.paired_seeds else game_index
+    return config.seed_start + seed_offset
 
 
 def _validate_arena_config(config: ArenaConfig) -> None:
@@ -982,6 +995,14 @@ def _finished_arena_batch_results(
     moves: Sequence[list[MoveLog]],
 ) -> list[ArenaGameResult | None]:
     candidate_players = _as_int_list(batch.candidate_players())
+    seeds = (
+        _as_int_list(batch.seeds())
+        if hasattr(batch, "seeds")
+        else [
+            _arena_game_seed(config, chunk_start + game_index)
+            for game_index in range(batch.len())
+        ]
+    )
     winners = batch.winners()
     end_reasons = batch.end_reasons()
     terminal = batch.is_terminal()
@@ -998,7 +1019,7 @@ def _finished_arena_batch_results(
         candidate_player = candidate_players[game_index]
         results.append(
             ArenaGameResult(
-                seed=config.seed_start + chunk_start + game_index,
+                seed=seeds[game_index],
                 candidate_player=candidate_player,
                 best_player=_other_player(candidate_player),
                 winner=int(winner),
@@ -1044,6 +1065,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--policy-target-c-scale", type=float, default=None)
     parser.add_argument("--policy-target-temperature", type=float, default=None)
     parser.add_argument("--gumbel-seed", type=int, default=None)
+    parser.add_argument(
+        "--paired-seeds",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Use each arena seed for a candidate-Blue/candidate-Orange pair.",
+    )
     parser.add_argument("--leaf-batch-size", type=int, default=None)
     parser.add_argument("--promotion-threshold", type=float, default=None)
     parser.add_argument(
@@ -1081,6 +1108,7 @@ def _config_from_args(args: argparse.Namespace) -> ArenaConfig:
         "policy_target_c_scale": args.policy_target_c_scale,
         "policy_target_temperature": args.policy_target_temperature,
         "gumbel_seed": args.gumbel_seed,
+        "paired_seeds": args.paired_seeds,
         "leaf_batch_size": args.leaf_batch_size,
         "promotion_threshold": args.promotion_threshold,
     }

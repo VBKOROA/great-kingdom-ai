@@ -20,9 +20,27 @@ SPEC.loader.exec_module(module)
 def test_analyze_game_logs_reports_overall_and_recent_bias(tmp_path: Path) -> None:
     path = tmp_path / "game_logs.jsonl"
     rows = [
-        {"seed": 3, "winner": 1, "moves": [{"turn": 0}], "end_reason": 1, "territory_scores": [5, 2]},
-        {"seed": 1, "winner": 2, "moves": [{"turn": 0}, {"turn": 1}], "end_reason": 2, "territory_scores": [1, 6]},
-        {"seed": 2, "winner": 1, "moves": [], "end_reason": 3, "territory_scores": [4, 3]},
+        {
+            "seed": 3,
+            "winner": 1,
+            "moves": [{"turn": 0}],
+            "end_reason": 1,
+            "territory_scores": [5, 2],
+        },
+        {
+            "seed": 1,
+            "winner": 2,
+            "moves": [{"turn": 0}, {"turn": 1}],
+            "end_reason": 2,
+            "territory_scores": [1, 6],
+        },
+        {
+            "seed": 2,
+            "winner": 1,
+            "moves": [],
+            "end_reason": 3,
+            "territory_scores": [4, 3],
+        },
     ]
     path.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
 

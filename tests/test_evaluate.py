@@ -102,6 +102,7 @@ def test_evaluate_parser_can_override_all_arena_config_fields() -> None:
             "1.25",
             "--gumbel-seed",
             "101",
+            "--paired-seeds",
             "--leaf-batch-size",
             "4",
             "--device",
@@ -129,6 +130,7 @@ def test_evaluate_parser_can_override_all_arena_config_fields() -> None:
         "policy_target_c_scale": 0.5,
         "policy_target_temperature": 1.25,
         "gumbel_seed": 101,
+        "paired_seeds": True,
         "leaf_batch_size": 4,
         "device": "cuda",
         "promotion_threshold": 0.6,
@@ -671,6 +673,7 @@ def test_core_search_constructors_receive_policy_target_config(
     assert seen_batch_kwargs["gumbel_scale"] == 0.0
     assert seen_batch_kwargs["policy_target_c_scale"] == 0.75
     assert seen_batch_kwargs["policy_target_temperature"] == 1.0
+    assert seen_batch_kwargs["paired_seeds"] is False
 
 
 def test_run_arena_batched_splits_root_rows_by_candidate_player(
@@ -713,6 +716,46 @@ def test_run_arena_batched_splits_root_rows_by_candidate_player(
     assert [[move.action for move in game.moves] for game in report.games] == [[2], [3]]
     assert report.summary.candidate_wins == 2
     assert progress == [(1, 2, 0), (2, 2, 1)]
+
+
+def test_run_arena_batched_can_pair_seeds_by_candidate_side(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_create_core_arena_batch(
+        config: ArenaConfig,
+        *,
+        game_count: int,
+        seed_start: int,
+        game_index_start: int = 0,
+    ) -> FakeArenaBatch:
+        del config, seed_start
+        return FakeArenaBatch(
+            game_count=game_count,
+            seed_start=0,
+            game_index_start=game_index_start,
+        )
+
+    monkeypatch.setattr(
+        evaluate_module,
+        "create_core_arena_batch",
+        fake_create_core_arena_batch,
+    )
+
+    report = run_arena_batched(
+        candidate_model=FakeNetwork(2),
+        best_model=FakeNetwork(3),
+        config=ArenaConfig(
+            games=4,
+            batch_size=4,
+            seed_start=10,
+            max_turns=4,
+            gumbel_simulations=1,
+            paired_seeds=True,
+        ),
+    )
+
+    assert [game.seed for game in report.games] == [10, 10, 11, 11]
+    assert [game.candidate_player for game in report.games] == [1, 2, 1, 2]
 
 
 def test_run_arena_batched_reports_finished_games_in_seed_order(

@@ -46,7 +46,8 @@ impl GumbelArenaBatch {
         gumbel_scale = 1.0,
         policy_target_temperature = 1.0,
         policy_target_c_visit = None,
-        policy_target_c_scale = None
+        policy_target_c_scale = None,
+        paired_seeds = false
     ))]
     pub fn py_new(
         game_count: usize,
@@ -61,6 +62,7 @@ impl GumbelArenaBatch {
         policy_target_temperature: f32,
         policy_target_c_visit: Option<f32>,
         policy_target_c_scale: Option<f32>,
+        paired_seeds: bool,
     ) -> PyResult<Self> {
         if game_count == 0 {
             return Err(PyValueError::new_err("game_count must be positive"));
@@ -81,7 +83,13 @@ impl GumbelArenaBatch {
             policy_target_c_scale,
         );
         config.validate()?;
-        Ok(Self::new(game_count, seed_start, game_index_start, config))
+        Ok(Self::new(
+            game_count,
+            seed_start,
+            game_index_start,
+            config,
+            paired_seeds,
+        ))
     }
 
     #[must_use]
@@ -276,6 +284,7 @@ impl GumbelArenaBatch {
         seed_start: u64,
         game_index_start: usize,
         config: GumbelConfig,
+        paired_seeds: bool,
     ) -> Self {
         let mut searches = Vec::with_capacity(game_count);
         let mut candidate_players = Vec::with_capacity(game_count);
@@ -283,7 +292,12 @@ impl GumbelArenaBatch {
 
         for chunk_index in 0..game_count {
             let game_index = game_index_start + chunk_index;
-            let game_seed = seed_start.wrapping_add(chunk_index as u64);
+            let seed_offset = if paired_seeds {
+                (game_index / 2) as u64
+            } else {
+                chunk_index as u64
+            };
+            let game_seed = seed_start.wrapping_add(seed_offset);
             seeds.push(game_seed);
             candidate_players.push(if game_index % 2 == 0 { BLUE } else { ORANGE });
 
@@ -855,15 +869,23 @@ mod tests {
 
     #[test]
     fn new_uses_global_game_index_for_candidate_side_split() {
-        let batch = GumbelArenaBatch::new(4, 10, 1, GumbelConfig::new(4, 2, 50.0, 1.0, 7));
+        let batch = GumbelArenaBatch::new(4, 10, 1, GumbelConfig::new(4, 2, 50.0, 1.0, 7), false);
 
         assert_eq!(batch.seeds, vec![10, 11, 12, 13]);
         assert_eq!(batch.candidate_players, vec![2, 1, 2, 1]);
     }
 
     #[test]
+    fn new_can_pair_seeds_by_global_game_index() {
+        let batch = GumbelArenaBatch::new(4, 10, 1, GumbelConfig::new(4, 2, 50.0, 1.0, 7), true);
+
+        assert_eq!(batch.seeds, vec![10, 11, 11, 12]);
+        assert_eq!(batch.candidate_players, vec![2, 1, 2, 1]);
+    }
+
+    #[test]
     fn new_offsets_player_search_seeds_from_game_seed() {
-        let batch = GumbelArenaBatch::new(2, 10, 0, GumbelConfig::new(4, 2, 50.0, 1.0, 7));
+        let batch = GumbelArenaBatch::new(2, 10, 0, GumbelConfig::new(4, 2, 50.0, 1.0, 7), false);
 
         assert_eq!(batch.searches[0][0].seed(), 27);
         assert_eq!(batch.searches[0][1].seed(), 28);
@@ -873,7 +895,8 @@ mod tests {
 
     #[test]
     fn active_eval_request_filters_terminal_games() {
-        let mut batch = GumbelArenaBatch::new(2, 0, 0, GumbelConfig::new(4, 2, 50.0, 1.0, 7));
+        let mut batch =
+            GumbelArenaBatch::new(2, 0, 0, GumbelConfig::new(4, 2, 50.0, 1.0, 7), false);
 
         assert_eq!(
             batch.apply_actions(vec![Some(81), None]).unwrap(),
@@ -893,7 +916,8 @@ mod tests {
 
     #[test]
     fn apply_actions_updates_terminal_state_and_score_accessors() {
-        let mut batch = GumbelArenaBatch::new(1, 0, 0, GumbelConfig::new(4, 2, 50.0, 1.0, 7));
+        let mut batch =
+            GumbelArenaBatch::new(1, 0, 0, GumbelConfig::new(4, 2, 50.0, 1.0, 7), false);
 
         assert_eq!(batch.apply_actions(vec![Some(81)]).unwrap(), vec![None]);
         assert_eq!(batch.is_terminal(), vec![false]);

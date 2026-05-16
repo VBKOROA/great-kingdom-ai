@@ -132,7 +132,12 @@ def load_game_log_records(paths: list[Path]) -> list[GameRecord]:
     records: list[GameRecord] = []
     for path in paths:
         records.extend(_load_one_game_log_path(path, start_index=len(records)))
-    records.sort(key=lambda record: (math.inf if record.seed is None else record.seed, record.index))
+    records.sort(
+        key=lambda record: (
+            math.inf if record.seed is None else record.seed,
+            record.index,
+        )
+    )
     return [
         GameRecord(
             index=index,
@@ -263,7 +268,11 @@ def summarize_records(records: list[GameRecord]) -> dict[str, Any]:
         [record.moves for record in records if record.moves is not None],
         dtype=np.float32,
     )
-    territory = [record.territory_scores for record in records if record.territory_scores is not None]
+    territory = [
+        record.territory_scores
+        for record in records
+        if record.territory_scores is not None
+    ]
     end_reasons = Counter(
         str(record.end_reason)
         for record in records
