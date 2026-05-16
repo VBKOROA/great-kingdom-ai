@@ -7,7 +7,7 @@ import json
 import math
 import shutil
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, NoReturn, Protocol, cast
@@ -100,6 +100,8 @@ class ArenaConfig:
     gumbel_c_visit: float = 50.0
     gumbel_c_scale: float = 1.0
     gumbel_scale: float = 0.0
+    opening_gumbel_turns: int = 0
+    opening_gumbel_scale: float = 1.0
     policy_target_c_visit: float = 5.0
     policy_target_c_scale: float = 0.25
     policy_target_temperature: float = 1.0
@@ -193,6 +195,7 @@ def play_arena_game(
         if game_state.is_terminal():
             break
 
+        _apply_arena_turn_gumbel_scale(searches.values(), config=config, turn=turn)
         player = game_state.current_player()
         model = candidate_model if player == candidate_player else best_model
         root_evaluation = evaluate_feature_batch_logits_values(
@@ -320,6 +323,7 @@ def run_arena_batched(
             if not active_indexes:
                 break
 
+            _apply_arena_batch_turn_gumbel_scale(batch, config=config, turn=turn)
             current_players = _as_int_list(batch.current_players())
             candidate_players = _as_int_list(batch.candidate_players())
             if onnx_evaluators is not None:
@@ -769,6 +773,46 @@ def _deterministic_action(
     return max(legal_actions, key=lambda action: (visits[action], priors[action], -action))
 
 
+def _arena_turn_gumbel_scale(config: ArenaConfig, turn: int) -> float:
+    if turn < config.opening_gumbel_turns:
+        return config.opening_gumbel_scale
+    return config.gumbel_scale
+
+
+def _apply_arena_turn_gumbel_scale(
+    searches: Iterable[Any],
+    *,
+    config: ArenaConfig,
+    turn: int,
+) -> None:
+    if config.opening_gumbel_turns <= 0:
+        return
+    scale = _arena_turn_gumbel_scale(config, turn)
+    for search in searches:
+        setter = getattr(search, "set_gumbel_scale", None)
+        if setter is None:
+            raise RuntimeError(
+                "arena opening_gumbel_turns requires a GumbelSearch backend with set_gumbel_scale"
+            )
+        setter(scale)
+
+
+def _apply_arena_batch_turn_gumbel_scale(
+    batch: ArenaBatchLike,
+    *,
+    config: ArenaConfig,
+    turn: int,
+) -> None:
+    if config.opening_gumbel_turns <= 0:
+        return
+    setter = getattr(batch, "set_gumbel_scale", None)
+    if setter is None:
+        raise RuntimeError(
+            "arena opening_gumbel_turns requires a GumbelArenaBatch backend with set_gumbel_scale"
+        )
+    setter(_arena_turn_gumbel_scale(config, turn))
+
+
 def _other_player(player: int) -> int:
     return ORANGE if player == BLUE else BLUE
 
@@ -792,6 +836,13 @@ def _validate_arena_config(config: ArenaConfig) -> None:
         raise ValueError("gumbel_c_scale must be positive")
     if not math.isfinite(config.gumbel_scale) or config.gumbel_scale < 0.0:
         raise ValueError("gumbel_scale must be finite and non-negative")
+    if config.opening_gumbel_turns < 0:
+        raise ValueError("opening_gumbel_turns must be non-negative")
+    if (
+        not math.isfinite(config.opening_gumbel_scale)
+        or config.opening_gumbel_scale < 0.0
+    ):
+        raise ValueError("opening_gumbel_scale must be finite and non-negative")
     if not math.isfinite(config.policy_target_c_visit) or config.policy_target_c_visit <= 0.0:
         raise ValueError("policy_target_c_visit must be finite and positive")
     if not math.isfinite(config.policy_target_c_scale) or config.policy_target_c_scale <= 0.0:
@@ -987,6 +1038,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gumbel-c-visit", type=float, default=None)
     parser.add_argument("--gumbel-c-scale", type=float, default=None)
     parser.add_argument("--gumbel-scale", type=float, default=None)
+    parser.add_argument("--opening-gumbel-turns", type=int, default=None)
+    parser.add_argument("--opening-gumbel-scale", type=float, default=None)
     parser.add_argument("--policy-target-c-visit", type=float, default=None)
     parser.add_argument("--policy-target-c-scale", type=float, default=None)
     parser.add_argument("--policy-target-temperature", type=float, default=None)
@@ -1022,6 +1075,8 @@ def _config_from_args(args: argparse.Namespace) -> ArenaConfig:
         "gumbel_c_visit": args.gumbel_c_visit,
         "gumbel_c_scale": args.gumbel_c_scale,
         "gumbel_scale": args.gumbel_scale,
+        "opening_gumbel_turns": args.opening_gumbel_turns,
+        "opening_gumbel_scale": args.opening_gumbel_scale,
         "policy_target_c_visit": args.policy_target_c_visit,
         "policy_target_c_scale": args.policy_target_c_scale,
         "policy_target_temperature": args.policy_target_temperature,

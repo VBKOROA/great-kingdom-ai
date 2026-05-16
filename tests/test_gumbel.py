@@ -46,6 +46,8 @@ def test_gumbel_search_constructor_exposes_config() -> None:
         pytest.skip("installed great_kingdom_core does not expose set_max_considered_actions")
     search.set_max_considered_actions(4)
     assert search.max_considered_actions() == 4
+    search.set_gumbel_scale(1.0)
+    assert search.gumbel_scale() == 1.0
 
 
 @pytest.mark.skipif(

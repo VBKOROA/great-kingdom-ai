@@ -90,6 +90,10 @@ def test_evaluate_parser_can_override_all_arena_config_fields() -> None:
             "0.75",
             "--gumbel-scale",
             "0.0",
+            "--opening-gumbel-turns",
+            "8",
+            "--opening-gumbel-scale",
+            "1.0",
             "--policy-target-c-visit",
             "8.5",
             "--policy-target-c-scale",
@@ -119,6 +123,8 @@ def test_evaluate_parser_can_override_all_arena_config_fields() -> None:
         "gumbel_c_visit": 12.5,
         "gumbel_c_scale": 0.75,
         "gumbel_scale": 0.0,
+        "opening_gumbel_turns": 8,
+        "opening_gumbel_scale": 1.0,
         "policy_target_c_visit": 8.5,
         "policy_target_c_scale": 0.5,
         "policy_target_temperature": 1.25,
@@ -292,6 +298,7 @@ class FakeArenaBatch:
     ) -> None:
         del seed_start
         self.states = [OneMoveState() for _ in range(game_count)]
+        self.gumbel_scales: list[float] = []
         self._candidate_players = [
             1 if (game_index_start + index) % 2 == 0 else 2
             for index in range(game_count)
@@ -380,6 +387,9 @@ class FakeArenaBatch:
             if action is not None:
                 self.states[index].apply_action(action)
         return actions
+
+    def set_gumbel_scale(self, gumbel_scale: float) -> None:
+        self.gumbel_scales.append(gumbel_scale)
 
     def is_terminal(self) -> list[bool]:
         return [state.is_terminal() for state in self.states]
@@ -742,6 +752,50 @@ def test_run_arena_batched_reports_finished_games_in_seed_order(
     assert [game.seed for game in report.games] == [0, 1]
     assert [len(game.moves) for game in report.games] == [1, 2]
     assert progress == [(1, 2, 0), (2, 2, 1)]
+
+
+def test_run_arena_batched_applies_opening_gumbel_scale_by_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batches: list[UnevenFakeArenaBatch] = []
+
+    def fake_create_core_arena_batch(
+        config: ArenaConfig,
+        *,
+        game_count: int,
+        seed_start: int,
+        game_index_start: int = 0,
+    ) -> UnevenFakeArenaBatch:
+        del config
+        batch = UnevenFakeArenaBatch(
+            game_count=game_count,
+            seed_start=seed_start,
+            game_index_start=game_index_start,
+        )
+        batches.append(batch)
+        return batch
+
+    monkeypatch.setattr(
+        evaluate_module,
+        "create_core_arena_batch",
+        fake_create_core_arena_batch,
+    )
+
+    run_arena_batched(
+        candidate_model=FakeNetwork(2),
+        best_model=FakeNetwork(3),
+        config=ArenaConfig(
+            games=2,
+            batch_size=2,
+            max_turns=4,
+            gumbel_simulations=1,
+            gumbel_scale=0.0,
+            opening_gumbel_turns=1,
+            opening_gumbel_scale=1.0,
+        ),
+    )
+
+    assert batches[0].gumbel_scales == [1.0, 0.0]
 
 
 def test_run_arena_onnx_uses_rust_onnx_batch_method(

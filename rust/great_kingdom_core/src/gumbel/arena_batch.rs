@@ -254,6 +254,19 @@ impl GumbelArenaBatch {
         }
         Ok(outcomes)
     }
+
+    pub fn set_gumbel_scale(&mut self, gumbel_scale: f32) -> PyResult<()> {
+        if !gumbel_scale.is_finite() || gumbel_scale < 0.0 {
+            return Err(PyValueError::new_err(
+                "gumbel_scale must be a finite non-negative value",
+            ));
+        }
+        for search_pair in &mut self.searches {
+            search_pair[0].config.gumbel_scale = gumbel_scale;
+            search_pair[1].config.gumbel_scale = gumbel_scale;
+        }
+        Ok(())
+    }
 }
 
 impl GumbelArenaBatch {

@@ -141,6 +141,16 @@ impl GumbelSearch {
         self.root_search_count = 0;
     }
 
+    pub fn set_gumbel_scale(&mut self, gumbel_scale: f32) -> PyResult<()> {
+        if !gumbel_scale.is_finite() || gumbel_scale < 0.0 {
+            return Err(PyValueError::new_err(
+                "gumbel_scale must be a finite non-negative value",
+            ));
+        }
+        self.config.gumbel_scale = gumbel_scale;
+        Ok(())
+    }
+
     pub fn search_with_logits(
         &mut self,
         state: &GameState,
