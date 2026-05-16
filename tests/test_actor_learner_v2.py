@@ -794,7 +794,13 @@ def test_learner_v2_loop_trains_from_imported_transition_budget(
             train_reuse_factor=16.0,
         ),
         TrainingConfig(batch_size=2, steps=64, device="cpu"),
-        argparse.Namespace(loop=True, max_cycles=1, sleep_seconds=0.0, json=True),
+        argparse.Namespace(
+            loop=True,
+            max_cycles=1,
+            sleep_seconds=0.0,
+            json=True,
+            override_optimizer_lr=None,
+        ),
     )
 
     assert train_steps == [32]
