@@ -1074,9 +1074,12 @@ mod tests {
     use super::{GumbelEvalBatch, GumbelSearch, backup_path, select_inner_action_index};
     use crate::{
         eval_request::EvalRequest,
-        game::{ACTION_SPACE, CENTER_INDEX, Cell, GameState, Player, state_with_board},
+        game::{
+            ACTION_SPACE, CENTER_INDEX, Cell, FEATURE_CHANNELS, GameState, Player, state_with_board,
+        },
         gumbel::{config::GumbelConfig, node::GumbelNode, selection::select_inner_action},
     };
+    use pyo3::PyResult;
 
     fn index(row: usize, col: usize) -> usize {
         row * 9 + col
@@ -1269,6 +1272,119 @@ mod tests {
         assert!(batched_request_lengths.iter().any(|length| *length > 1));
         assert_eq!(sequential_result.visit_counts.iter().sum::<u32>(), 6);
         assert_eq!(batched_result.visit_counts.iter().sum::<u32>(), 6);
+    }
+
+    fn leaf_batch_probe_evaluator(
+        request: EvalRequest,
+        bad_action: usize,
+    ) -> PyResult<GumbelEvalBatch> {
+        const BOARD_CELLS: usize = 81;
+        const OWN_CASTLE_CHANNEL: usize = 0;
+        const OPPONENT_CASTLE_CHANNEL: usize = 1;
+
+        let features = request.feature_values_ref();
+        let mut rows = Vec::with_capacity(request.len());
+        let mut values = Vec::with_capacity(request.len());
+        for planes in features.chunks_exact(FEATURE_CHANNELS * BOARD_CELLS) {
+            rows.push([0.0; ACTION_SPACE]);
+
+            let occupied = |action: usize| {
+                planes[OWN_CASTLE_CHANNEL * BOARD_CELLS + action] > 0.5
+                    || planes[OPPONENT_CASTLE_CHANNEL * BOARD_CELLS + action] > 0.5
+            };
+            // The configured root candidate is bad for the root player. At a depth-1
+            // leaf, positive value is from the opponent's perspective and is
+            // backed up as a negative root-edge value.
+            values.push(if occupied(bad_action) { 1.0 } else { -1.0 });
+        }
+        Ok(GumbelEvalBatch::new(rows, values))
+    }
+
+    #[test]
+    fn leaf_batching_matches_sequential_root_outputs_for_deterministic_evaluator() {
+        let mut max_root_visit_l1 = 0_u32;
+        let mut max_policy_l1 = 0.0_f32;
+        for simulations in [8, 12, 16, 24] {
+            for max_considered_actions in [2, 4, 8] {
+                for bad_action in 0..max_considered_actions {
+                    let mut root_logits = [-100.0; ACTION_SPACE];
+                    for action in 0..max_considered_actions {
+                        root_logits[action] = (max_considered_actions - action) as f32;
+                    }
+
+                    let config = GumbelConfig::new_with_full_config(
+                        simulations,
+                        max_considered_actions,
+                        50.0,
+                        1.0,
+                        7,
+                        0.0,
+                        1.0,
+                        50.0,
+                        1.0,
+                    );
+                    let mut sequential_search = GumbelSearch::new(config);
+                    let sequential_result = sequential_search
+                        .result_from_logits_with_evaluator(
+                            &GameState::new(),
+                            &root_logits,
+                            1,
+                            0.0,
+                            |request| leaf_batch_probe_evaluator(request, bad_action),
+                        )
+                        .unwrap();
+
+                    let mut batched_search = GumbelSearch::new(config);
+                    let batched_result = batched_search
+                        .result_from_logits_with_evaluator(
+                            &GameState::new(),
+                            &root_logits,
+                            max_considered_actions,
+                            0.0,
+                            |request| leaf_batch_probe_evaluator(request, bad_action),
+                        )
+                        .unwrap();
+
+                    let root_visit_l1 = sequential_result
+                        .visit_counts
+                        .iter()
+                        .zip(batched_result.visit_counts.iter())
+                        .map(|(left, right)| left.abs_diff(*right))
+                        .sum::<u32>();
+                    let policy_l1 = sequential_result
+                        .policy_target
+                        .iter()
+                        .zip(batched_result.policy_target.iter())
+                        .map(|(left, right)| (left - right).abs())
+                        .sum::<f32>();
+
+                    max_root_visit_l1 = max_root_visit_l1.max(root_visit_l1);
+                    max_policy_l1 = max_policy_l1.max(policy_l1);
+
+                    assert_eq!(
+                        sequential_result.selected_action, batched_result.selected_action,
+                        "simulations={simulations} max_considered_actions={max_considered_actions} bad_action={bad_action}",
+                    );
+                    assert_eq!(
+                        sequential_result.visit_counts, batched_result.visit_counts,
+                        "root visit L1={root_visit_l1}; simulations={simulations} max_considered_actions={max_considered_actions} bad_action={bad_action}",
+                    );
+                    assert!(
+                        policy_l1 <= 1.0e-6,
+                        "policy target L1={policy_l1}; simulations={simulations} max_considered_actions={max_considered_actions} bad_action={bad_action}",
+                    );
+                    assert!(
+                        (sequential_result.root_value - batched_result.root_value).abs() <= 1.0e-6,
+                        "root value drift: sequential={} batched={}; simulations={simulations} max_considered_actions={max_considered_actions} bad_action={bad_action}",
+                        sequential_result.root_value,
+                        batched_result.root_value,
+                    );
+                }
+            }
+        }
+
+        assert_eq!(max_root_visit_l1, 0);
+        assert!(max_policy_l1 <= 1.0e-6);
     }
 
     #[test]
