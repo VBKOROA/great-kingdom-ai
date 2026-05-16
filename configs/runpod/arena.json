@@ -8,7 +8,7 @@
   "gumbel_c_visit": 50.0,
   "gumbel_c_scale": 1.0,
   "gumbel_scale": 0.0,
-  "opening_gumbel_turns": 8,
+  "opening_gumbel_turns": 0,
   "opening_gumbel_scale": 1.0,
   "policy_target_c_visit": 50.0,
   "policy_target_c_scale": 1.0,
