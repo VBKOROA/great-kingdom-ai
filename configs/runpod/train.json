@@ -15,7 +15,7 @@
   "mask_policy_loss": true,
   "amp": true,
   "recent_sample_fraction": 0.25,
-  "recent_sample_window": 102400,
+  "recent_sample_window": 128000,
   "priority_enabled": false,
   "priority_alpha": 0.6,
   "priority_beta": 0.4,
