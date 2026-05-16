@@ -450,7 +450,7 @@ impl GumbelSearch {
         );
 
         GumbelResult {
-            selected_action: scheduler.selected_action(),
+            selected_action: improved.selected_action,
             policy_target: improved.policy_target,
             visit_counts: self.nodes[root_index].visit_counts(),
             root_value: root_search_value(&self.nodes[root_index]),
@@ -580,7 +580,7 @@ impl GumbelSearch {
         );
 
         Ok(GumbelResult {
-            selected_action: scheduler.selected_action(),
+            selected_action: improved.selected_action,
             policy_target: improved.policy_target,
             visit_counts: self.nodes[root_index].visit_counts(),
             root_value: root_search_value(&self.nodes[root_index]),

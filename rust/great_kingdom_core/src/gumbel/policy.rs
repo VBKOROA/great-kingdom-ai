@@ -102,16 +102,7 @@ pub(crate) fn root_improved_policy_target(
         };
     }
 
-    let action_logits = root_improved_action_logits(root, c_visit, c_scale);
-
-    let selected_action = action_logits
-        .iter()
-        .max_by(|(left_action, left_logit), (right_action, right_logit)| {
-            left_logit
-                .total_cmp(right_logit)
-                .then_with(|| right_action.cmp(left_action))
-        })
-        .map(|(action, _)| *action);
+    let selected_action = root_selected_action(root, c_visit, c_scale);
 
     let improved_logits = root_policy_target_logits(
         root,
@@ -165,6 +156,23 @@ pub(crate) fn root_improved_action_logits(
             (action, logit)
         })
         .collect()
+}
+
+#[must_use]
+pub(crate) fn root_selected_action(root: &GumbelNode, c_visit: f32, c_scale: f32) -> Option<usize> {
+    let max_visit_count = root.edges.iter().map(|edge| edge.visit_count).max()?;
+    root_improved_action_logits(root, c_visit, c_scale)
+        .into_iter()
+        .filter(|(action, _)| {
+            root.edge_index_for_action(*action)
+                .is_some_and(|edge_index| root.edges[edge_index].visit_count == max_visit_count)
+        })
+        .max_by(|(left_action, left_logit), (right_action, right_logit)| {
+            left_logit
+                .total_cmp(right_logit)
+                .then_with(|| right_action.cmp(left_action))
+        })
+        .map(|(action, _)| action)
 }
 
 #[must_use]
@@ -227,7 +235,10 @@ fn validate_legal_values(legal_actions: &[usize], row: &[f32], name: &str) -> Py
 
 #[cfg(test)]
 mod tests {
-    use super::{log_priors_from_logits, log_priors_from_priors, root_improved_policy_target};
+    use super::{
+        log_priors_from_logits, log_priors_from_priors, root_improved_policy_target,
+        root_selected_action,
+    };
     use crate::{
         game::{ACTION_SPACE, CENTER_INDEX, GameState},
         gumbel::{
@@ -325,7 +336,7 @@ mod tests {
             root_improved_policy_target(&root, &legal, &log_priors, 1.0, 1.0, 1.0, 1.0, 1.0);
         let prior_only = softmax_candidates(&candidates);
 
-        assert_eq!(improved.selected_action, Some(1));
+        assert_eq!(improved.selected_action, Some(0));
         assert!(improved.policy_target[1] > improved.policy_target[0]);
         assert!(improved.policy_target[1] > prior_only[1]);
         assert_close(improved.policy_target.iter().sum::<f32>(), 1.0);
@@ -359,6 +370,29 @@ mod tests {
         assert_eq!(improved.selected_action, Some(0));
         assert_close(improved.policy_target[0], 0.5);
         assert_close(improved.policy_target[1], 0.5);
+    }
+
+    #[test]
+    fn root_selected_action_uses_best_score_among_most_visited_candidates() {
+        let candidates = [
+            RootCandidate {
+                action: 0,
+                log_prior: 0.5_f32.ln(),
+                gumbel: 100.0,
+                score: 100.0 + 0.5_f32.ln(),
+            },
+            RootCandidate {
+                action: 1,
+                log_prior: 0.5_f32.ln(),
+                gumbel: 0.0,
+                score: 0.5_f32.ln(),
+            },
+        ];
+        let mut root = GumbelNode::root_from_candidates(&GameState::new(), &candidates, 0.0);
+        root.edges[0].visit_count = 1;
+        root.edges[1].visit_count = 2;
+
+        assert_eq!(root_selected_action(&root, 1.0, 1.0), Some(1));
     }
 
     #[test]

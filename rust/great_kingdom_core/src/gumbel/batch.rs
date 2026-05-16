@@ -854,11 +854,8 @@ impl GumbelSelfPlayBatch {
                 self.searches[game_index].config.policy_target_c_scale,
                 self.searches[game_index].config.policy_target_temperature,
             );
-            let selected_action = schedulers[game_index]
-                .as_ref()
-                .and_then(RootSequentialHalving::selected_action);
             results[game_index] = Some(GumbelResult {
-                selected_action,
+                selected_action: improved.selected_action,
                 policy_target: improved.policy_target,
                 visit_counts: root.visit_counts(),
                 root_value: root_search_value(root),
