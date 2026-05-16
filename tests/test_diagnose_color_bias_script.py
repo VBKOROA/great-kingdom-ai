@@ -61,6 +61,28 @@ def test_analyze_game_logs_reports_overall_and_recent_bias(tmp_path: Path) -> No
     assert payload["recent_windows"][0]["blue_wins"] == 2
 
 
+def test_analyze_reports_recent_percent_windows(tmp_path: Path) -> None:
+    path = tmp_path / "game_logs.jsonl"
+    rows = [{"seed": seed, "winner": winner} for seed, winner in enumerate([1, 2, 2, 1, 1])]
+    path.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+
+    records = module.load_game_log_records([path])
+    payload = module.analyze_records(
+        records,
+        sources=[str(path)],
+        recent_windows=[],
+        recent_percents=[40, 10],
+        include_model_breakdown=False,
+    )
+
+    assert payload["recent_percent_windows"][0]["last_percent"] == 10.0
+    assert payload["recent_percent_windows"][0]["last_games"] == 1
+    assert payload["recent_percent_windows"][0]["blue_wins"] == 1
+    assert payload["recent_percent_windows"][1]["last_percent"] == 40.0
+    assert payload["recent_percent_windows"][1]["last_games"] == 2
+    assert payload["recent_percent_windows"][1]["blue_wins"] == 2
+
+
 def test_load_replay_records_can_group_by_model_version(tmp_path: Path) -> None:
     path = tmp_path / "trajectory-replay.npz"
     np.savez(
@@ -93,6 +115,33 @@ def test_load_replay_records_can_group_by_model_version(tmp_path: Path) -> None:
             **module.summarize_records([records[1]]),
         },
     ]
+
+
+def test_analyze_reports_recent_row_percent_windows_for_replay(tmp_path: Path) -> None:
+    path = tmp_path / "trajectory-replay.npz"
+    np.savez(
+        path,
+        episode_winners=np.asarray([1, 2, 2], dtype=np.int64),
+        episode_offsets=np.asarray([0, 2, 5, 10], dtype=np.int64),
+        territory_scores=np.asarray([[3, 1], [2, 4], [1, 5]], dtype=np.int64),
+    )
+
+    records = module.load_replay_records(path)
+    payload = module.analyze_records(
+        records,
+        sources=[str(path)],
+        recent_windows=[],
+        recent_percents=[50],
+        include_model_breakdown=False,
+    )
+
+    row_window = payload["recent_row_percent_windows"][0]
+    assert row_window["last_row_percent"] == 50.0
+    assert row_window["target_rows"] == 5
+    assert row_window["covered_rows"] == 5
+    assert row_window["included_games"] == 1
+    assert row_window["blue_wins"] == 0
+    assert row_window["orange_wins"] == 1
 
 
 def test_explicit_replay_takes_precedence_over_work_dir_logs(tmp_path: Path) -> None:

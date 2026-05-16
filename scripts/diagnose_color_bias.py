@@ -14,6 +14,7 @@ import numpy as np
 
 DEFAULT_WORK_DIR = Path("data/runpod/train-v2-gumbel-512k-adamw3e4-cscale01-r16")
 DEFAULT_RECENT_WINDOWS = (100, 500, 1000, 5000)
+DEFAULT_RECENT_PERCENTS = (1.0, 5.0, 10.0, 20.0, 25.0, 50.0)
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Recent game counts to summarize from the chronological tail.",
     )
     parser.add_argument(
+        "--recent-percents",
+        type=float,
+        nargs="+",
+        default=list(DEFAULT_RECENT_PERCENTS),
+        help=(
+            "Recent chronological tail percentages to summarize. "
+            "For example, 10 means the latest 10%% of games/episodes."
+        ),
+    )
+    parser.add_argument(
         "--by-model-version",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -91,6 +102,7 @@ def main() -> NoReturn:
         records,
         sources=sources,
         recent_windows=args.recent_windows,
+        recent_percents=args.recent_percents,
         include_model_breakdown=args.by_model_version,
     )
     print(json.dumps(payload, indent=2 if args.pretty else None, sort_keys=True))
@@ -236,6 +248,7 @@ def analyze_records(
     sources: list[str],
     recent_windows: list[int],
     include_model_breakdown: bool,
+    recent_percents: list[float] | None = None,
 ) -> dict[str, Any]:
     overall = summarize_records(records)
     payload: dict[str, Any] = {
@@ -249,6 +262,22 @@ def analyze_records(
             for window in sorted({window for window in recent_windows if window > 0})
             if records
         ],
+        "recent_percent_windows": [
+            {
+                "last_percent": percent,
+                "last_games": _recent_percent_count(len(records), percent),
+                **summarize_records(
+                    records[-_recent_percent_count(len(records), percent) :]
+                ),
+            }
+            for percent in _sorted_recent_percents(recent_percents)
+            if records
+        ],
+        "recent_row_percent_windows": [
+            summary
+            for percent in _sorted_recent_percents(recent_percents)
+            if (summary := summarize_recent_row_percent(records, percent)) is not None
+        ],
     }
     if include_model_breakdown:
         by_model = summarize_by(records, key=lambda record: record.model_version)
@@ -258,6 +287,44 @@ def analyze_records(
         if by_iteration:
             payload["by_created_iteration"] = by_iteration
     return payload
+
+
+def summarize_recent_row_percent(
+    records: list[GameRecord],
+    percent: float,
+) -> dict[str, Any] | None:
+    total_rows = sum(max(0, record.moves or 0) for record in records)
+    if total_rows <= 0:
+        return None
+    target_rows = _recent_percent_count(total_rows, percent)
+    selected: list[GameRecord] = []
+    covered_rows = 0
+    for record in reversed(records):
+        selected.append(record)
+        covered_rows += max(0, record.moves or 0)
+        if covered_rows >= target_rows:
+            break
+    selected.reverse()
+    return {
+        "last_row_percent": percent,
+        "target_rows": target_rows,
+        "covered_rows": covered_rows,
+        "included_games": len(selected),
+        **summarize_records(selected),
+    }
+
+
+def _sorted_recent_percents(values: list[float] | None) -> list[float]:
+    if values is None:
+        return []
+    return sorted({float(value) for value in values if value > 0.0})
+
+
+def _recent_percent_count(total: int, percent: float) -> int:
+    if total <= 0:
+        return 0
+    bounded = min(100.0, max(0.0, float(percent)))
+    return max(1, int(math.ceil(total * bounded / 100.0)))
 
 
 def summarize_records(records: list[GameRecord]) -> dict[str, Any]:
