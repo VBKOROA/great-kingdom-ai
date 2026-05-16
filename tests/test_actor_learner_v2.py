@@ -600,6 +600,83 @@ def test_learner_v2_continuous_consumes_optimizer_lr_override_once(
     assert train_calls == [5e-5, None]
 
 
+def test_learner_v2_continuous_prints_resume_optimizer_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source_checkpoint = tmp_path / "source.pt"
+    source_checkpoint.write_text("checkpoint", encoding="utf-8")
+    run_actor_v2_once(
+        ActorV2Config(
+            work_dir=tmp_path,
+            onnx_model_path=tmp_path / "model.onnx",
+            model_version="ema",
+            games=2,
+            seed_start=0,
+            onnx_device="cpu",
+        ),
+        runner=fake_actor_runner,
+        printer=PipelinePrinter(enabled=False),
+    )
+    summarized_paths: list[Path] = []
+
+    def fake_optimizer_summary(path: str | Path) -> dict[str, Any]:
+        summarized_paths.append(Path(path))
+        return {"checkpoint_step": 9, "state_entries": 4}
+
+    def fake_train(
+        replay: Any,
+        config: TrainingConfig,
+        *,
+        checkpoint_path: str | Path,
+        resume_path: str | Path | None,
+        bootstrap_weights_path: str | Path | None = None,
+        resume_optimizer_lr_override: float | None = None,
+        log_every: int,
+        progress_callback: Any = None,
+    ) -> FakeTrainSummary:
+        del replay, config, bootstrap_weights_path, resume_optimizer_lr_override
+        del log_every, progress_callback
+        assert Path(resume_path or "") == source_checkpoint
+        destination = Path(checkpoint_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("candidate", encoding="utf-8")
+        return FakeTrainSummary(destination)
+
+    monkeypatch.setattr(actor_learner_v2_module, "train_from_replay", fake_train)
+    monkeypatch.setattr(
+        actor_learner_v2_module,
+        "summarize_checkpoint_optimizer_state",
+        fake_optimizer_summary,
+    )
+
+    args = argparse.Namespace(
+        loop=True,
+        max_cycles=1,
+        json=False,
+        sleep_seconds=0.0,
+        override_optimizer_lr=None,
+    )
+    actor_learner_v2_module._run_learner_continuous_cli(
+        LearnerV2Config(
+            work_dir=tmp_path,
+            replay_capacity=32,
+            min_replay_transitions=1,
+            source_checkpoint=source_checkpoint,
+            export_onnx=False,
+        ),
+        TrainingConfig(batch_size=2, steps=1, device="cpu"),
+        args,
+    )
+
+    output = capsys.readouterr().out
+    assert summarized_paths == [source_checkpoint]
+    assert "Learner V2 Continuous" in output
+    assert "optimizer state" in output
+    assert '"state_entries": 4' in output
+
+
 def test_learner_v2_continuous_keeps_optimizer_lr_override_while_waiting(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

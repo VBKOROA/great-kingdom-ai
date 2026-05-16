@@ -888,6 +888,12 @@ def _run_learner_continuous_cli(
             train_kwargs: dict[str, Any] = {
                 **kwargs,
             }
+            _print_learner_optimizer_state(
+                printer,
+                train_checkpoint_mode=config.train_checkpoint_mode,
+                resume_path=train_kwargs.get("resume_path"),
+                bootstrap_weights_path=train_kwargs.get("bootstrap_weights_path"),
+            )
             if resume_optimizer_lr_override is not None:
                 train_kwargs["resume_optimizer_lr_override"] = resume_optimizer_lr_override
                 printer.metric("optimizer lr override", resume_optimizer_lr_override)
