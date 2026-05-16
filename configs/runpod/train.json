@@ -1,7 +1,7 @@
 {
   "batch_size": 256,
   "steps": 512,
-  "learning_rate": 0.0003,
+  "learning_rate": 0.00001,
   "weight_decay": 0.001,
   "value_loss_weight": 1.0,
   "policy_loss_weight": 1.0,
