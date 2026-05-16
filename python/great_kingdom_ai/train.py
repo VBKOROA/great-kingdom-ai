@@ -7,7 +7,7 @@ import json
 import math
 import random
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -315,6 +315,65 @@ def save_checkpoint(state: TrainState, path: str | Path) -> Path:
     return destination
 
 
+def summarize_checkpoint_optimizer_state(path: str | Path) -> dict[str, Any]:
+    """Return a compact, JSON-friendly optimizer-state summary for diagnostics."""
+    torch = _import_torch()
+    checkpoint = torch.load(Path(path), map_location="cpu", weights_only=False)
+    optimizer_state = checkpoint.get("optimizer_state")
+    if not isinstance(optimizer_state, Mapping):
+        raise ValueError("checkpoint does not contain optimizer_state")
+    summary = summarize_optimizer_state_dict(optimizer_state)
+    summary["checkpoint_step"] = int(checkpoint.get("step", 0))
+    return summary
+
+
+def summarize_optimizer_state_dict(optimizer_state: Mapping[str, Any]) -> dict[str, Any]:
+    """Summarize optimizer state without printing large tensors."""
+    state = optimizer_state.get("state", {})
+    param_groups = optimizer_state.get("param_groups", [])
+    if not isinstance(state, Mapping):
+        raise ValueError("optimizer state must contain a mapping 'state'")
+    if not isinstance(param_groups, Sequence):
+        raise ValueError("optimizer state must contain a sequence 'param_groups'")
+
+    step_values: list[float] = []
+    tensor_buffers: dict[str, dict[str, int]] = {}
+    for entry in state.values():
+        if not isinstance(entry, Mapping):
+            continue
+        step = _optimizer_scalar(entry.get("step"))
+        if step is not None:
+            step_values.append(step)
+        for key, value in entry.items():
+            if key == "step" or not _is_torch_tensor(value):
+                continue
+            buffer_summary = tensor_buffers.setdefault(
+                str(key),
+                {"tensors": 0, "elements": 0},
+            )
+            buffer_summary["tensors"] += 1
+            buffer_summary["elements"] += int(value.numel())
+
+    summary: dict[str, Any] = {
+        "param_groups": [
+            _optimizer_param_group_summary(group)
+            for group in param_groups
+            if isinstance(group, Mapping)
+        ],
+        "state_entries": len(state),
+        "tensor_buffers": tensor_buffers,
+    }
+    if step_values:
+        summary["step"] = {
+            "min": min(step_values),
+            "max": max(step_values),
+            "mean": sum(step_values) / len(step_values),
+        }
+    else:
+        summary["step"] = None
+    return summary
+
+
 def load_checkpoint(
     path: str | Path,
     *,
@@ -392,6 +451,36 @@ def load_checkpoint(
         step=int(checkpoint["step"]),
         model_preset=str(checkpoint.get("model_preset", "custom")),
     )
+
+
+def _optimizer_param_group_summary(group: Mapping[str, Any]) -> dict[str, Any]:
+    keys = ("lr", "weight_decay", "betas", "eps", "amsgrad")
+    return {key: _optimizer_json_value(group[key]) for key in keys if key in group}
+
+
+def _optimizer_json_value(value: Any) -> Any:
+    scalar = _optimizer_scalar(value)
+    if scalar is not None:
+        return scalar
+    if isinstance(value, tuple):
+        return [_optimizer_json_value(item) for item in value]
+    if isinstance(value, list):
+        return [_optimizer_json_value(item) for item in value]
+    return value
+
+
+def _optimizer_scalar(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    if _is_torch_tensor(value) and value.numel() == 1:
+        return float(value.detach().cpu().item())
+    return None
+
+
+def _is_torch_tensor(value: Any) -> bool:
+    return hasattr(value, "detach") and hasattr(value, "numel")
 
 
 def load_checkpoint_weights(
@@ -1088,6 +1177,8 @@ __all__ = [
     "print_training_startup_config",
     "samples_to_batch",
     "save_checkpoint",
+    "summarize_checkpoint_optimizer_state",
+    "summarize_optimizer_state_dict",
     "train_from_replay",
     "train_step",
 ]

@@ -30,6 +30,7 @@ from great_kingdom_ai.train import (
     create_train_state,
     load_training_config,
     save_checkpoint,
+    summarize_checkpoint_optimizer_state,
     train_from_replay,
 )
 from great_kingdom_ai.trajectory_dataset import TrajectoryReplayDataset
@@ -417,6 +418,12 @@ def run_learner_v2_once(
     )
     printer.step(f"training candidate -> {candidate_checkpoint}")
     train_kwargs: dict[str, Any] = {**kwargs}
+    _print_learner_optimizer_state(
+        printer,
+        train_checkpoint_mode=config.train_checkpoint_mode,
+        resume_path=train_kwargs.get("resume_path"),
+        bootstrap_weights_path=train_kwargs.get("bootstrap_weights_path"),
+    )
     if resume_optimizer_lr_override is not None:
         train_kwargs["resume_optimizer_lr_override"] = resume_optimizer_lr_override
         printer.metric("optimizer lr override", resume_optimizer_lr_override)
@@ -1259,6 +1266,31 @@ def _train_checkpoint_kwargs(
     if train_checkpoint_mode == "bootstrap":
         return {"resume_path": None, "bootstrap_weights_path": source_checkpoint}
     raise ValueError("train_checkpoint_mode must be one of: resume, bootstrap")
+
+
+def _print_learner_optimizer_state(
+    printer: PipelinePrinter,
+    *,
+    train_checkpoint_mode: str,
+    resume_path: object,
+    bootstrap_weights_path: object,
+) -> None:
+    printer.metric("train checkpoint mode", train_checkpoint_mode)
+    if resume_path is not None:
+        checkpoint_path = Path(resume_path)
+        printer.metric("optimizer checkpoint", checkpoint_path)
+        printer.metric(
+            "optimizer state",
+            json.dumps(
+                summarize_checkpoint_optimizer_state(checkpoint_path),
+                sort_keys=True,
+            ),
+        )
+        return
+    if bootstrap_weights_path is not None:
+        printer.metric("optimizer checkpoint", "fresh (bootstrap weights)")
+        return
+    printer.metric("optimizer checkpoint", "fresh (no source checkpoint)")
 
 
 def _append_event(metadata_path: Path, event: dict[str, Any]) -> None:

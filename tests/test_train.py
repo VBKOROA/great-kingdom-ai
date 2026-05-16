@@ -32,6 +32,7 @@ from great_kingdom_ai.train import (  # noqa: E402
     print_training_startup_config,
     samples_to_batch,
     save_checkpoint,
+    summarize_checkpoint_optimizer_state,
     train_from_replay,
     train_step,
 )
@@ -402,6 +403,30 @@ def test_checkpoint_round_trips_model_outputs_and_optimizer_state(tmp_path) -> N
     assert torch.allclose(actual_policy, expected_policy)
     assert torch.allclose(actual_value, expected_value)
     assert loaded.optimizer.state_dict()["state"]
+
+
+def test_summarize_checkpoint_optimizer_state_reports_adam_buffers(tmp_path) -> None:
+    config = TrainingConfig(batch_size=2, steps=1, seed=5)
+    state = create_train_state(config)
+    batch = samples_to_batch(make_replay().sample(2, random.Random(5)))
+    train_step(state, batch, config)
+    state = type(state)(
+        model=state.model,
+        optimizer=state.optimizer,
+        scheduler=state.scheduler,
+        step=1,
+        model_preset=state.model_preset,
+    )
+
+    checkpoint_path = save_checkpoint(state, tmp_path / "checkpoint.pt")
+    summary = summarize_checkpoint_optimizer_state(checkpoint_path)
+
+    assert summary["checkpoint_step"] == 1
+    assert summary["state_entries"] > 0
+    assert summary["step"]["max"] == pytest.approx(1.0)
+    assert summary["param_groups"][0]["lr"] > 0.0
+    assert summary["tensor_buffers"]["exp_avg"]["tensors"] > 0
+    assert summary["tensor_buffers"]["exp_avg_sq"]["elements"] > 0
 
 
 def test_checkpoint_preserves_ema_and_can_prefer_ema_weights(tmp_path) -> None:

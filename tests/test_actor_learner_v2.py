@@ -409,6 +409,78 @@ def test_learner_v2_imports_pending_shards_trains_and_exports(tmp_path: Path) ->
     assert (tmp_path / "replay" / "game_logs.jsonl").is_file()
 
 
+def test_learner_v2_prints_resume_optimizer_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source_checkpoint = tmp_path / "source.pt"
+    source_checkpoint.write_text("checkpoint", encoding="utf-8")
+    run_actor_v2_once(
+        ActorV2Config(
+            work_dir=tmp_path,
+            onnx_model_path=tmp_path / "model.onnx",
+            model_version="ema",
+            games=2,
+            seed_start=0,
+            onnx_device="cpu",
+        ),
+        runner=fake_actor_runner,
+        printer=PipelinePrinter(enabled=False),
+    )
+    summarized_paths: list[Path] = []
+
+    def fake_optimizer_summary(path: str | Path) -> dict[str, Any]:
+        summarized_paths.append(Path(path))
+        return {
+            "checkpoint_step": 7,
+            "state_entries": 3,
+            "param_groups": [{"lr": 5e-5, "weight_decay": 0.001}],
+        }
+
+    def fake_train(
+        replay: Any,
+        config: TrainingConfig,
+        *,
+        checkpoint_path: str | Path,
+        resume_path: str | Path | None,
+        bootstrap_weights_path: str | Path | None = None,
+        log_every: int,
+        progress_callback: Any = None,
+    ) -> FakeTrainSummary:
+        del replay, config, bootstrap_weights_path, log_every, progress_callback
+        assert Path(resume_path or "") == source_checkpoint
+        destination = Path(checkpoint_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("candidate", encoding="utf-8")
+        return FakeTrainSummary(destination)
+
+    monkeypatch.setattr(
+        actor_learner_v2_module,
+        "summarize_checkpoint_optimizer_state",
+        fake_optimizer_summary,
+    )
+
+    run_learner_v2_once(
+        LearnerV2Config(
+            work_dir=tmp_path,
+            replay_capacity=16,
+            min_replay_transitions=1,
+            source_checkpoint=source_checkpoint,
+            export_onnx=False,
+        ),
+        TrainingConfig(batch_size=2, steps=1, device="cpu"),
+        trainer=fake_train,
+        printer=PipelinePrinter(enabled=True),
+    )
+
+    output = capsys.readouterr().out
+    assert summarized_paths == [source_checkpoint]
+    assert "train checkpoint mode" in output
+    assert f"optimizer checkpoint {source_checkpoint}" in output
+    assert '"state_entries": 3' in output
+
+
 def test_learner_v2_passes_one_shot_optimizer_lr_override(tmp_path: Path) -> None:
     run_actor_v2_once(
         ActorV2Config(
