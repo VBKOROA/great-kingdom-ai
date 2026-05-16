@@ -38,6 +38,7 @@ impl GumbelSearch {
         c_visit = 50.0,
         c_scale = 1.0,
         seed = 0,
+        gumbel_scale = 1.0,
         policy_target_temperature = 1.0,
         policy_target_c_visit = None,
         policy_target_c_scale = None
@@ -48,6 +49,7 @@ impl GumbelSearch {
         c_visit: f32,
         c_scale: f32,
         seed: u64,
+        gumbel_scale: f32,
         policy_target_temperature: f32,
         policy_target_c_visit: Option<f32>,
         policy_target_c_scale: Option<f32>,
@@ -56,12 +58,13 @@ impl GumbelSearch {
             .ok_or_else(|| PyValueError::new_err("policy_target_c_visit must be set"))?;
         let policy_target_c_scale = policy_target_c_scale
             .ok_or_else(|| PyValueError::new_err("policy_target_c_scale must be set"))?;
-        let config = GumbelConfig::new_with_policy_target_config(
+        let config = GumbelConfig::new_with_full_config(
             simulations,
             max_considered_actions,
             c_visit,
             c_scale,
             seed,
+            gumbel_scale,
             policy_target_temperature,
             policy_target_c_visit,
             policy_target_c_scale,
@@ -88,6 +91,11 @@ impl GumbelSearch {
     #[must_use]
     pub fn c_scale(&self) -> f32 {
         self.config.c_scale
+    }
+
+    #[must_use]
+    pub fn gumbel_scale(&self) -> f32 {
+        self.config.gumbel_scale
     }
 
     #[must_use]
@@ -303,7 +311,7 @@ impl GumbelSearch {
             legal_actions,
             log_priors,
             self.config.max_considered_actions,
-            self.config.simulations,
+            self.config.gumbel_scale,
             self.next_root_seed(),
         );
         self.run_tree_search(state, legal_actions, log_priors, &candidates)
@@ -335,7 +343,7 @@ impl GumbelSearch {
             legal_actions,
             log_priors,
             self.config.max_considered_actions,
-            self.config.simulations,
+            self.config.gumbel_scale,
             self.next_root_seed(),
         );
         self.run_tree_search_with_evaluator(
@@ -1065,6 +1073,7 @@ fn parse_gumbel_policy_row(row: Vec<f32>, row_index: usize) -> PyResult<[f32; AC
 mod tests {
     use super::{GumbelEvalBatch, GumbelSearch, backup_path, select_inner_action_index};
     use crate::{
+        eval_request::EvalRequest,
         game::{ACTION_SPACE, CENTER_INDEX, Cell, GameState, Player, state_with_board},
         gumbel::{config::GumbelConfig, node::GumbelNode, selection::select_inner_action},
     };
@@ -1220,6 +1229,46 @@ mod tests {
                 .collect::<Vec<_>>();
             log_priors.windows(2).any(|pair| pair[0] != pair[1])
         }));
+    }
+
+    #[test]
+    fn leaf_batch_size_one_keeps_leaf_evaluation_sequential() {
+        let root_logits = [0.0; ACTION_SPACE];
+        let evaluator = |request: EvalRequest| {
+            let mut rows = Vec::with_capacity(request.len());
+            let mut values = Vec::with_capacity(request.len());
+            for _ in 0..request.len() {
+                let mut logits = [-3.0; ACTION_SPACE];
+                logits[0] = 4.0;
+                logits[1] = 2.0;
+                rows.push(logits);
+                values.push(0.25);
+            }
+            Ok(GumbelEvalBatch::new(rows, values))
+        };
+
+        let mut sequential_request_lengths = Vec::new();
+        let mut sequential_search = GumbelSearch::new(GumbelConfig::new(6, 4, 50.0, 1.0, 7));
+        let sequential_result = sequential_search
+            .result_from_logits_with_evaluator(&GameState::new(), &root_logits, 1, 0.0, |request| {
+                sequential_request_lengths.push(request.len());
+                evaluator(request)
+            })
+            .unwrap();
+
+        let mut batched_request_lengths = Vec::new();
+        let mut batched_search = GumbelSearch::new(GumbelConfig::new(6, 4, 50.0, 1.0, 7));
+        let batched_result = batched_search
+            .result_from_logits_with_evaluator(&GameState::new(), &root_logits, 4, 0.0, |request| {
+                batched_request_lengths.push(request.len());
+                evaluator(request)
+            })
+            .unwrap();
+
+        assert!(sequential_request_lengths.iter().all(|length| *length == 1));
+        assert!(batched_request_lengths.iter().any(|length| *length > 1));
+        assert_eq!(sequential_result.visit_counts.iter().sum::<u32>(), 6);
+        assert_eq!(batched_result.visit_counts.iter().sum::<u32>(), 6);
     }
 
     #[test]

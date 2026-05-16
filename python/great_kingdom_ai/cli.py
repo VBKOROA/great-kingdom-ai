@@ -480,6 +480,7 @@ def run_model_repl(
     max_turns: int = 200,
     model_simulations: int = 64,
     model_max_considered_actions: int = 16,
+    model_gumbel_scale: float = 0.0,
     model_gumbel_seed: int = 0,
     model_leaf_batch_size: int = 8,
     input_fn: Callable[[str], str] = input,
@@ -492,6 +493,7 @@ def run_model_repl(
         device=device,
         gumbel_simulations=model_simulations,
         gumbel_max_considered_actions=model_max_considered_actions,
+        gumbel_scale=model_gumbel_scale,
         gumbel_seed=model_gumbel_seed,
         leaf_batch_size=model_leaf_batch_size,
     )
@@ -515,6 +517,7 @@ def run_model_arena(
     max_turns: int = 200,
     model_simulations: int = 64,
     model_max_considered_actions: int = 16,
+    model_gumbel_scale: float = 0.0,
     model_gumbel_seed: int = 0,
     model_leaf_batch_size: int = 8,
     pause: bool = False,
@@ -528,6 +531,7 @@ def run_model_arena(
         device=device,
         gumbel_simulations=model_simulations,
         gumbel_max_considered_actions=model_max_considered_actions,
+        gumbel_scale=model_gumbel_scale,
         gumbel_seed=model_gumbel_seed,
         leaf_batch_size=model_leaf_batch_size,
     )
@@ -535,6 +539,7 @@ def run_model_arena(
         device=device,
         gumbel_simulations=model_simulations,
         gumbel_max_considered_actions=model_max_considered_actions,
+        gumbel_scale=model_gumbel_scale,
         gumbel_seed=model_gumbel_seed + 1,
         leaf_batch_size=model_leaf_batch_size,
     )
@@ -623,6 +628,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="maximum actions considered by model Gumbel search",
     )
     parser.add_argument(
+        "--model-gumbel-scale",
+        type=float,
+        default=0.0,
+        help="root Gumbel noise scale for model search",
+    )
+    parser.add_argument(
         "--model-gumbel-seed",
         type=int,
         default=0,
@@ -658,6 +669,7 @@ def main() -> NoReturn:
                 max_turns=args.max_turns,
                 model_simulations=args.model_simulations,
                 model_max_considered_actions=args.model_max_considered_actions,
+                model_gumbel_scale=args.model_gumbel_scale,
                 model_gumbel_seed=args.model_gumbel_seed,
                 model_leaf_batch_size=args.model_leaf_batch_size,
             )
@@ -672,6 +684,7 @@ def main() -> NoReturn:
                 max_turns=args.max_turns,
                 model_simulations=args.model_simulations,
                 model_max_considered_actions=args.model_max_considered_actions,
+                model_gumbel_scale=args.model_gumbel_scale,
                 model_gumbel_seed=args.model_gumbel_seed,
                 model_leaf_batch_size=args.model_leaf_batch_size,
                 pause=args.pause,

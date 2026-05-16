@@ -46,6 +46,7 @@ impl GumbelSelfPlayBatch {
         c_visit = 50.0,
         c_scale = 1.0,
         seed = 2026,
+        gumbel_scale = 1.0,
         policy_target_temperature = 1.0,
         policy_target_c_visit = None,
         policy_target_c_scale = None
@@ -57,6 +58,7 @@ impl GumbelSelfPlayBatch {
         c_visit: f32,
         c_scale: f32,
         seed: u64,
+        gumbel_scale: f32,
         policy_target_temperature: f32,
         policy_target_c_visit: Option<f32>,
         policy_target_c_scale: Option<f32>,
@@ -68,12 +70,13 @@ impl GumbelSelfPlayBatch {
             .ok_or_else(|| PyValueError::new_err("policy_target_c_visit must be set"))?;
         let policy_target_c_scale = policy_target_c_scale
             .ok_or_else(|| PyValueError::new_err("policy_target_c_scale must be set"))?;
-        let config = GumbelConfig::new_with_policy_target_config(
+        let config = GumbelConfig::new_with_full_config(
             simulations,
             max_considered_actions,
             c_visit,
             c_scale,
             seed,
+            gumbel_scale,
             policy_target_temperature,
             policy_target_c_visit,
             policy_target_c_scale,
@@ -90,6 +93,7 @@ impl GumbelSelfPlayBatch {
         c_visit = 50.0,
         c_scale = 1.0,
         seed = 2026,
+        gumbel_scale = 1.0,
         policy_target_temperature = 1.0,
         policy_target_c_visit = None,
         policy_target_c_scale = None
@@ -101,6 +105,7 @@ impl GumbelSelfPlayBatch {
         c_visit: f32,
         c_scale: f32,
         seed: u64,
+        gumbel_scale: f32,
         policy_target_temperature: f32,
         policy_target_c_visit: Option<f32>,
         policy_target_c_scale: Option<f32>,
@@ -112,12 +117,13 @@ impl GumbelSelfPlayBatch {
             .ok_or_else(|| PyValueError::new_err("policy_target_c_visit must be set"))?;
         let policy_target_c_scale = policy_target_c_scale
             .ok_or_else(|| PyValueError::new_err("policy_target_c_scale must be set"))?;
-        let config = GumbelConfig::new_with_policy_target_config(
+        let config = GumbelConfig::new_with_full_config(
             simulations,
             max_considered_actions,
             c_visit,
             c_scale,
             seed,
+            gumbel_scale,
             policy_target_temperature,
             policy_target_c_visit,
             policy_target_c_scale,
@@ -554,7 +560,7 @@ impl GumbelSelfPlayBatch {
                 &legal_actions,
                 &log_priors,
                 search.config.max_considered_actions,
-                search.config.simulations,
+                search.config.gumbel_scale,
                 search.next_root_seed(),
             );
             if candidates.is_empty() {

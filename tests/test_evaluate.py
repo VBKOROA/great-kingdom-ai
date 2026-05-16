@@ -88,6 +88,8 @@ def test_evaluate_parser_can_override_all_arena_config_fields() -> None:
             "12.5",
             "--gumbel-c-scale",
             "0.75",
+            "--gumbel-scale",
+            "0.0",
             "--policy-target-c-visit",
             "8.5",
             "--policy-target-c-scale",
@@ -116,6 +118,7 @@ def test_evaluate_parser_can_override_all_arena_config_fields() -> None:
         "gumbel_max_considered_actions": 7,
         "gumbel_c_visit": 12.5,
         "gumbel_c_scale": 0.75,
+        "gumbel_scale": 0.0,
         "policy_target_c_visit": 8.5,
         "policy_target_c_scale": 0.5,
         "policy_target_temperature": 1.25,
@@ -641,6 +644,7 @@ def test_core_search_constructors_receive_policy_target_config(
         games=1,
         gumbel_c_visit=31.0,
         gumbel_c_scale=0.75,
+        gumbel_scale=0.0,
         policy_target_c_visit=31.0,
         policy_target_c_scale=0.75,
         policy_target_temperature=1.0,
@@ -650,9 +654,11 @@ def test_core_search_constructors_receive_policy_target_config(
     create_core_arena_batch(config, game_count=1, seed_start=0)
 
     assert seen_search_kwargs["policy_target_c_visit"] == 31.0
+    assert seen_search_kwargs["gumbel_scale"] == 0.0
     assert seen_search_kwargs["policy_target_c_scale"] == 0.75
     assert seen_search_kwargs["policy_target_temperature"] == 1.0
     assert seen_batch_kwargs["policy_target_c_visit"] == 31.0
+    assert seen_batch_kwargs["gumbel_scale"] == 0.0
     assert seen_batch_kwargs["policy_target_c_scale"] == 0.75
     assert seen_batch_kwargs["policy_target_temperature"] == 1.0
 

@@ -7,6 +7,7 @@ pub struct GumbelConfig {
     pub max_considered_actions: usize,
     pub c_visit: f32,
     pub c_scale: f32,
+    pub gumbel_scale: f32,
     pub policy_target_c_visit: f32,
     pub policy_target_c_scale: f32,
     pub policy_target_temperature: f32,
@@ -20,6 +21,7 @@ impl Default for GumbelConfig {
             max_considered_actions: 16,
             c_visit: 50.0,
             c_scale: 1.0,
+            gumbel_scale: 1.0,
             policy_target_c_visit: 50.0,
             policy_target_c_scale: 1.0,
             policy_target_temperature: 1.0,
@@ -42,6 +44,7 @@ impl GumbelConfig {
             max_considered_actions,
             c_visit,
             c_scale,
+            gumbel_scale: 1.0,
             policy_target_c_visit: c_visit,
             policy_target_c_scale: c_scale,
             policy_target_temperature: 1.0,
@@ -63,6 +66,7 @@ impl GumbelConfig {
             max_considered_actions,
             c_visit,
             c_scale,
+            gumbel_scale: 1.0,
             policy_target_c_visit: c_visit,
             policy_target_c_scale: c_scale,
             policy_target_temperature,
@@ -86,6 +90,32 @@ impl GumbelConfig {
             max_considered_actions,
             c_visit,
             c_scale,
+            gumbel_scale: 1.0,
+            policy_target_c_visit,
+            policy_target_c_scale,
+            policy_target_temperature,
+            seed,
+        }
+    }
+
+    #[must_use]
+    pub const fn new_with_full_config(
+        simulations: u32,
+        max_considered_actions: usize,
+        c_visit: f32,
+        c_scale: f32,
+        seed: u64,
+        gumbel_scale: f32,
+        policy_target_temperature: f32,
+        policy_target_c_visit: f32,
+        policy_target_c_scale: f32,
+    ) -> Self {
+        Self {
+            simulations,
+            max_considered_actions,
+            c_visit,
+            c_scale,
+            gumbel_scale,
             policy_target_c_visit,
             policy_target_c_scale,
             policy_target_temperature,
@@ -110,6 +140,11 @@ impl GumbelConfig {
         if !self.c_scale.is_finite() || self.c_scale <= 0.0 {
             return Err(PyValueError::new_err(
                 "c_scale must be a finite positive value",
+            ));
+        }
+        if !self.gumbel_scale.is_finite() || self.gumbel_scale < 0.0 {
+            return Err(PyValueError::new_err(
+                "gumbel_scale must be a finite non-negative value",
             ));
         }
         if !self.policy_target_c_visit.is_finite() || self.policy_target_c_visit <= 0.0 {
@@ -140,6 +175,7 @@ impl GumbelConfig {
         c_visit = 50.0,
         c_scale = 1.0,
         seed = 0,
+        gumbel_scale = 1.0,
         policy_target_temperature = 1.0,
         policy_target_c_visit = None,
         policy_target_c_scale = None
@@ -150,6 +186,7 @@ impl GumbelConfig {
         c_visit: f32,
         c_scale: f32,
         seed: u64,
+        gumbel_scale: f32,
         policy_target_temperature: f32,
         policy_target_c_visit: Option<f32>,
         policy_target_c_scale: Option<f32>,
@@ -158,12 +195,13 @@ impl GumbelConfig {
             .ok_or_else(|| PyValueError::new_err("policy_target_c_visit must be set"))?;
         let policy_target_c_scale = policy_target_c_scale
             .ok_or_else(|| PyValueError::new_err("policy_target_c_scale must be set"))?;
-        let config = Self::new_with_policy_target_config(
+        let config = Self::new_with_full_config(
             simulations,
             max_considered_actions,
             c_visit,
             c_scale,
             seed,
+            gumbel_scale,
             policy_target_temperature,
             policy_target_c_visit,
             policy_target_c_scale,
@@ -190,6 +228,11 @@ impl GumbelConfig {
     #[must_use]
     pub fn c_scale(&self) -> f32 {
         self.c_scale
+    }
+
+    #[must_use]
+    pub fn gumbel_scale(&self) -> f32 {
+        self.gumbel_scale
     }
 
     #[must_use]

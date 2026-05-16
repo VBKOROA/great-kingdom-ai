@@ -99,6 +99,7 @@ class ArenaConfig:
     gumbel_max_considered_actions: int = 16
     gumbel_c_visit: float = 50.0
     gumbel_c_scale: float = 1.0
+    gumbel_scale: float = 0.0
     policy_target_c_visit: float = 5.0
     policy_target_c_scale: float = 0.25
     policy_target_temperature: float = 1.0
@@ -677,6 +678,7 @@ def create_core_search_engine(
             c_visit=config.gumbel_c_visit,
             c_scale=config.gumbel_c_scale,
             seed=config.gumbel_seed + seed_offset,
+            gumbel_scale=config.gumbel_scale,
             policy_target_temperature=config.policy_target_temperature,
             policy_target_c_visit=config.policy_target_c_visit,
             policy_target_c_scale=config.policy_target_c_scale,
@@ -714,6 +716,7 @@ def create_core_arena_batch(
             c_visit=config.gumbel_c_visit,
             c_scale=config.gumbel_c_scale,
             seed=config.gumbel_seed,
+            gumbel_scale=config.gumbel_scale,
             policy_target_temperature=config.policy_target_temperature,
             policy_target_c_visit=config.policy_target_c_visit,
             policy_target_c_scale=config.policy_target_c_scale,
@@ -787,6 +790,8 @@ def _validate_arena_config(config: ArenaConfig) -> None:
         raise ValueError("gumbel_c_visit must be positive")
     if config.gumbel_c_scale <= 0.0:
         raise ValueError("gumbel_c_scale must be positive")
+    if not math.isfinite(config.gumbel_scale) or config.gumbel_scale < 0.0:
+        raise ValueError("gumbel_scale must be finite and non-negative")
     if not math.isfinite(config.policy_target_c_visit) or config.policy_target_c_visit <= 0.0:
         raise ValueError("policy_target_c_visit must be finite and positive")
     if not math.isfinite(config.policy_target_c_scale) or config.policy_target_c_scale <= 0.0:
@@ -981,6 +986,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--gumbel-c-visit", type=float, default=None)
     parser.add_argument("--gumbel-c-scale", type=float, default=None)
+    parser.add_argument("--gumbel-scale", type=float, default=None)
     parser.add_argument("--policy-target-c-visit", type=float, default=None)
     parser.add_argument("--policy-target-c-scale", type=float, default=None)
     parser.add_argument("--policy-target-temperature", type=float, default=None)
@@ -1015,6 +1021,7 @@ def _config_from_args(args: argparse.Namespace) -> ArenaConfig:
         "gumbel_max_considered_actions": args.gumbel_max_considered_actions,
         "gumbel_c_visit": args.gumbel_c_visit,
         "gumbel_c_scale": args.gumbel_c_scale,
+        "gumbel_scale": args.gumbel_scale,
         "policy_target_c_visit": args.policy_target_c_visit,
         "policy_target_c_scale": args.policy_target_c_scale,
         "policy_target_temperature": args.policy_target_temperature,

@@ -517,6 +517,7 @@ def test_search_self_play_config_samples_only_opening_turns_by_default() -> None
 def test_self_play_config_defaults_policy_target_scale() -> None:
     config = SelfPlayConfig()
 
+    assert config.gumbel_scale == pytest.approx(1.0)
     assert config.policy_target_c_visit == pytest.approx(5.0)
     assert config.policy_target_c_scale == pytest.approx(0.25)
 
@@ -546,6 +547,11 @@ def test_self_play_config_rejects_invalid_policy_target_scale(
 def test_self_play_config_rejects_invalid_policy_target_temperature() -> None:
     with pytest.raises(ValueError, match="policy_target_temperature"):
         make_self_play_config(policy_target_temperature=0.0)
+
+
+def test_self_play_config_rejects_invalid_gumbel_scale() -> None:
+    with pytest.raises(ValueError, match="gumbel_scale"):
+        make_self_play_config(gumbel_scale=-1.0)
 
 
 def test_play_self_play_game_can_skip_fast_playout_cap_turns() -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +44,7 @@ class ModelPlayConfig:
     gumbel_max_considered_actions: int = 16
     gumbel_c_visit: float = 50.0
     gumbel_c_scale: float = 1.0
+    gumbel_scale: float = 0.0
     policy_target_c_visit: float = 5.0
     policy_target_c_scale: float = 0.25
     policy_target_temperature: float = 1.0
@@ -58,6 +60,8 @@ class ModelPlayConfig:
             raise ValueError("gumbel_c_visit must be positive")
         if self.gumbel_c_scale <= 0.0:
             raise ValueError("gumbel_c_scale must be positive")
+        if not math.isfinite(self.gumbel_scale) or self.gumbel_scale < 0.0:
+            raise ValueError("gumbel_scale must be finite and non-negative")
         if self.policy_target_c_visit <= 0.0:
             raise ValueError("policy_target_c_visit must be positive")
         if self.policy_target_c_scale <= 0.0:
@@ -175,6 +179,7 @@ def create_core_search_engine(config: ModelPlayConfig) -> SearchLike:
             c_visit=config.gumbel_c_visit,
             c_scale=config.gumbel_c_scale,
             seed=config.gumbel_seed,
+            gumbel_scale=config.gumbel_scale,
             policy_target_temperature=config.policy_target_temperature,
             policy_target_c_visit=config.policy_target_c_visit,
             policy_target_c_scale=config.policy_target_c_scale,

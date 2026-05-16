@@ -148,6 +148,7 @@ class SelfPlayConfig:
     gumbel_max_considered_actions: int = 16
     gumbel_c_visit: float = 50.0
     gumbel_c_scale: float = 1.0
+    gumbel_scale: float = 1.0
     policy_target_c_visit: float = 5.0
     policy_target_c_scale: float = 0.25
     policy_target_temperature: float = 1.0
@@ -173,6 +174,8 @@ class SelfPlayConfig:
             raise ValueError("gumbel_c_visit must be positive")
         if self.gumbel_c_scale <= 0.0:
             raise ValueError("gumbel_c_scale must be positive")
+        if not np.isfinite(self.gumbel_scale) or self.gumbel_scale < 0.0:
+            raise ValueError("gumbel_scale must be finite and non-negative")
         if not np.isfinite(self.policy_target_c_visit) or self.policy_target_c_visit <= 0.0:
             raise ValueError("policy_target_c_visit must be finite and positive")
         if not np.isfinite(self.policy_target_c_scale) or self.policy_target_c_scale <= 0.0:
@@ -484,6 +487,7 @@ def create_core_search_engine(
             c_visit=config.gumbel_c_visit,
             c_scale=config.gumbel_c_scale,
             seed=config.gumbel_seed + seed_offset,
+            gumbel_scale=config.gumbel_scale,
             policy_target_temperature=config.policy_target_temperature,
             policy_target_c_visit=config.policy_target_c_visit,
             policy_target_c_scale=config.policy_target_c_scale,
@@ -512,6 +516,7 @@ def create_core_self_play_batch(
             c_visit=config.gumbel_c_visit,
             c_scale=config.gumbel_c_scale,
             seed=config.gumbel_seed + seed_offset,
+            gumbel_scale=config.gumbel_scale,
             policy_target_temperature=config.policy_target_temperature,
             policy_target_c_visit=config.policy_target_c_visit,
             policy_target_c_scale=config.policy_target_c_scale,

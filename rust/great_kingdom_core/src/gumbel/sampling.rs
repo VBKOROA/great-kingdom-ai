@@ -16,13 +16,10 @@ pub(crate) fn sample_root_candidates(
     legal_actions: &[usize],
     log_priors: &[f32; ACTION_SPACE],
     max_considered_actions: usize,
-    simulations: u32,
+    gumbel_scale: f32,
     seed: u64,
 ) -> Vec<RootCandidate> {
-    let candidate_count = legal_actions
-        .len()
-        .min(max_considered_actions)
-        .min(simulations as usize);
+    let candidate_count = legal_actions.len().min(max_considered_actions);
     if candidate_count == 0 {
         return Vec::new();
     }
@@ -31,7 +28,7 @@ pub(crate) fn sample_root_candidates(
     let mut scored = legal_actions
         .iter()
         .map(|action| {
-            let gumbel = rng.next_gumbel();
+            let gumbel = gumbel_scale * rng.next_gumbel();
             RootCandidate {
                 action: *action,
                 log_prior: log_priors[*action],
@@ -83,8 +80,8 @@ mod tests {
         let legal = [0, 1, 2, 3, 4, 5];
         let log_priors = [0.0; ACTION_SPACE];
 
-        let left = sample_root_candidates(&legal, &log_priors, 4, 16, 123);
-        let right = sample_root_candidates(&legal, &log_priors, 4, 16, 123);
+        let left = sample_root_candidates(&legal, &log_priors, 4, 1.0, 123);
+        let right = sample_root_candidates(&legal, &log_priors, 4, 1.0, 123);
 
         assert_eq!(left, right);
     }
@@ -94,7 +91,7 @@ mod tests {
         let legal = [0, 1, 2, 3, 4, 5];
         let log_priors = [0.0; ACTION_SPACE];
 
-        let candidates = sample_root_candidates(&legal, &log_priors, 4, 16, 123);
+        let candidates = sample_root_candidates(&legal, &log_priors, 4, 1.0, 123);
         let unique_actions = candidates
             .iter()
             .map(|candidate| candidate.action)
@@ -105,17 +102,41 @@ mod tests {
     }
 
     #[test]
-    fn root_sampling_clamps_to_legal_and_simulation_counts() {
+    fn root_sampling_clamps_to_legal_and_max_considered_actions() {
         let legal = [0, 1, CENTER_INDEX];
         let log_priors = [0.0; ACTION_SPACE];
 
         assert_eq!(
-            sample_root_candidates(&legal, &log_priors, 16, 128, 1).len(),
+            sample_root_candidates(&legal, &log_priors, 16, 1.0, 1).len(),
             3
         );
         assert_eq!(
-            sample_root_candidates(&legal, &log_priors, 16, 2, 1).len(),
-            2
+            sample_root_candidates(&legal, &log_priors, 16, 1.0, 1).len(),
+            3
         );
+        assert_eq!(
+            sample_root_candidates(&[0, 1, 2, 3, 4, 5], &log_priors, 4, 1.0, 1).len(),
+            4
+        );
+    }
+
+    #[test]
+    fn zero_gumbel_scale_uses_prior_order_deterministically() {
+        let legal = [0, 1, 2];
+        let mut log_priors = [f32::NEG_INFINITY; ACTION_SPACE];
+        log_priors[0] = 0.2;
+        log_priors[1] = 1.0;
+        log_priors[2] = 0.5;
+
+        let candidates = sample_root_candidates(&legal, &log_priors, 2, 0.0, 123);
+
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.action)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert!(candidates.iter().all(|candidate| candidate.gumbel == 0.0));
     }
 }

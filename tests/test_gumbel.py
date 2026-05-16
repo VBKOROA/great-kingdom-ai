@@ -16,11 +16,16 @@ def test_gumbel_search_constructor_exposes_config() -> None:
 
     assert core.rayon_thread_count() >= 1
 
+    probe = core.GumbelSearch(**target_scale_kwargs())
+    if not hasattr(probe, "gumbel_scale"):
+        pytest.skip("installed great_kingdom_core does not expose gumbel_scale")
+
     search = core.GumbelSearch(
         simulations=32,
         max_considered_actions=8,
         c_visit=25.0,
         c_scale=1.5,
+        gumbel_scale=0.0,
         seed=123,
         policy_target_temperature=2.0,
         policy_target_c_visit=5.0,
@@ -31,6 +36,7 @@ def test_gumbel_search_constructor_exposes_config() -> None:
     assert search.max_considered_actions() == 8
     assert search.c_visit() == 25.0
     assert search.c_scale() == 1.5
+    assert search.gumbel_scale() == 0.0
     assert search.policy_target_c_visit() == 5.0
     assert search.policy_target_c_scale() == 0.25
     assert search.policy_target_temperature() == 2.0
@@ -53,6 +59,7 @@ def test_gumbel_search_constructor_exposes_config() -> None:
         ({"max_considered_actions": 0}, "max_considered_actions"),
         ({"c_visit": 0.0}, "c_visit"),
         ({"c_scale": -1.0}, "c_scale"),
+        ({"gumbel_scale": -1.0}, "gumbel_scale"),
         ({"policy_target_c_visit": 0.0}, "policy_target_c_visit"),
         ({"policy_target_c_scale": -1.0}, "policy_target_c_scale"),
         ({"policy_target_temperature": 0.0}, "policy_target_temperature"),
@@ -63,6 +70,11 @@ def test_gumbel_search_rejects_invalid_config(
     match: str,
 ) -> None:
     import great_kingdom_core as core  # type: ignore[import-untyped]
+
+    if "gumbel_scale" in kwargs and not hasattr(
+        core.GumbelSearch(**target_scale_kwargs()), "gumbel_scale"
+    ):
+        pytest.skip("installed great_kingdom_core does not expose gumbel_scale")
 
     with pytest.raises(ValueError, match=match):
         core.GumbelSearch(**{**target_scale_kwargs(), **kwargs})

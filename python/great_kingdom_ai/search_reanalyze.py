@@ -30,6 +30,7 @@ class SearchReanalyzeConfig:
     max_considered_actions: int = 16
     c_visit: float = 50.0
     c_scale: float = 1.0
+    gumbel_scale: float = 1.0
     policy_target_c_visit: float = 5.0
     policy_target_c_scale: float = 0.25
     policy_target_temperature: float = 1.0
@@ -65,6 +66,8 @@ class SearchReanalyzeConfig:
         ):
             if not math.isfinite(value) or value <= 0.0:
                 raise ValueError(f"search reanalyze {label} must be finite and positive")
+        if not math.isfinite(self.gumbel_scale) or self.gumbel_scale < 0.0:
+            raise ValueError("search reanalyze gumbel_scale must be finite and non-negative")
         if self.leaf_batch_size <= 0:
             raise ValueError("search reanalyze leaf_batch_size must be positive")
         if self.root_batch_size <= 0:
@@ -388,6 +391,7 @@ def _reconstruct_batch(
             c_visit=config.c_visit,
             c_scale=config.c_scale,
             seed=config.seed + min(ref.row_index for ref in refs),
+            gumbel_scale=config.gumbel_scale,
             policy_target_temperature=config.policy_target_temperature,
             policy_target_c_visit=config.policy_target_c_visit,
             policy_target_c_scale=config.policy_target_c_scale,
@@ -399,6 +403,7 @@ def _reconstruct_batch(
         c_visit=config.c_visit,
         c_scale=config.c_scale,
         seed=config.seed + min(ref.row_index for ref in refs),
+        gumbel_scale=config.gumbel_scale,
         policy_target_temperature=config.policy_target_temperature,
         policy_target_c_visit=config.policy_target_c_visit,
         policy_target_c_scale=config.policy_target_c_scale,
@@ -490,6 +495,7 @@ def _create_search(core: Any, config: SearchReanalyzeConfig, *, seed_offset: int
         c_visit=config.c_visit,
         c_scale=config.c_scale,
         seed=config.seed + seed_offset,
+        gumbel_scale=config.gumbel_scale,
         policy_target_temperature=config.policy_target_temperature,
         policy_target_c_visit=config.policy_target_c_visit,
         policy_target_c_scale=config.policy_target_c_scale,
