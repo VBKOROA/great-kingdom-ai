@@ -75,3 +75,27 @@ def test_load_replay_records_can_group_by_model_version(tmp_path: Path) -> None:
             **module.summarize_records([records[1]]),
         },
     ]
+
+
+def test_explicit_replay_takes_precedence_over_work_dir_logs(tmp_path: Path) -> None:
+    work_dir = tmp_path / "work"
+    log_path = work_dir / "replay" / "game_logs.jsonl"
+    log_path.parent.mkdir(parents=True)
+    log_path.write_text(json.dumps({"winner": 1}), encoding="utf-8")
+    replay_path = tmp_path / "trajectory-replay.npz"
+    np.savez(
+        replay_path,
+        episode_winners=np.asarray([2], dtype=np.int64),
+        episode_offsets=np.asarray([0, 1], dtype=np.int64),
+        territory_scores=np.asarray([[0, 1]], dtype=np.int64),
+        model_versions=np.asarray([9], dtype=np.int64),
+        created_iterations=np.asarray([90], dtype=np.int64),
+    )
+    args = module.build_parser().parse_args(
+        ["--work-dir", str(work_dir), "--replay", str(replay_path)]
+    )
+
+    records, sources = module.load_records_from_args(args)
+
+    assert sources == [str(replay_path)]
+    assert [record.winner for record in records] == [2]

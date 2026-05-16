@@ -103,6 +103,11 @@ def load_records_from_args(args: argparse.Namespace) -> tuple[list[GameRecord], 
         sources.extend(args.game_logs)
         return load_game_log_records(sources), [str(path) for path in sources]
 
+    if args.replay is not None:
+        if not args.replay.is_file():
+            raise FileNotFoundError(f"replay does not exist: {args.replay}")
+        return load_replay_records(args.replay), [str(args.replay)]
+
     aggregate_logs = args.work_dir / "replay" / "game_logs.jsonl"
     if aggregate_logs.is_file():
         sources.append(aggregate_logs)
@@ -114,7 +119,7 @@ def load_records_from_args(args: argparse.Namespace) -> tuple[list[GameRecord], 
             sources.extend(shard_logs)
             return load_game_log_records(sources), [str(path) for path in sources]
 
-    replay_path = args.replay or args.work_dir / "replay" / "trajectory-replay.npz"
+    replay_path = args.work_dir / "replay" / "trajectory-replay.npz"
     if replay_path.is_file():
         return load_replay_records(replay_path), [str(replay_path)]
 
