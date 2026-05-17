@@ -1,20 +1,18 @@
-import random
 from dataclasses import dataclass
 from pathlib import Path
 
-import great_kingdom_ai.trajectory_replay as trajectory_module
+import great_kingdom_ai.replay.trajectory as trajectory_module
 import numpy as np
 import pytest
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS, PASS_ACTION
-from great_kingdom_ai.replay_buffer import ReplaySample
-from great_kingdom_ai.trajectory_replay import (
+from great_kingdom_ai.replay import (
     TrajectoryEpisode,
-    TrajectoryReplayBuffer,
     TrajectoryReplayStore,
     TrajectoryTransition,
     legal_mask_from_features,
     trajectory_episode_from_self_play_result,
 )
+from great_kingdom_ai.replay_buffer import ReplaySample
 from great_kingdom_ai.trajectory_targets import (
     BootstrapValueTargetConfig,
     bootstrap_value_target_for_transition,
@@ -116,23 +114,23 @@ def make_episode(
     )
 
 
-def test_trajectory_replay_saves_loads_and_samples_deterministically(tmp_path: Path) -> None:
+def test_trajectory_replay_store_saves_loads_and_refs_rows(tmp_path: Path) -> None:
     path = tmp_path / "trajectory-replay.npz"
-    replay = TrajectoryReplayBuffer(capacity=8)
-    replay.push_episode(make_episode(0, actions=[1, 2]))
-    replay.push_episode(make_episode(1, actions=[3, PASS_ACTION], winner=2))
+    replay = TrajectoryReplayStore.from_episodes(
+        8,
+        (
+            make_episode(0, actions=[1, 2]),
+            make_episode(1, actions=[3, PASS_ACTION], winner=2),
+        ),
+    )
 
     replay.save(path)
-    loaded = TrajectoryReplayBuffer.load(path)
-
-    batch = loaded.sample(3, random.Random(7))
-    reloaded_batch = TrajectoryReplayBuffer.load(path).sample(3, random.Random(7))
+    loaded = TrajectoryReplayStore.load(path)
+    refs = loaded.transition_refs([2, 0, 3])
 
     assert len(loaded) == 4
     assert loaded.episode_count == 2
-    assert [(item.episode_id, item.timestep) for item in batch] == [
-        (item.episode_id, item.timestep) for item in reloaded_batch
-    ]
+    assert [(episode.episode_id, index) for episode, index in refs] == [(1, 0), (0, 0), (1, 1)]
 
 
 def test_trajectory_replay_save_load_preserves_optional_transition_metadata(
@@ -140,20 +138,22 @@ def test_trajectory_replay_save_load_preserves_optional_transition_metadata(
 ) -> None:
     path = tmp_path / "trajectory-replay.npz"
     transition = make_transition(with_metadata=True)
-    replay = TrajectoryReplayBuffer(capacity=4)
-    replay.push_episode(
-        TrajectoryEpisode(
-            episode_id=0,
-            seed=10,
-            transitions=(transition,),
-            winner=1,
-            end_reason=1,
-            territory_scores=(3, 1),
-        )
+    replay = TrajectoryReplayStore.from_episodes(
+        4,
+        (
+            TrajectoryEpisode(
+                episode_id=0,
+                seed=10,
+                transitions=(transition,),
+                winner=1,
+                end_reason=1,
+                territory_scores=(3, 1),
+            ),
+        ),
     )
 
     replay.save(path)
-    loaded = TrajectoryReplayBuffer.load(path)
+    loaded = TrajectoryReplayStore.load(path)
     loaded_transition = loaded.transitions()[0]
 
     with np.load(path) as data:
@@ -171,9 +171,13 @@ def test_trajectory_replay_save_load_preserves_optional_transition_metadata(
 
 
 def test_trajectory_replay_payload_loader_reads_arrays_once_per_key() -> None:
-    replay = TrajectoryReplayBuffer(capacity=8)
-    replay.push_episode(make_episode(0, actions=[1, 2]))
-    replay.push_episode(make_episode(1, actions=[3, PASS_ACTION], winner=2))
+    replay = TrajectoryReplayStore.from_episodes(
+        8,
+        (
+            make_episode(0, actions=[1, 2]),
+            make_episode(1, actions=[3, PASS_ACTION], winner=2),
+        ),
+    )
     payload = trajectory_module._episodes_to_payload(replay.capacity, replay.episodes)
 
     class CountingPayload:
@@ -197,7 +201,7 @@ def test_trajectory_replay_payload_loader_reads_arrays_once_per_key() -> None:
     assert data.counts["timesteps"] == 2
 
 
-def test_trajectory_replay_store_extends_evicts_and_remains_buffer_compatible(
+def test_trajectory_replay_store_extends_evicts_and_preserves_schema(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "trajectory-replay.npz"
@@ -207,34 +211,21 @@ def test_trajectory_replay_store_extends_evicts_and_remains_buffer_compatible(
     store.extend_episodes([make_episode(1, actions=[3, PASS_ACTION], winner=2)])
     store.save(path, compressed=False)
     loaded_store = TrajectoryReplayStore.load(path)
-    loaded_buffer = TrajectoryReplayBuffer.load(path)
 
     assert len(loaded_store) == 2
     assert loaded_store.episode_ids.tolist() == [1]
     assert loaded_store.features.shape == (2, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
-    assert loaded_buffer.episode_count == 1
-    assert [episode.episode_id for episode in loaded_buffer.episodes] == [1]
+    assert loaded_store.episode_count == 1
+    assert [episode.episode_id for episode in loaded_store.episodes] == [1]
 
 
 def test_trajectory_replay_capacity_evicts_whole_old_episodes() -> None:
-    replay = TrajectoryReplayBuffer(capacity=3)
-    replay.push_episode(make_episode(0, actions=[1, 2]))
-    replay.push_episode(make_episode(1, actions=[3, PASS_ACTION]))
+    replay = TrajectoryReplayStore.empty(capacity=3)
+    replay.extend_episodes([make_episode(0, actions=[1, 2])])
+    replay.extend_episodes([make_episode(1, actions=[3, PASS_ACTION])])
 
     assert len(replay) == 2
     assert [episode.episode_id for episode in replay.episodes] == [1]
-
-
-def test_trajectory_replay_legacy_replay_sample_view() -> None:
-    replay = TrajectoryReplayBuffer(capacity=4)
-    replay.push_episode(make_episode(0, actions=[5, PASS_ACTION], winner=2))
-
-    samples = replay.sample_replay_samples(2, random.Random(0))
-    as_replay_buffer = replay.as_replay_buffer()
-
-    assert {sample.value for sample in samples} == {-1.0, 1.0}
-    assert len(as_replay_buffer) == 2
-    assert as_replay_buffer.sample(1, random.Random(0))[0].policy.shape == (ACTION_SPACE,)
 
 
 def test_bootstrap_value_target_uses_future_root_value_from_sample_player_perspective() -> None:
@@ -283,32 +274,6 @@ def test_bootstrap_value_target_requires_future_root_value() -> None:
 
     with pytest.raises(ValueError, match="root_value"):
         bootstrap_value_target_for_transition(episode, 0, config)
-
-
-def test_trajectory_replay_bootstrap_replay_sample_view() -> None:
-    replay = TrajectoryReplayBuffer(capacity=4)
-    replay.push_episode(
-        make_episode(
-            0,
-            actions=[1, 2, 3, PASS_ACTION],
-            root_values=[None, 0.25, 0.4, None],
-        )
-    )
-    config = BootstrapValueTargetConfig(bootstrap_td_steps=1)
-
-    samples = replay.sample_replay_samples(
-        4,
-        random.Random(0),
-        value_target_config=config,
-    )
-    as_replay_buffer = replay.as_replay_buffer(value_target_config=config)
-
-    assert sorted(sample.value for sample in samples) == pytest.approx(
-        [-1.0, -0.4, -0.25, 1.0]
-    )
-    assert sorted(
-        sample.value for sample in as_replay_buffer.sample(4, random.Random(0))
-    ) == pytest.approx([-1.0, -0.4, -0.25, 1.0])
 
 
 def test_build_trajectory_episode_from_self_play_result() -> None:

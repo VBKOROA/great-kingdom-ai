@@ -1,76 +1,28 @@
-"""Trajectory replay storage and legacy replay compatibility views."""
+"""Array-backed trajectory replay storage."""
 
 from __future__ import annotations
 
-import random
-from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any
 
 import numpy as np
 
 from great_kingdom_ai.features import (
     ACTION_SPACE,
     BOARD_CELLS,
-    BOARD_SIZE,
-    FEATURE_CHANNELS,
     LEGAL_PLACE_FEATURE_CHANNEL,
     PASS_ACTION,
 )
-from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
-from great_kingdom_ai.trajectory_targets import (
-    BootstrapValueTargetConfig,
-    replay_sample_from_episode_transition,
-    replay_sample_from_transition,
+from great_kingdom_ai.replay.persistence import save_npz_atomic
+from great_kingdom_ai.replay.schema import (
+    FEATURE_SHAPE,
+    GameLogLike,
+    TrajectoryEpisode,
+    TrajectoryTransition,
 )
-
-FEATURE_SHAPE = (FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
-
-
-class MoveLike(Protocol):
-    turn: int
-    player: int
-    action: int
-
-
-class GameLogLike(Protocol):
-    seed: int
-    moves: Sequence[MoveLike]
-    winner: int
-    end_reason: int
-    territory_scores: tuple[int, int]
-
-
-@dataclass(frozen=True)
-class TrajectoryTransition:
-    episode_id: int
-    timestep: int
-    player: int
-    features: np.ndarray
-    legal_mask: np.ndarray
-    action: int
-    policy_target: np.ndarray
-    root_policy_logits: np.ndarray | None = None
-    root_value: float | None = None
-    next_features: np.ndarray | None = None
-    winner: int | None = None
-    terminal: bool = False
-    model_version: int = 0
-    search_config_hash: str = ""
-    created_iteration: int = 0
-    sample_weight: float = 1.0
-
-
-@dataclass(frozen=True)
-class TrajectoryEpisode:
-    episode_id: int
-    seed: int
-    transitions: tuple[TrajectoryTransition, ...]
-    winner: int
-    end_reason: int
-    territory_scores: tuple[int, int]
+from great_kingdom_ai.replay_buffer import ReplaySample
 
 
 @dataclass
@@ -245,7 +197,7 @@ class TrajectoryReplayStore:
         destination = Path(path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         payload = self.to_payload()
-        _save_npz_atomic(destination, cast(dict[str, Any], payload), compressed=compressed)
+        save_npz_atomic(destination, payload, compressed=compressed)
 
     def to_payload(self) -> dict[str, np.ndarray]:
         payload: dict[str, np.ndarray] = {
@@ -311,145 +263,6 @@ class TrajectoryReplayStore:
             transition_index = row_index - int(self.episode_offsets[episode_index])
             refs.append((episode, transition_index))
         return refs
-
-
-class TrajectoryReplayBuffer:
-    """Fixed-capacity in-memory trajectory replay buffer.
-
-    Capacity is counted in transitions. When new episodes push the buffer over
-    capacity, whole oldest episodes are evicted so episode boundaries remain intact.
-    """
-
-    def __init__(self, capacity: int) -> None:
-        if capacity <= 0:
-            raise ValueError("capacity must be positive")
-        self._capacity = capacity
-        self._episodes: deque[TrajectoryEpisode] = deque()
-        self._transition_count = 0
-
-    @property
-    def capacity(self) -> int:
-        return self._capacity
-
-    @property
-    def episode_count(self) -> int:
-        return len(self._episodes)
-
-    @property
-    def episodes(self) -> tuple[TrajectoryEpisode, ...]:
-        return tuple(self._episodes)
-
-    def __len__(self) -> int:
-        return self._transition_count
-
-    def push_episode(self, episode: TrajectoryEpisode) -> None:
-        validated = _validated_episode(episode)
-        episode_size = len(validated.transitions)
-        if episode_size > self._capacity:
-            raise ValueError("episode transition count exceeds replay capacity")
-
-        self._episodes.append(validated)
-        self._transition_count += episode_size
-        while self._transition_count > self._capacity:
-            removed = self._episodes.popleft()
-            self._transition_count -= len(removed.transitions)
-
-    def extend_episodes(self, episodes: Sequence[TrajectoryEpisode]) -> None:
-        for episode in episodes:
-            self.push_episode(episode)
-
-    def sample(self, batch_size: int, rng: random.Random) -> list[TrajectoryTransition]:
-        if batch_size <= 0:
-            raise ValueError("batch_size must be positive")
-        transitions = self.transitions()
-        if batch_size > len(transitions):
-            raise ValueError("batch_size exceeds trajectory replay size")
-        indexes = rng.sample(range(len(transitions)), batch_size)
-        return [transitions[index] for index in indexes]
-
-    def sample_replay_samples(
-        self,
-        batch_size: int,
-        rng: random.Random,
-        *,
-        value_target_config: BootstrapValueTargetConfig | None = None,
-    ) -> list[ReplaySample]:
-        if value_target_config is None:
-            return [
-                replay_sample_from_transition(transition)
-                for transition in self.sample(batch_size, rng)
-            ]
-        refs = self._sample_transition_refs(batch_size, rng)
-        return [
-            replay_sample_from_episode_transition(
-                episode,
-                transition_index,
-                value_target_config=value_target_config,
-            )
-            for episode, transition_index in refs
-        ]
-
-    def transitions(self) -> list[TrajectoryTransition]:
-        return [
-            transition
-            for episode in self._episodes
-            for transition in episode.transitions
-        ]
-
-    def as_replay_buffer(
-        self,
-        *,
-        capacity: int | None = None,
-        value_target_config: BootstrapValueTargetConfig | None = None,
-    ) -> ReplayBuffer:
-        replay = ReplayBuffer(capacity=capacity or max(1, len(self)))
-        if value_target_config is None:
-            for transition in self.transitions():
-                replay.push(replay_sample_from_transition(transition))
-            return replay
-        for episode in self._episodes:
-            for transition_index in range(len(episode.transitions)):
-                replay.push(
-                    replay_sample_from_episode_transition(
-                        episode,
-                        transition_index,
-                        value_target_config=value_target_config,
-                    )
-                )
-        return replay
-
-    def save(self, path: str | Path, *, compressed: bool = True) -> None:
-        destination = Path(path)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        payload = _episodes_to_payload(self._capacity, list(self._episodes))
-        _save_npz_atomic(destination, cast(dict[str, Any], payload), compressed=compressed)
-
-    def _sample_transition_refs(
-        self,
-        batch_size: int,
-        rng: random.Random,
-    ) -> list[tuple[TrajectoryEpisode, int]]:
-        if batch_size <= 0:
-            raise ValueError("batch_size must be positive")
-        refs = [
-            (episode, transition_index)
-            for episode in self._episodes
-            for transition_index in range(len(episode.transitions))
-        ]
-        if batch_size > len(refs):
-            raise ValueError("batch_size exceeds trajectory replay size")
-        indexes = rng.sample(range(len(refs)), batch_size)
-        return [refs[index] for index in indexes]
-
-    @classmethod
-    def load(cls, path: str | Path) -> TrajectoryReplayBuffer:
-        with np.load(Path(path)) as data:
-            capacity = int(data["capacity"])
-            episodes = _episodes_from_payload(data)
-
-        buffer = cls(capacity)
-        buffer.extend_episodes(episodes)
-        return buffer
 
 
 def trajectory_episode_from_self_play_result(
@@ -954,26 +767,26 @@ def _load_search_config_hash_encoding(
     transition_count: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     if "search_config_hash_ids" in data and "search_config_hash_table" in data:
-        table = np.asarray(data["search_config_hash_table"], dtype=np.str_)
+        encoded_table = np.asarray(data["search_config_hash_table"], dtype=np.str_)
         ids = np.asarray(data["search_config_hash_ids"], dtype=np.int64)
         if ids.shape != (transition_count,):
             raise ValueError("trajectory replay search_config_hash_ids length mismatch")
-        if np.any(ids < 0) or np.any(ids >= len(table)):
+        if np.any(ids < 0) or np.any(ids >= len(encoded_table)):
             raise ValueError("trajectory replay search_config_hash_ids contain invalid indexes")
-        return table, ids
+        return encoded_table, ids
     hashes = np.asarray(data["search_config_hashes"], dtype=np.str_)
-    table: list[str] = []
+    hash_table: list[str] = []
     indexes: dict[str, int] = {}
     ids = np.empty((transition_count,), dtype=np.int64)
     for row, value in enumerate(hashes):
         key = str(value)
         index = indexes.get(key)
         if index is None:
-            index = len(table)
+            index = len(hash_table)
             indexes[key] = index
-            table.append(key)
+            hash_table.append(key)
         ids[row] = index
-    return np.asarray(table, dtype=np.str_), ids
+    return np.asarray(hash_table, dtype=np.str_), ids
 
 
 def _decode_search_config_hashes(table: np.ndarray, ids: np.ndarray) -> list[str]:
@@ -1043,23 +856,6 @@ def _load_optional_array(
     if present.shape != (shape[0],):
         raise ValueError(f"trajectory replay {key}_present length mismatch")
     return values, present
-
-
-def _save_npz_atomic(
-    destination: Path,
-    payload: dict[str, Any],
-    *,
-    compressed: bool,
-) -> None:
-    temporary = destination.with_name(f"{destination.name}.tmp")
-    save = np.savez_compressed if compressed else np.savez
-    try:
-        with temporary.open("wb") as file:
-            save(file, **payload)
-        temporary.replace(destination)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
 
 
 def _validate_payload_lengths(data: Any, transition_count: int) -> None:

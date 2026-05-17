@@ -27,10 +27,10 @@ from great_kingdom_ai.reanalyze import (
     _evaluate_policy_logits_values_with_onnx,
     _sample_indexes,
 )
+from great_kingdom_ai.replay import TrajectoryReplayStore
 from great_kingdom_ai.replay_buffer import ReplaySample
 from great_kingdom_ai.search_reanalyze import refresh_sampled_policies_with_search
 from great_kingdom_ai.self_play_data import value_target_for_player
-from great_kingdom_ai.trajectory_replay import TrajectoryReplayStore
 
 
 @dataclass(frozen=True)

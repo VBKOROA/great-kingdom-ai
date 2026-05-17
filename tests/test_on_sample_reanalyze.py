@@ -15,19 +15,18 @@ from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.on_sample_reanalyze import OnSampleReanalyzeDataset
 from great_kingdom_ai.priority_sampling import PrioritySampleResult, PrioritySamplingConfig
 from great_kingdom_ai.reanalyze import ReanalyzeConfig, build_reanalyze_snapshot_from_store
+from great_kingdom_ai.replay import (
+    TrajectoryEpisode,
+    TrajectoryReplayStore,
+    TrajectoryTransition,
+    legal_mask_from_features,
+)
 from great_kingdom_ai.search_reanalyze import SearchReanalyzeConfig, SearchReanalyzeResult
 from great_kingdom_ai.train import (
     TrainingConfig,
     _sample_training_batch,
     create_train_state,
     save_checkpoint,
-)
-from great_kingdom_ai.trajectory_replay import (
-    TrajectoryEpisode,
-    TrajectoryReplayBuffer,
-    TrajectoryReplayStore,
-    TrajectoryTransition,
-    legal_mask_from_features,
 )
 
 _torch_spec = importlib.util.find_spec("torch")
@@ -122,15 +121,16 @@ def make_store(
     model_versions: tuple[int, ...] = (10, 10, 10),
     created_iterations: tuple[int, ...] = (3, 3, 3),
 ) -> TrajectoryReplayStore:
-    replay = TrajectoryReplayBuffer(capacity=8)
-    replay.push_episode(
-        make_episode(
-            sample_weights=sample_weights,
-            model_versions=model_versions,
-            created_iterations=created_iterations,
-        )
+    return TrajectoryReplayStore.from_episodes(
+        8,
+        (
+            make_episode(
+                sample_weights=sample_weights,
+                model_versions=model_versions,
+                created_iterations=created_iterations,
+            ),
+        ),
     )
-    return TrajectoryReplayStore.from_episodes(replay.capacity, replay.episodes)
 
 
 def make_mixed_episode_store() -> TrajectoryReplayStore:

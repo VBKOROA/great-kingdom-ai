@@ -12,7 +12,7 @@ from typing import Any, Literal, NoReturn
 
 import numpy as np
 
-from great_kingdom_ai.trajectory_replay import TrajectoryReplayStore
+from great_kingdom_ai.replay import TrajectoryReplayStore
 
 DEFAULT_REPLAY = Path("data/runpod/train-v2-gumbel-512k/replay/trajectory-replay.npz")
 

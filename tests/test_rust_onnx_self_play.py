@@ -5,9 +5,9 @@ from pathlib import Path
 import great_kingdom_ai.rust_onnx_self_play as rust_self_play_module
 import numpy as np
 from great_kingdom_ai.features import ACTION_SPACE, FEATURE_CHANNELS, PASS_ACTION
+from great_kingdom_ai.replay import TrajectoryReplayStore
 from great_kingdom_ai.rust_onnx_self_play import RustOnnxSelfPlayConfig
 from great_kingdom_ai.self_play import SelfPlayConfig
-from great_kingdom_ai.trajectory_replay import TrajectoryReplayStore
 
 
 class FakeGumbelResult:

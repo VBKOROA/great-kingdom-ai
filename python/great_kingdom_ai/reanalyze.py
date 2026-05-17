@@ -22,18 +22,14 @@ from great_kingdom_ai.priority_sampling import (
     priority_scores,
     sample_priority_indexes,
 )
-from great_kingdom_ai.replay_buffer import FEATURE_SHAPE, ReplaySample
+from great_kingdom_ai.replay import FEATURE_SHAPE, TrajectoryEpisode, TrajectoryReplayStore
+from great_kingdom_ai.replay_buffer import ReplaySample
 from great_kingdom_ai.search_reanalyze import (
     SearchReanalyzeConfig,
     refresh_policies_with_search,
     refresh_sampled_policies_with_search,
 )
 from great_kingdom_ai.self_play_data import value_target_for_player
-from great_kingdom_ai.trajectory_replay import (
-    TrajectoryEpisode,
-    TrajectoryReplayBuffer,
-    TrajectoryReplayStore,
-)
 
 SNAPSHOT_FORMAT = "reanalyze-target-v1"
 ReanalyzeProgressCallback = Callable[[str, int, int, str], None]
@@ -342,9 +338,9 @@ def reanalyze_replay(
 ) -> ReanalyzeSummary:
     resolved_config = config if config is not None else ReanalyzeConfig()
     _report_progress(progress_callback, "load", 0, 1, f"replay={replay_path}")
-    replay = TrajectoryReplayBuffer.load(replay_path)
+    replay = TrajectoryReplayStore.load(replay_path)
     _report_progress(progress_callback, "load", 1, 1, f"transitions={len(replay)}")
-    snapshot = build_reanalyze_snapshot(
+    snapshot = build_reanalyze_snapshot_from_store(
         replay,
         checkpoint_path=checkpoint_path,
         config=resolved_config,
@@ -537,14 +533,14 @@ def build_reanalyze_snapshot_from_store(
 
 
 def build_reanalyze_snapshot(
-    replay: TrajectoryReplayBuffer,
+    replay: TrajectoryReplayStore,
     *,
     checkpoint_path: str | Path,
     config: ReanalyzeConfig,
     progress_callback: ReanalyzeProgressCallback | None = None,
 ) -> ReanalyzeTargetSnapshot:
     return build_reanalyze_snapshot_from_store(
-        TrajectoryReplayStore.from_episodes(replay.capacity, replay.episodes),
+        replay,
         checkpoint_path=checkpoint_path,
         config=config,
         progress_callback=progress_callback,

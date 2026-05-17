@@ -10,14 +10,14 @@ from typing import Any, cast
 import numpy as np
 
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
-from great_kingdom_ai.replay_buffer import ReplaySample
-from great_kingdom_ai.self_play import GameLog, MoveLog, SelfPlayConfig
-from great_kingdom_ai.self_play_data import value_target_for_player
-from great_kingdom_ai.trajectory_replay import (
+from great_kingdom_ai.replay import (
     TrajectoryEpisode,
     TrajectoryTransition,
     legal_mask_from_features,
 )
+from great_kingdom_ai.replay_buffer import ReplaySample
+from great_kingdom_ai.self_play import GameLog, MoveLog, SelfPlayConfig
+from great_kingdom_ai.self_play_data import value_target_for_player
 
 
 @dataclass(frozen=True)

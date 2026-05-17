@@ -22,7 +22,7 @@ from great_kingdom_ai.augmentation import (
 from great_kingdom_ai.features import BOARD_CELLS, LEGAL_PLACE_FEATURE_CHANNEL, PASS_ACTION
 from great_kingdom_ai.learner_prefetch import PrefetchIterator
 from great_kingdom_ai.priority_sampling import PrioritySamplingConfig
-from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
+from great_kingdom_ai.replay_buffer import ReplaySample
 
 if TYPE_CHECKING:
     import torch
@@ -1113,10 +1113,11 @@ def load_training_replay(path: str | Path) -> ReplayDataset:
         ReanalyzeTargetSnapshot,
         is_reanalyze_target_snapshot,
     )
+    from great_kingdom_ai.replay import TrajectoryReplayDataset, TrajectoryReplayStore
 
     if is_reanalyze_target_snapshot(path):
         return ReanalyzeTargetSnapshot.load(path)
-    return ReplayBuffer.load(path)
+    return TrajectoryReplayDataset(TrajectoryReplayStore.load(path))
 
 
 def main() -> NoReturn:

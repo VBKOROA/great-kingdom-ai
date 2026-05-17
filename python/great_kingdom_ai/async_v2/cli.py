@@ -47,10 +47,9 @@ from great_kingdom_ai.async_v2.paths import (
 )
 from great_kingdom_ai.onnx_export import export_checkpoint_to_onnx
 from great_kingdom_ai.pipeline_printer import PipelinePrinter
+from great_kingdom_ai.replay import TrajectoryReplayDataset, TrajectoryReplayStore
 from great_kingdom_ai.self_play import SelfPlayConfig
 from great_kingdom_ai.train import TrainingConfig, load_training_config, train_from_replay
-from great_kingdom_ai.trajectory_dataset import TrajectoryReplayDataset
-from great_kingdom_ai.trajectory_replay import TrajectoryReplayStore
 
 
 def build_actor_v2_parser() -> argparse.ArgumentParser:

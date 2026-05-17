@@ -17,13 +17,13 @@ from great_kingdom_ai.async_v2.metadata import (
 )
 from great_kingdom_ai.async_v2.paths import _paths
 from great_kingdom_ai.pipeline_printer import PipelinePrinter
+from great_kingdom_ai.replay import TrajectoryEpisode, TrajectoryReplayStore
 from great_kingdom_ai.rust_onnx_self_play import (
     RustOnnxSelfPlayConfig,
     RustSelfPlayRunSummary,
     run_rust_onnx_self_play,
 )
 from great_kingdom_ai.self_play import GameLog
-from great_kingdom_ai.trajectory_replay import TrajectoryEpisode, TrajectoryReplayStore
 
 
 def run_actor_v2_once(

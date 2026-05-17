@@ -13,7 +13,7 @@ import numpy as np
 from great_kingdom_ai.evaluator import evaluate_feature_batch_logits_values
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.priority_sampling import PrioritySamplingConfig, priority_scores
-from great_kingdom_ai.trajectory_replay import TrajectoryEpisode, TrajectoryTransition
+from great_kingdom_ai.replay import TrajectoryEpisode, TrajectoryTransition
 
 SearchReanalyzeProgressCallback = Callable[[str, int, int, str], None]
 

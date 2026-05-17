@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
 
 import numpy as np
-from great_kingdom_ai.trajectory_replay import TrajectoryReplayStore
+from great_kingdom_ai.replay import TrajectoryReplayStore
 
 if TYPE_CHECKING:
     from great_kingdom_ai.model import PolicyValueNetwork

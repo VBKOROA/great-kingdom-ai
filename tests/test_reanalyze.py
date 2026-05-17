@@ -21,19 +21,18 @@ from great_kingdom_ai.reanalyze import (
     build_reanalyze_snapshot_from_store,
     is_reanalyze_target_snapshot,
 )
+from great_kingdom_ai.replay import (
+    TrajectoryEpisode,
+    TrajectoryReplayStore,
+    TrajectoryTransition,
+    legal_mask_from_features,
+)
 from great_kingdom_ai.search_reanalyze import select_search_reanalyze_indexes
 from great_kingdom_ai.train import (
     TrainingConfig,
     create_train_state,
     load_training_replay,
     save_checkpoint,
-)
-from great_kingdom_ai.trajectory_replay import (
-    TrajectoryEpisode,
-    TrajectoryReplayBuffer,
-    TrajectoryReplayStore,
-    TrajectoryTransition,
-    legal_mask_from_features,
 )
 
 _torch_spec = importlib.util.find_spec("torch")
@@ -178,9 +177,7 @@ def test_dynamic_horizon_changes_bootstrap_target_for_stale_store_rows() -> None
 
 @pytest.mark.skipif(_torch_spec is None, reason="torch is not installed")
 def test_on_sample_reanalyze_matches_snapshot_bootstrap_values(tmp_path: Path) -> None:
-    replay = TrajectoryReplayBuffer(capacity=8)
-    replay.push_episode(make_episode())
-    store = TrajectoryReplayStore.from_episodes(replay.capacity, replay.episodes)
+    store = TrajectoryReplayStore.from_episodes(8, (make_episode(),))
     state = create_train_state(TrainingConfig(batch_size=2, seed=9))
     checkpoint = save_checkpoint(state, tmp_path / "checkpoint.pt")
     config = ReanalyzeConfig(batch_size=2, bootstrap_td_steps=1, gamma=0.5)
@@ -210,9 +207,7 @@ def test_on_sample_reanalyze_refreshes_policy_targets_by_batch_ratio(
 ) -> None:
     from great_kingdom_ai.search_reanalyze import SearchReanalyzeResult
 
-    replay = TrajectoryReplayBuffer(capacity=8)
-    replay.push_episode(make_episode())
-    store = TrajectoryReplayStore.from_episodes(replay.capacity, replay.episodes)
+    store = TrajectoryReplayStore.from_episodes(8, (make_episode(),))
     state = create_train_state(TrainingConfig(batch_size=2, seed=9))
     checkpoint = save_checkpoint(state, tmp_path / "checkpoint.pt")
 
@@ -257,9 +252,7 @@ def test_on_sample_reanalyze_can_bootstrap_from_mcts_root_values(
 ) -> None:
     from great_kingdom_ai.search_reanalyze import SearchReanalyzeResult
 
-    replay = TrajectoryReplayBuffer(capacity=8)
-    replay.push_episode(make_episode())
-    store = TrajectoryReplayStore.from_episodes(replay.capacity, replay.episodes)
+    store = TrajectoryReplayStore.from_episodes(8, (make_episode(),))
     state = create_train_state(TrainingConfig(batch_size=2, seed=9))
     checkpoint = save_checkpoint(state, tmp_path / "checkpoint.pt")
 
@@ -423,8 +416,7 @@ def test_reanalyze_target_snapshot_caches_priority_scores(
 def test_build_reanalyze_snapshot_refreshes_values_and_bootstrap_targets(
     tmp_path: Path,
 ) -> None:
-    replay = TrajectoryReplayBuffer(capacity=8)
-    replay.push_episode(make_episode())
+    replay = TrajectoryReplayStore.from_episodes(8, (make_episode(),))
     state = create_train_state(TrainingConfig(batch_size=2, seed=9))
     for parameter in state.model.parameters():
         parameter.data.zero_()
@@ -444,7 +436,7 @@ def test_build_reanalyze_snapshot_refreshes_values_and_bootstrap_targets(
         config=ReanalyzeConfig(batch_size=2, bootstrap_td_steps=1, gamma=1.0),
     )
     store_snapshot = build_reanalyze_snapshot_from_store(
-        TrajectoryReplayStore.from_episodes(replay.capacity, replay.episodes),
+        replay,
         checkpoint_path=checkpoint,
         config=ReanalyzeConfig(batch_size=2, bootstrap_td_steps=1, gamma=1.0),
     )
@@ -533,8 +525,7 @@ def test_build_reanalyze_snapshot_can_refresh_policy_targets_with_search(
         GumbelSelfPlayBatch = FakeBatch
 
     monkeypatch.setattr(search_reanalyze, "_import_core", lambda: FakeCore)
-    replay = TrajectoryReplayBuffer(capacity=8)
-    replay.push_episode(make_episode())
+    replay = TrajectoryReplayStore.from_episodes(8, (make_episode(),))
     state = create_train_state(TrainingConfig(batch_size=2, seed=9))
     checkpoint = save_checkpoint(state, tmp_path / "checkpoint.pt")
 

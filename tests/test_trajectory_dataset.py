@@ -6,9 +6,9 @@ import numpy as np
 import pytest
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS, PASS_ACTION
 from great_kingdom_ai.priority_sampling import PrioritySamplingConfig
-from great_kingdom_ai.trajectory_dataset import TrajectoryReplayDataset
-from great_kingdom_ai.trajectory_replay import (
+from great_kingdom_ai.replay import (
     TrajectoryEpisode,
+    TrajectoryReplayDataset,
     TrajectoryReplayStore,
     TrajectoryTransition,
     legal_mask_from_features,

@@ -1,17 +1,15 @@
-"""Compatibility targets for trajectory replay."""
+"""Value target helpers for trajectory replay episodes."""
 
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from great_kingdom_ai.replay_buffer import ReplaySample
 from great_kingdom_ai.self_play_data import value_target_for_player
 
 if TYPE_CHECKING:
-    from great_kingdom_ai.trajectory_replay import TrajectoryEpisode, TrajectoryTransition
+    from great_kingdom_ai.replay import TrajectoryEpisode, TrajectoryTransition
 
 
 @dataclass(frozen=True)
@@ -31,7 +29,7 @@ class BootstrapValueTargetConfig:
 def value_target_for_transition(transition: TrajectoryTransition) -> float:
     """Return the final-outcome value from a trajectory transition player's view."""
     if transition.winner is None:
-        raise ValueError("transition winner is required for replay-sample compatibility")
+        raise ValueError("transition winner is required for value target calculation")
     return value_target_for_player(player=transition.player, winner=transition.winner)
 
 
@@ -73,61 +71,6 @@ def value_target_for_episode_transition(
         transition = _episode_transition(episode, transition_index)
         return value_target_for_transition(transition)
     return bootstrap_value_target_for_transition(episode, transition_index, config)
-
-
-def replay_sample_from_transition(transition: TrajectoryTransition) -> ReplaySample:
-    """Convert one trajectory transition into the legacy independent sample format."""
-    return ReplaySample(
-        features=transition.features,
-        policy=transition.policy_target,
-        value=value_target_for_transition(transition),
-        root_policy_logits=transition.root_policy_logits,
-        sample_weight=transition.sample_weight,
-    )
-
-
-def replay_sample_from_episode_transition(
-    episode: TrajectoryEpisode,
-    transition_index: int,
-    *,
-    value_target_config: BootstrapValueTargetConfig | None = None,
-) -> ReplaySample:
-    """Convert one episode transition into a legacy sample with configured value target."""
-    transition = _episode_transition(episode, transition_index)
-    return ReplaySample(
-        features=transition.features,
-        policy=transition.policy_target,
-        value=value_target_for_episode_transition(
-            episode,
-            transition_index,
-            config=value_target_config,
-        ),
-        root_policy_logits=transition.root_policy_logits,
-        sample_weight=transition.sample_weight,
-    )
-
-
-def replay_samples_from_episode(
-    episode: TrajectoryEpisode,
-    *,
-    value_target_config: BootstrapValueTargetConfig | None = None,
-) -> list[ReplaySample]:
-    """Convert all transitions in one episode into legacy replay samples."""
-    return [
-        replay_sample_from_episode_transition(
-            episode,
-            index,
-            value_target_config=value_target_config,
-        )
-        for index in range(len(episode.transitions))
-    ]
-
-
-def replay_samples_from_transitions(
-    transitions: Iterable[TrajectoryTransition],
-) -> list[ReplaySample]:
-    """Convert sampled trajectory transitions into legacy replay samples."""
-    return [replay_sample_from_transition(transition) for transition in transitions]
 
 
 def _episode_transition(

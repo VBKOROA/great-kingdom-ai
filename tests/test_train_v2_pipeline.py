@@ -10,16 +10,15 @@ from great_kingdom_ai.evaluate import ArenaConfig
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS, PASS_ACTION
 from great_kingdom_ai.pipeline_printer import PipelinePrinter
 from great_kingdom_ai.reanalyze import ReanalyzeTargetSnapshot
-from great_kingdom_ai.rust_onnx_self_play import RustOnnxSelfPlayConfig, RustSelfPlayRunSummary
-from great_kingdom_ai.self_play import GameLog, MoveLog, SelfPlayConfig
-from great_kingdom_ai.train import TrainingConfig
-from great_kingdom_ai.trajectory_replay import (
+from great_kingdom_ai.replay import (
     TrajectoryEpisode,
-    TrajectoryReplayBuffer,
     TrajectoryReplayStore,
     TrajectoryTransition,
     legal_mask_from_features,
 )
+from great_kingdom_ai.rust_onnx_self_play import RustOnnxSelfPlayConfig, RustSelfPlayRunSummary
+from great_kingdom_ai.self_play import GameLog, MoveLog, SelfPlayConfig
+from great_kingdom_ai.train import TrainingConfig
 
 
 def make_features(action: int) -> np.ndarray:
@@ -235,7 +234,7 @@ def test_train_v2_pipeline_wires_trajectory_reanalyze_and_training(
         rust_self_play_runner=fake_runner,
     )
 
-    replay = TrajectoryReplayBuffer.load(tmp_path / "replay" / "trajectory-replay.npz")
+    replay = TrajectoryReplayStore.load(tmp_path / "replay" / "trajectory-replay.npz")
     assert len(replay) == 2
     assert summary.replay_transitions == 2
     assert summary.latest_target_snapshot_path == tmp_path / "targets" / "latest.npz"
