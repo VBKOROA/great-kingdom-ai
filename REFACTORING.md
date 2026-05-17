@@ -267,6 +267,111 @@ Python 경계가 안정된 뒤 Rust를 정리한다.
 - Python API surface는 async v2/self-play/arena에서 실제 쓰는 것만 남는다.
 - Rust unit/integration 테스트가 Gumbel search 핵심 동작을 커버한다.
 
+## 현재 상태
+
+2026-05-17 기준으로 Phase 1부터 Phase 6까지는 완료되어 커밋되어 있다.
+
+완료된 큰 작업:
+
+- `actor_learner_v2.py`를 `async_v2/` 패키지로 분리했다.
+- trajectory replay 저장 포맷을 `replay/` 패키지 중심으로 정리했다.
+- `train.py` 역할을 `training/` 패키지로 분리했다.
+- reanalyze evaluator/target public API를 분리해 private cross-module import를 제거했다.
+- self-play/arena Python 경계를 정리하고 Rust core adapter 공통 helper를 만들었다.
+- Rust Gumbel search의 PyO3 binding, root search helper, profiling 구조를 분리했다.
+
+아직 남은 작업은 새 구조 분리보다 legacy 제거와 최종 API 축소에 가깝다.
+
+### 남은 작업 1: ReplayBuffer legacy 제거
+
+`ReplayBuffer`는 아직 실험/fixture/보조 도구에 남아 있다.
+
+남은 주요 파일:
+
+- `python/great_kingdom_ai/replay_buffer.py`
+- `python/great_kingdom_ai/artifacts.py`
+- `python/great_kingdom_ai/single_batch_overfit.py`
+- `python/great_kingdom_ai/rust_onnx_replay.py`
+- `scripts/run_m8_train_smoke.py`
+- `tests/test_replay_buffer.py`
+- `tests/_training_helpers.py`
+
+정리 방향:
+
+- production 학습 경로에서 `ReplayBuffer.load()`와 `.npz` replay 저장/로드를 제거한다.
+- 테스트 fixture는 `ReplayDataset` protocol 또는 작은 trajectory fixture dataset으로 대체한다.
+- `ReplaySample`이 꼭 필요하면 test-only fixture 타입으로 좁힌다.
+
+### 남은 작업 2: aggregate/ablation 실험 코드 제거 또는 축소
+
+aggregate replay와 오래된 ablation 경로는 아직 남아 있다.
+
+남은 주요 파일:
+
+- `python/great_kingdom_ai/online_aggregate_replay.py`
+- `python/great_kingdom_ai/replay_aggregate.py`
+- `python/great_kingdom_ai/rust_onnx_replay.py`
+- `scripts/run_aggregate_replay_ablation.py`
+- `scripts/run_aggregate_weight_mode_comparison.py`
+- `scripts/run_fixed_replay_hparam_ablation.py`
+- `tests/test_online_aggregate_replay.py`
+- `tests/test_replay_aggregate.py`
+- `tests/test_rust_onnx_replay.py`
+- `tests/test_aggregate_weight_mode_comparison_script.py`
+
+정리 방향:
+
+- 현재 운영 의사결정에 쓰지 않는 ablation script는 삭제한다.
+- 남길 진단 도구는 `TrajectoryReplayStore`만 입력으로 받게 바꾼다.
+- `great-kingdom-aggregate-replay` entrypoint는 제거 후보로 둔다.
+
+### 남은 작업 3: 단일 train v2 pipeline 제거
+
+async v2가 주 실행 경로가 되었으므로 단일 pipeline 경로는 제거 대상이다.
+
+남은 주요 파일:
+
+- `python/great_kingdom_ai/train_v2_pipeline.py`
+- `tests/test_train_v2_pipeline.py`
+- `great-kingdom-train-v2` entrypoint
+
+정리 방향:
+
+- smoke 용도만 남아 있으면 `scripts/run_m*_smoke.py`에서 async v2 함수 조합으로 대체한다.
+- 과거 자동 promote 정책은 복구하지 않는다.
+- 삭제 후 깨지는 테스트가 단일 pipeline 전용이면 제거한다.
+
+### 남은 작업 4: entrypoint 최종 정리
+
+현재 최종 주 경로와 무관한 entrypoint가 일부 남아 있다.
+
+제거 후보:
+
+- `great-kingdom-aggregate-replay`
+- `great-kingdom-train-v2`
+
+유지 후보:
+
+- `great-kingdom-init-async-v2`
+- `great-kingdom-actor-v2`
+- `great-kingdom-learner-v2`
+- `great-kingdom-evaluate`
+- `great-kingdom-export-onnx`
+- `great-kingdom-replay-monitor-v2`
+- 현재 운영에 필요한 진단 명령
+
+### 남은 작업 5: 검증 debt 정리
+
+기능 테스트는 통과하지만 정적 검증 debt가 남아 있다.
+
+- `python -m pytest`: 통과
+- `python -m ruff check .`: 통과
+- `python -m mypy`: 기존 Python typing 오류 12개가 남아 있음
+- `cargo test`: 통과
+- `cargo clippy --all-targets -- -D warnings`: 기존 Rust clippy 경고로 실패
+
+최종 정리 전에 mypy와 clippy를 통과 상태로 만들지, 또는 별도 기준선으로 명시할지 결정한다.
+
 ## 삭제 순서
 
 삭제는 한 번에 크게 하지 않고, 각 phase 끝에서 작게 자른다.
