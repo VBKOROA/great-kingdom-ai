@@ -3,15 +3,12 @@ use rayon::prelude::*;
 
 use super::{
     config::GumbelConfig,
-    node::GumbelNode,
-    policy::{log_priors_from_logits, root_improved_policy_target, root_search_value},
     result::GumbelResult,
-    sampling::sample_root_candidates,
+    root::{RootSearchState, empty_result, start_root_search},
     search::{
         GumbelEvalBatch, GumbelSearch, PendingGumbelSimulation, backup_path,
-        parse_gumbel_eval_response, reserve_path, root_ranking_scores, unreserve_path,
+        parse_gumbel_eval_response, reserve_path, unreserve_path,
     },
-    sequential_halving::RootSequentialHalving,
 };
 use crate::{
     eval_request::EvalRequest,
@@ -357,11 +354,9 @@ impl GumbelArenaBatch {
             ));
         }
 
-        let mut root_indexes = vec![None; self.states.len()];
-        let mut root_legal_actions = vec![None; self.states.len()];
-        let mut root_log_priors = vec![None; self.states.len()];
-        let mut completed = vec![0_u32; self.states.len()];
-        let mut schedulers = vec![None; self.states.len()];
+        let mut roots: Vec<Option<RootSearchState>> = std::iter::repeat_with(|| None)
+            .take(self.states.len())
+            .collect();
 
         for (active_offset, (game_index, row)) in active_indexes
             .iter()
@@ -375,42 +370,17 @@ impl GumbelArenaBatch {
                     row.len()
                 )));
             }
-            let legal_actions = self.states[game_index].legal_action_indexes();
-            if legal_actions.is_empty() || self.states[game_index].is_terminal() {
-                continue;
-            }
-            let log_priors = log_priors_from_logits(&legal_actions, &row)?;
             let search = current_player_search_mut(
                 &mut self.searches[game_index],
                 &self.states[game_index],
             )?;
-            let candidates = sample_root_candidates(
-                &legal_actions,
-                &log_priors,
-                search.config.max_considered_actions,
-                search.config.gumbel_scale,
-                search.next_root_seed(),
-            );
-            if candidates.is_empty() {
-                continue;
-            }
-            search.nodes.clear();
-            let root_index = search.nodes.len();
-            search.nodes.push(GumbelNode::root_from_candidates(
+            roots[game_index] = start_root_search(
+                search,
                 &self.states[game_index],
-                &candidates,
+                &row,
+                true,
                 root_values[active_offset],
-            ));
-            root_indexes[game_index] = Some(root_index);
-            root_legal_actions[game_index] = Some(legal_actions);
-            root_log_priors[game_index] = Some(log_priors);
-            schedulers[game_index] = Some(RootSequentialHalving::new(
-                candidates
-                    .iter()
-                    .map(|candidate| (candidate.action, candidate.score))
-                    .collect(),
-                search.config.simulations,
-            ));
+            )?;
         }
 
         let mut wave = 0_u64;
@@ -419,7 +389,9 @@ impl GumbelArenaBatch {
             else {
                 return false;
             };
-            completed[*index] < search.config.simulations
+            roots[*index]
+                .as_ref()
+                .is_some_and(|root| root.has_remaining(search))
         }) {
             evaluator.check_signals()?;
             wave = wave.wrapping_add(1);
@@ -427,67 +399,56 @@ impl GumbelArenaBatch {
                 .states
                 .par_iter()
                 .zip(self.searches.par_iter_mut())
-                .zip(completed.par_iter_mut())
-                .zip(root_indexes.par_iter())
-                .zip(schedulers.par_iter_mut())
+                .zip(roots.par_iter_mut())
                 .enumerate()
-                .map(
-                    |(game_index, ((((state, search_pair), comp), root_index), scheduler))| {
-                        let Some(root_index) = *root_index else {
-                            return Vec::new();
+                .map(|(game_index, ((state, search_pair), root))| {
+                    let Some(root) = root.as_mut() else {
+                        return Vec::new();
+                    };
+                    let Some(search) = current_player_search_mut_or_none(search_pair, state) else {
+                        return Vec::new();
+                    };
+                    let batch_target = (search.config.simulations - root.completed)
+                        .min(leaf_batch_size as u32)
+                        as usize;
+                    let mut local_pending = Vec::with_capacity(batch_target);
+                    for _ in 0..batch_target {
+                        if root.completed + local_pending.len() as u32 >= search.config.simulations
+                        {
+                            break;
+                        }
+                        let Some(root_action) = root.scheduler.next_action() else {
+                            break;
                         };
-                        let Some(scheduler) = scheduler.as_mut() else {
-                            return Vec::new();
-                        };
-                        let Some(search) = current_player_search_mut_or_none(search_pair, state)
-                        else {
-                            return Vec::new();
-                        };
-                        let batch_target = (search.config.simulations - *comp)
-                            .min(leaf_batch_size as u32)
-                            as usize;
-                        let mut local_pending = Vec::with_capacity(batch_target);
-                        for _ in 0..batch_target {
-                            if *comp + local_pending.len() as u32 >= search.config.simulations {
-                                break;
-                            }
-                            let Some(root_action) = scheduler.next_action() else {
-                                break;
-                            };
-                            let mut simulation_state = state.clone();
-                            match search.select_eval_leaf(
-                                root_index,
-                                root_action,
-                                &mut simulation_state,
-                            ) {
-                                PendingGumbelSimulation::NeedsEvaluation {
+                        let mut simulation_state = state.clone();
+                        match search.select_eval_leaf(
+                            root.root_index,
+                            root_action,
+                            &mut simulation_state,
+                        ) {
+                            PendingGumbelSimulation::NeedsEvaluation {
+                                path,
+                                state: leaf_state,
+                            } => {
+                                reserve_path(&mut search.nodes, &path);
+                                root.scheduler.reserve_visit(root_action);
+                                local_pending.push(PendingArenaLeaf {
+                                    game_index,
                                     path,
                                     state: leaf_state,
-                                } => {
-                                    reserve_path(&mut search.nodes, &path);
-                                    scheduler.reserve_visit(root_action);
-                                    local_pending.push(PendingArenaLeaf {
-                                        game_index,
-                                        path,
-                                        state: leaf_state,
-                                    });
-                                }
-                                PendingGumbelSimulation::Terminal { path, value } => {
-                                    backup_path(&mut search.nodes, &path, value, false);
-                                    scheduler.reserve_visit(root_action);
-                                    scheduler.complete_reserved_visits(&root_ranking_scores(
-                                        &search.nodes[root_index],
-                                        search.config.c_visit,
-                                        search.config.c_scale,
-                                    ));
-                                    *comp += 1;
-                                }
-                                PendingGumbelSimulation::BlockedPending => break,
+                                });
                             }
+                            PendingGumbelSimulation::Terminal { path, value } => {
+                                backup_path(&mut search.nodes, &path, value, false);
+                                root.scheduler.reserve_visit(root_action);
+                                root.complete_reserved_visits(search);
+                                root.completed += 1;
+                            }
+                            PendingGumbelSimulation::BlockedPending => break,
                         }
-                        local_pending
-                    },
-                )
+                    }
+                    local_pending
+                })
                 .collect();
             let pending = pending_by_game.into_iter().flatten().collect::<Vec<_>>();
             if pending.is_empty() {
@@ -522,60 +483,40 @@ impl GumbelArenaBatch {
             self.searches
                 .par_iter_mut()
                 .zip(self.states.par_iter())
-                .zip(completed.par_iter_mut())
-                .zip(root_indexes.par_iter())
-                .zip(schedulers.par_iter_mut())
+                .zip(roots.par_iter_mut())
                 .zip(by_game.into_par_iter())
-                .try_for_each(
-                    |(((((search_pair, state), comp), root_index), scheduler), evaluations)| {
-                        let completed_count = evaluations.len() as u32;
-                        let Some(search) = current_player_search_mut_or_none(search_pair, state)
-                        else {
-                            if completed_count == 0 {
-                                return Ok(());
-                            }
-                            return Err("missing Gumbel search for current player".to_string());
-                        };
-                        for evaluation in evaluations {
-                            unreserve_path(&mut search.nodes, &evaluation.path);
-                            let child_index = search
-                                .expand_evaluated_node(
-                                    &evaluation.state,
-                                    &evaluation.policy_row,
-                                    evaluation.value,
-                                    true,
-                                )
-                                .map_err(|err| err.to_string())?;
-                            if let Some((parent_index, edge_index)) =
-                                evaluation.path.last().copied()
-                            {
-                                search.nodes[parent_index].edges[edge_index].child =
-                                    Some(child_index);
-                            }
-                            backup_path(
-                                &mut search.nodes,
-                                &evaluation.path,
+                .try_for_each(|(((search_pair, state), root), evaluations)| {
+                    let completed_count = evaluations.len() as u32;
+                    let Some(search) = current_player_search_mut_or_none(search_pair, state) else {
+                        if completed_count == 0 {
+                            return Ok(());
+                        }
+                        return Err("missing Gumbel search for current player".to_string());
+                    };
+                    for evaluation in evaluations {
+                        unreserve_path(&mut search.nodes, &evaluation.path);
+                        let child_index = search
+                            .expand_evaluated_node(
+                                &evaluation.state,
+                                &evaluation.policy_row,
                                 evaluation.value,
                                 true,
-                            );
+                            )
+                            .map_err(|err| err.to_string())?;
+                        if let Some((parent_index, edge_index)) = evaluation.path.last().copied() {
+                            search.nodes[parent_index].edges[edge_index].child = Some(child_index);
                         }
-                        if completed_count > 0 {
-                            let root_index = root_index.ok_or_else(|| {
-                                "missing Gumbel root index for completed evaluations".to_string()
-                            })?;
-                            let scheduler = scheduler.as_mut().ok_or_else(|| {
-                                "missing Gumbel scheduler for completed evaluations".to_string()
-                            })?;
-                            scheduler.complete_reserved_visits(&root_ranking_scores(
-                                &search.nodes[root_index],
-                                search.config.c_visit,
-                                search.config.c_scale,
-                            ));
-                        }
-                        *comp += completed_count;
-                        Ok::<(), String>(())
-                    },
-                )
+                        backup_path(&mut search.nodes, &evaluation.path, evaluation.value, true);
+                    }
+                    if completed_count > 0 {
+                        let root = root.as_mut().ok_or_else(|| {
+                            "missing Gumbel root index for completed evaluations".to_string()
+                        })?;
+                        root.complete_reserved_visits(search);
+                        root.completed += completed_count;
+                    }
+                    Ok::<(), String>(())
+                })
                 .map_err(|err| {
                     PyValueError::new_err(format!("failed to expand Gumbel evaluation: {err}"))
                 })?;
@@ -583,41 +524,14 @@ impl GumbelArenaBatch {
 
         let mut results = vec![None; self.states.len()];
         for game_index in active_indexes {
-            let Some(root_index) = root_indexes[game_index] else {
-                results[game_index] = Some(GumbelResult {
-                    selected_action: None,
-                    policy_target: [0.0; ACTION_SPACE],
-                    visit_counts: [0; ACTION_SPACE],
-                    root_value: 0.0,
-                });
+            let Some(root) = &roots[game_index] else {
+                results[game_index] = Some(empty_result());
                 continue;
             };
             let search =
                 current_player_search(&self.searches[game_index], &self.states[game_index])
                     .ok_or_else(|| PyValueError::new_err("invalid current player"))?;
-            let root = &search.nodes[root_index];
-            let legal_actions = root_legal_actions[game_index]
-                .as_deref()
-                .ok_or_else(|| PyValueError::new_err("missing Gumbel root legal actions"))?;
-            let log_priors = root_log_priors[game_index]
-                .as_ref()
-                .ok_or_else(|| PyValueError::new_err("missing Gumbel root log priors"))?;
-            let improved = root_improved_policy_target(
-                root,
-                legal_actions,
-                log_priors,
-                search.config.c_visit,
-                search.config.c_scale,
-                search.config.policy_target_c_visit,
-                search.config.policy_target_c_scale,
-                search.config.policy_target_temperature,
-            );
-            results[game_index] = Some(GumbelResult {
-                selected_action: improved.selected_action,
-                policy_target: improved.policy_target,
-                visit_counts: root.visit_counts(),
-                root_value: root_search_value(root),
-            });
+            results[game_index] = Some(root.finish(search));
         }
         Ok(results)
     }

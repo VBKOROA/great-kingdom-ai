@@ -3,11 +3,14 @@ mod batch;
 mod config;
 mod evaluator;
 mod result;
+mod root;
 mod search;
+mod search_bindings;
 
 mod debug;
 mod node;
 mod policy;
+mod profile;
 mod rng;
 mod sampling;
 mod selection;
