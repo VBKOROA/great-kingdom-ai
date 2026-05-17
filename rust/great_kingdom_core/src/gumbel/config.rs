@@ -75,6 +75,7 @@ impl GumbelConfig {
     }
 
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub const fn new_with_policy_target_config(
         simulations: u32,
         max_considered_actions: usize,
@@ -99,6 +100,7 @@ impl GumbelConfig {
     }
 
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub const fn new_with_full_config(
         simulations: u32,
         max_considered_actions: usize,
@@ -180,6 +182,7 @@ impl GumbelConfig {
         policy_target_c_visit = None,
         policy_target_c_scale = None
     ))]
+    #[allow(clippy::too_many_arguments)]
     pub fn py_new(
         simulations: u32,
         max_considered_actions: usize,

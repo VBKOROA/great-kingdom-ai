@@ -19,6 +19,8 @@ use crate::{
     onnx::OnnxEvaluator,
 };
 
+type SearchActiveWithRootLogits = (Vec<Option<GumbelResult>>, Vec<Vec<f32>>);
+
 #[pyclass]
 #[derive(Clone, Debug)]
 pub struct GumbelSelfPlayBatch {
@@ -41,6 +43,7 @@ impl GumbelSelfPlayBatch {
         policy_target_c_visit = None,
         policy_target_c_scale = None
     ))]
+    #[allow(clippy::too_many_arguments)]
     pub fn py_new(
         game_count: usize,
         simulations: u32,
@@ -88,6 +91,7 @@ impl GumbelSelfPlayBatch {
         policy_target_c_visit = None,
         policy_target_c_scale = None
     ))]
+    #[allow(clippy::too_many_arguments)]
     pub fn from_action_histories(
         action_histories: Vec<Vec<usize>>,
         simulations: u32,
@@ -243,7 +247,7 @@ impl GumbelSelfPlayBatch {
         &mut self,
         mut evaluator: PyRefMut<'_, OnnxEvaluator>,
         leaf_batch_size: usize,
-    ) -> PyResult<(Vec<Option<GumbelResult>>, Vec<Vec<f32>>)> {
+    ) -> PyResult<SearchActiveWithRootLogits> {
         if leaf_batch_size == 0 {
             return Err(PyValueError::new_err("leaf_batch_size must be positive"));
         }

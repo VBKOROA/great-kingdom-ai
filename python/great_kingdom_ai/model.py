@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import cast
 
 import torch
 from torch import nn
@@ -70,7 +72,7 @@ class ResidualBlock(nn.Module):
         self.activation = nn.ReLU(inplace=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.activation(x + self.block(x))
+        return cast(torch.Tensor, self.activation(x + self.block(x)))
 
 
 class PolicyValueNetwork(nn.Module):
@@ -121,7 +123,8 @@ class PolicyValueNetwork(nn.Module):
             )
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        if not torch.jit.is_tracing():
+        is_tracing = cast("Callable[[], bool]", torch.jit.is_tracing)  # type: ignore[attr-defined]
+        if not is_tracing():
             self._validate_input_shape(x)
 
         features = self.backbone(self.stem(x))

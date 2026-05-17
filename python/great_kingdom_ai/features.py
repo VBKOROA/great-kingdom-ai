@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import numpy as np
 
 if TYPE_CHECKING:
     import torch
+    from torch import Tensor
 
 BOARD_SIZE = 9
 BOARD_CELLS = BOARD_SIZE * BOARD_SIZE
@@ -32,7 +33,10 @@ def states_to_feature_tensor(
     """Convert Rust feature planes to a float tensor shaped [batch, channels, 9, 9]."""
     torch = _import_torch()
     if not states:
-        return torch.empty((0, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=torch.float32)
+        return cast(
+            "Tensor",
+            torch.empty((0, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=torch.float32),
+        )
 
     features = np.asarray([state.feature_planes() for state in states], dtype=np.float32)
     expected = FEATURE_CHANNELS * BOARD_CELLS
@@ -42,7 +46,7 @@ def states_to_feature_tensor(
     tensor = torch.from_numpy(
         features.reshape(len(states), FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
     )
-    return tensor.to(device=device) if device is not None else tensor
+    return cast("Tensor", tensor.to(device=device) if device is not None else tensor)
 
 
 def states_to_legal_mask_tensor(
@@ -53,7 +57,7 @@ def states_to_legal_mask_tensor(
     """Convert Rust legal masks to a bool tensor shaped [batch, 82]."""
     torch = _import_torch()
     if not states:
-        return torch.empty((0, ACTION_SPACE), dtype=torch.bool)
+        return cast("Tensor", torch.empty((0, ACTION_SPACE), dtype=torch.bool))
 
     masks = np.asarray([state.legal_mask() for state in states], dtype=np.bool_)
     if masks.shape != (len(states), ACTION_SPACE):
@@ -62,7 +66,7 @@ def states_to_legal_mask_tensor(
         )
 
     tensor = torch.from_numpy(masks)
-    return tensor.to(device=device) if device is not None else tensor
+    return cast("Tensor", tensor.to(device=device) if device is not None else tensor)
 
 
 def _import_torch() -> Any:

@@ -58,3 +58,7 @@ select = ["E", "F", "I", "UP", "B"]
 python_version = "3.11"
 packages = ["great_kingdom_ai"]
 strict = true
+
+[[tool.mypy.overrides]]
+module = ["onnxconverter_common", "onnxconverter_common.*"]
+ignore_missing_imports = true

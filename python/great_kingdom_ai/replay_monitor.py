@@ -8,7 +8,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, NoReturn
+from typing import Any, Literal, NoReturn, cast
 
 import numpy as np
 
@@ -356,23 +356,26 @@ def masked_softmax(logits: np.ndarray, legal_masks: np.ndarray) -> np.ndarray:
     if not np.isfinite(row_max).all():
         raise ValueError("each row must have at least one legal root prior logit")
     exp = np.where(legal_masks, np.exp(masked - row_max), 0.0)
-    return (exp / exp.sum(axis=1, keepdims=True)).astype(np.float32, copy=False)
+    return cast(np.ndarray, (exp / exp.sum(axis=1, keepdims=True)).astype(np.float32, copy=False))
 
 
 def categorical_kl(left: np.ndarray, right: np.ndarray) -> np.ndarray:
     left_clipped = np.clip(left, 1e-45, 1.0).astype(np.float32, copy=False)
     right_clipped = np.clip(right, 1e-45, 1.0).astype(np.float32, copy=False)
-    return np.maximum(
-        np.sum(left_clipped * (np.log(left_clipped) - np.log(right_clipped)), axis=1),
-        0.0,
-    ).astype(np.float32, copy=False)
+    return cast(
+        np.ndarray,
+        np.maximum(
+            np.sum(left_clipped * (np.log(left_clipped) - np.log(right_clipped)), axis=1),
+            0.0,
+        ).astype(np.float32, copy=False),
+    )
 
 
 def policy_entropy(policy: np.ndarray) -> np.ndarray:
     positive = policy > 0.0
     terms = np.zeros_like(policy, dtype=np.float32)
     terms[positive] = policy[positive] * np.log(np.clip(policy[positive], 1e-45, 1.0))
-    return (-terms.sum(axis=1)).astype(np.float32, copy=False)
+    return cast(np.ndarray, (-terms.sum(axis=1)).astype(np.float32, copy=False))
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -119,12 +119,7 @@ impl EvalRequest {
         }
         let mut masks = Vec::with_capacity(self.states.len() * ACTION_SPACE);
         for state in &self.states {
-            masks.extend(
-                state
-                    .legal_mask()
-                    .into_iter()
-                    .map(|is_legal| u8::from(is_legal)),
-            );
+            masks.extend(state.legal_mask().into_iter().map(u8::from));
         }
         PyBytes::new(py, &masks)
     }
@@ -205,8 +200,7 @@ impl EvalRequest {
             });
 
         let legal_mask_bytes = include_legal_masks.then(|| {
-            let mut masks = Vec::with_capacity(states.len() * ACTION_SPACE);
-            masks.resize(states.len() * ACTION_SPACE, 0);
+            let mut masks = vec![0; states.len() * ACTION_SPACE];
             masks
                 .par_chunks_mut(ACTION_SPACE)
                 .zip(states.par_iter())

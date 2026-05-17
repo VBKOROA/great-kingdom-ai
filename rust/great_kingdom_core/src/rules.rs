@@ -178,7 +178,7 @@ impl GameState {
 
         let switch_start = trace.as_ref().map(|_| Instant::now());
         self.current_player = player.other();
-        if let (Some(trace), Some(start)) = (trace.as_deref_mut(), switch_start) {
+        if let (Some(trace), Some(start)) = (trace, switch_start) {
             trace.switch_turn_elapsed += start.elapsed();
         }
         Ok(None)
@@ -257,7 +257,7 @@ impl GameState {
         let switch_start = trace.as_ref().map(|_| Instant::now());
         self.previous_pass = true;
         self.current_player = self.current_player.other();
-        if let (Some(trace), Some(start)) = (trace.as_deref_mut(), switch_start) {
+        if let (Some(trace), Some(start)) = (trace, switch_start) {
             trace.switch_turn_elapsed += start.elapsed();
         }
         Ok(None)

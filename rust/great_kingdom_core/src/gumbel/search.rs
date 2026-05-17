@@ -49,7 +49,6 @@ impl GumbelSearch {
         self.root_search_count = 0;
     }
 
-    #[must_use]
     pub(crate) fn result_from_logits(
         &mut self,
         state: &GameState,
@@ -144,6 +143,7 @@ impl GumbelSearch {
         self.run_tree_search(state, legal_actions, log_priors, &candidates)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn result_from_log_priors_with_evaluator<F>(
         &mut self,
         state: &GameState,
@@ -292,6 +292,7 @@ impl GumbelSearch {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn run_tree_search_with_evaluator<F>(
         &mut self,
         state: &GameState,
@@ -1135,8 +1136,12 @@ mod tests {
             for max_considered_actions in [2, 4, 8] {
                 for bad_action in 0..max_considered_actions {
                     let mut root_logits = [-100.0; ACTION_SPACE];
-                    for action in 0..max_considered_actions {
-                        root_logits[action] = (max_considered_actions - action) as f32;
+                    for (action, root_logit) in root_logits
+                        .iter_mut()
+                        .enumerate()
+                        .take(max_considered_actions)
+                    {
+                        *root_logit = (max_considered_actions - action) as f32;
                     }
 
                     let config = GumbelConfig::new_with_full_config(

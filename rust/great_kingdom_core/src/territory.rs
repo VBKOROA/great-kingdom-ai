@@ -222,11 +222,11 @@ mod tests {
     #[test]
     fn territory_owners_match_single_cell_territory_checks() {
         let mut board = [Cell::Empty; BOARD_CELLS];
-        for index in 0..BOARD_CELLS {
+        for (index, cell) in board.iter_mut().enumerate().take(BOARD_CELLS) {
             if index % 7 == 0 {
-                board[index] = Cell::Blue;
+                *cell = Cell::Blue;
             } else if index % 11 == 0 {
-                board[index] = Cell::Orange;
+                *cell = Cell::Orange;
             }
         }
         board[CENTER_INDEX] = Cell::Neutral;

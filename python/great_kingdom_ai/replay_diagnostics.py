@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn, cast
@@ -347,7 +347,7 @@ def _top_move_counts(
     *,
     top_k: int,
 ) -> list[dict[str, Any]]:
-    totals: Counter[int] = Counter()
+    totals: defaultdict[int, float] = defaultdict(float)
     for move_count, weight in zip(move_counts.tolist(), weights.tolist(), strict=True):
         totals[int(move_count)] += float(weight)
     total_weight = max(1e-12, float(sum(totals.values())))
@@ -357,7 +357,9 @@ def _top_move_counts(
             "raw_rows": weight,
             "fraction": weight / total_weight,
         }
-        for move_count, weight in totals.most_common(top_k)
+        for move_count, weight in sorted(totals.items(), key=lambda item: item[1], reverse=True)[
+            :top_k
+        ]
     ]
 
 

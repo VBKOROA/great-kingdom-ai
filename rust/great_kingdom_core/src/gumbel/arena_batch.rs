@@ -18,6 +18,7 @@ use crate::{
 
 const BLUE: u8 = 1;
 const ORANGE: u8 = 2;
+type SearchActiveWithRootLogits = (Vec<Option<GumbelResult>>, Vec<Vec<f32>>);
 
 #[pyclass]
 #[derive(Clone, Debug)]
@@ -46,6 +47,7 @@ impl GumbelArenaBatch {
         policy_target_c_scale = None,
         paired_seeds = false
     ))]
+    #[allow(clippy::too_many_arguments)]
     pub fn py_new(
         game_count: usize,
         seed_start: u64,
@@ -193,7 +195,7 @@ impl GumbelArenaBatch {
         mut candidate_evaluator: PyRefMut<'_, OnnxEvaluator>,
         mut best_evaluator: PyRefMut<'_, OnnxEvaluator>,
         leaf_batch_size: usize,
-    ) -> PyResult<(Vec<Option<GumbelResult>>, Vec<Vec<f32>>)> {
+    ) -> PyResult<SearchActiveWithRootLogits> {
         if leaf_batch_size == 0 {
             return Err(PyValueError::new_err("leaf_batch_size must be positive"));
         }

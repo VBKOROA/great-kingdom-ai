@@ -84,6 +84,7 @@ pub(crate) fn log_priors_from_priors(
 }
 
 #[must_use]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn root_improved_policy_target(
     root: &GumbelNode,
     legal_actions: &[usize],

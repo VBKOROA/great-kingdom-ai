@@ -21,6 +21,7 @@ impl GumbelSearch {
         policy_target_c_visit = None,
         policy_target_c_scale = None
     ))]
+    #[allow(clippy::too_many_arguments)]
     pub fn py_new(
         simulations: u32,
         max_considered_actions: usize,

@@ -39,7 +39,7 @@ impl GameState {
         let territory_owners = self.territory_owners();
         let can_place = player.used_count(self) < CASTLES_PER_PLAYER;
 
-        for index in 0..BOARD_CELLS {
+        for (index, territory_owner) in territory_owners.iter().enumerate().take(BOARD_CELLS) {
             match self.board[index] {
                 cell if cell == player.cell() => {
                     set_channel(&mut planes, FeatureChannel::OwnCastle, index, 1.0);
@@ -52,20 +52,17 @@ impl GameState {
                 }
                 Cell::Empty => {
                     set_channel(&mut planes, FeatureChannel::Empty, index, 1.0);
-                    if territory_owners[index] == Some(player) {
+                    if *territory_owner == Some(player) {
                         set_channel(&mut planes, FeatureChannel::OwnTerritory, index, 1.0);
                     }
-                    if territory_owners[index] == Some(opponent) {
+                    if *territory_owner == Some(opponent) {
                         set_channel(&mut planes, FeatureChannel::OpponentTerritory, index, 1.0);
                     }
                 }
                 Cell::Blue | Cell::Orange => {}
             }
 
-            if can_place
-                && self.board[index] == Cell::Empty
-                && territory_owners[index] != Some(opponent)
-            {
+            if can_place && self.board[index] == Cell::Empty && *territory_owner != Some(opponent) {
                 set_channel(&mut planes, FeatureChannel::LegalPlace, index, 1.0);
             }
             set_channel(

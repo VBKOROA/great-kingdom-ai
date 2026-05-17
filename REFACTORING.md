@@ -283,8 +283,9 @@ Python 경계가 안정된 뒤 Rust를 정리한다.
 - aggregate replay와 오래된 ablation 실험 경로를 제거했다.
 - 단일 train v2 pipeline 경로를 제거했다.
 - 공개 entrypoint 목록을 async v2 운영/평가/수동 진단 명령으로 축소했다.
+- Python/Rust 검증 debt를 정리해 mypy와 clippy를 통과 상태로 만들었다.
 
-아직 남은 작업은 새 구조 분리보다 legacy 제거와 최종 API 축소에 가깝다.
+현재 이 문서에 적힌 Phase 1-6과 추가 정리 작업은 모두 완료됐다.
 
 ### 완료된 추가 작업 1: ReplayBuffer legacy 제거
 
@@ -347,17 +348,24 @@ Python 경계가 안정된 뒤 Rust를 정리한다.
 - `great-kingdom-export-onnx`
 - `great-kingdom-replay-monitor-v2`
 
-### 남은 작업 1: 검증 debt 정리
+### 완료된 추가 작업 5: 검증 debt 정리
 
-기능 테스트는 통과하지만 정적 검증 debt가 남아 있다.
+2026-05-17에 Python typing 오류와 Rust clippy 경고를 정리했다.
+
+정리된 내용:
+
+- torch/numpy 반환 타입을 명시해 `python -m mypy`를 통과 상태로 만들었다.
+- `onnxconverter_common`의 missing stub은 mypy override로 좁게 처리했다.
+- Rust clippy가 지적한 closure, zero-fill 초기화, range loop, needless option deref를 정리했다.
+- PyO3/config 경계상 인자가 많은 함수는 해당 함수에 한정해 clippy allow를 달았다.
+
+현재 검증 상태:
 
 - `python -m pytest`: 통과
 - `python -m ruff check .`: 통과
-- `python -m mypy`: 기존 Python typing 오류 12개가 남아 있음
+- `python -m mypy`: 통과
 - `cargo test`: 통과
-- `cargo clippy --all-targets -- -D warnings`: 기존 Rust clippy 경고로 실패
-
-최종 정리 전에 mypy와 clippy를 통과 상태로 만들지, 또는 별도 기준선으로 명시할지 결정한다.
+- `cargo clippy --all-targets -- -D warnings`: 통과
 
 ## 삭제 순서
 
