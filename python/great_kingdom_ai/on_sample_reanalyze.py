@@ -19,14 +19,14 @@ from great_kingdom_ai.priority_sampling import (
     priority_scores,
     sample_priority_indexes,
 )
-from great_kingdom_ai.reanalyze import (
-    ReanalyzeConfig,
-    _create_onnx_evaluator,
-    _effective_bootstrap_td_steps,
-    _evaluate_policy_logits_values,
-    _evaluate_policy_logits_values_with_onnx,
-    _sample_indexes,
+from great_kingdom_ai.reanalyze import ReanalyzeConfig
+from great_kingdom_ai.reanalyze_evaluator import (
+    create_onnx_evaluator,
+    evaluate_policy_logits_values,
+    evaluate_policy_logits_values_with_onnx,
 )
+from great_kingdom_ai.reanalyze_sampling import sample_indexes
+from great_kingdom_ai.reanalyze_targets import effective_bootstrap_td_steps
 from great_kingdom_ai.replay import TrajectoryReplayStore
 from great_kingdom_ai.replay_buffer import ReplaySample
 from great_kingdom_ai.search_reanalyze import refresh_sampled_policies_with_search
@@ -277,7 +277,7 @@ class OnSampleReanalyzeDataset:
                 recent_window=recent_window,
             )
             return sampled.indexes, sampled.importance_weights
-        indexes = _sample_indexes(
+        indexes = sample_indexes(
             len(self._replay),
             batch_size,
             rng,
@@ -300,6 +300,7 @@ class OnSampleReanalyzeDataset:
     ) -> None:
         if not _priority_update_has_signal(priority_config):
             return
+        assert priority_config is not None
         if model_evaluation is None and _priority_update_needs_model_eval(priority_config):
             model_evaluation = self._evaluate_logits_values(features, legal_masks)
         policy_logits: np.ndarray | None = None
@@ -335,7 +336,7 @@ class OnSampleReanalyzeDataset:
                 np.searchsorted(self._replay.episode_offsets, replay_row, side="right") - 1
             )
             terminal_row = int(self._replay.episode_offsets[episode_index + 1]) - 1
-            effective_td_steps = _effective_bootstrap_td_steps(
+            effective_td_steps = effective_bootstrap_td_steps(
                 td_steps=self._config.bootstrap_td_steps,
                 model_version=self._model_version,
                 created_iteration=int(self._replay.created_iterations[replay_row]),
@@ -588,7 +589,7 @@ class OnSampleReanalyzeDataset:
             return None
         evaluator = getattr(self._onnx_evaluator_local, "evaluator", None)
         if evaluator is None:
-            evaluator = _create_onnx_evaluator(
+            evaluator = create_onnx_evaluator(
                 self._config.onnx_model_path,
                 device=self._config.onnx_device or self._config.device,
                 max_batch_size=self._config.onnx_max_batch_size,
@@ -605,14 +606,14 @@ class OnSampleReanalyzeDataset:
         try:
             onnx_evaluator = self._onnx_evaluator_for_current_thread()
             if onnx_evaluator is None:
-                return _evaluate_policy_logits_values(
+                return evaluate_policy_logits_values(
                     self._model,
                     features,
                     legal_masks,
                     batch_size=self._config.batch_size,
                     device=self._config.device,
                 )
-            return _evaluate_policy_logits_values_with_onnx(
+            return evaluate_policy_logits_values_with_onnx(
                 cast(Any, onnx_evaluator),
                 features,
                 batch_size=self._config.batch_size,

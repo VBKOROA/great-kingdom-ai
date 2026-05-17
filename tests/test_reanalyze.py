@@ -7,6 +7,7 @@ from pathlib import Path
 
 import great_kingdom_ai.on_sample_reanalyze as on_sample_reanalyze_module
 import great_kingdom_ai.reanalyze as reanalyze_module
+import great_kingdom_ai.reanalyze_evaluator as reanalyze_evaluator_module
 import numpy as np
 import pytest
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS, PASS_ACTION
@@ -20,6 +21,14 @@ from great_kingdom_ai.reanalyze import (
     build_reanalyze_snapshot,
     build_reanalyze_snapshot_from_store,
     is_reanalyze_target_snapshot,
+)
+from great_kingdom_ai.reanalyze_evaluator import (
+    create_onnx_evaluator,
+    evaluate_policy_logits_values_with_onnx,
+)
+from great_kingdom_ai.reanalyze_targets import (
+    bootstrap_targets_from_store,
+    effective_bootstrap_td_steps,
 )
 from great_kingdom_ai.replay import (
     TrajectoryEpisode,
@@ -121,7 +130,7 @@ def test_reanalyze_target_snapshot_round_trips_and_samples_arrays(tmp_path: Path
 
 def test_dynamic_horizon_shrinks_td_steps_for_older_rows() -> None:
     assert (
-        reanalyze_module._effective_bootstrap_td_steps(
+        effective_bootstrap_td_steps(
             td_steps=5,
             model_version=100,
             created_iteration=100,
@@ -132,7 +141,7 @@ def test_dynamic_horizon_shrinks_td_steps_for_older_rows() -> None:
         == 5
     )
     assert (
-        reanalyze_module._effective_bootstrap_td_steps(
+        effective_bootstrap_td_steps(
             td_steps=5,
             model_version=100,
             created_iteration=40,
@@ -143,7 +152,7 @@ def test_dynamic_horizon_shrinks_td_steps_for_older_rows() -> None:
         == 3
     )
     assert (
-        reanalyze_module._effective_bootstrap_td_steps(
+        effective_bootstrap_td_steps(
             td_steps=5,
             model_version=100,
             created_iteration=0,
@@ -159,7 +168,7 @@ def test_dynamic_horizon_changes_bootstrap_target_for_stale_store_rows() -> None
     store = TrajectoryReplayStore.from_episodes(8, (make_episode(),))
     refreshed_values = np.asarray([0.1, 0.4, 0.9], dtype=np.float32)
 
-    targets = reanalyze_module._bootstrap_targets_from_store(
+    targets = bootstrap_targets_from_store(
         store,
         refreshed_values,
         td_steps=2,
@@ -846,18 +855,18 @@ def test_evaluate_policy_logits_values_with_onnx_uses_core_evaluator(
         EvalRequest = FakeEvalRequest
         OnnxEvaluator = FakeOnnxEvaluator
 
-    monkeypatch.setattr(reanalyze_module, "_import_core", lambda: FakeCore)
+    monkeypatch.setattr(reanalyze_evaluator_module, "import_core", lambda: FakeCore)
     features = np.stack(
         [make_features(1), make_features(2), make_features(PASS_ACTION)],
         axis=0,
     )
-    evaluator = reanalyze_module._create_onnx_evaluator(
+    evaluator = create_onnx_evaluator(
         "model.onnx",
         device="cuda",
         max_batch_size=4,
     )
 
-    logits, values = reanalyze_module._evaluate_policy_logits_values_with_onnx(
+    logits, values = evaluate_policy_logits_values_with_onnx(
         evaluator,
         features,
         batch_size=2,

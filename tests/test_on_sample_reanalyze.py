@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 
 import great_kingdom_ai.on_sample_reanalyze as on_sample_reanalyze_module
-import great_kingdom_ai.reanalyze as reanalyze_module
+import great_kingdom_ai.reanalyze_targets as reanalyze_targets_module
 import great_kingdom_ai.search_reanalyze as search_reanalyze_module
 import numpy as np
 import pytest
@@ -377,7 +377,7 @@ def test_on_sample_onnx_evaluator_is_thread_local(
 
     monkeypatch.setattr(
         on_sample_reanalyze_module,
-        "_create_onnx_evaluator",
+        "create_onnx_evaluator",
         fake_create_onnx_evaluator,
     )
     dataset = OnSampleReanalyzeDataset(
@@ -561,7 +561,7 @@ def test_on_sample_mcts_root_bootstrap_matches_snapshot_row_for_row(
         )
 
     monkeypatch.setattr(
-        reanalyze_module,
+        reanalyze_targets_module,
         "refresh_sampled_policies_with_search",
         fake_refresh_sampled_policies_with_search,
     )

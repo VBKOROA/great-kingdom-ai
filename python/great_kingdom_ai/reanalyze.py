@@ -3,18 +3,16 @@
 from __future__ import annotations
 
 import argparse
-import importlib
 import json
 import math
 import random
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, NoReturn, cast
 
 import numpy as np
 
-from great_kingdom_ai.evaluator import evaluate_feature_arrays_logits_values
 from great_kingdom_ai.features import ACTION_SPACE
 from great_kingdom_ai.priority_sampling import (
     PrioritySamplingConfig,
@@ -22,14 +20,22 @@ from great_kingdom_ai.priority_sampling import (
     priority_scores,
     sample_priority_indexes,
 )
-from great_kingdom_ai.replay import FEATURE_SHAPE, TrajectoryEpisode, TrajectoryReplayStore
+from great_kingdom_ai.reanalyze_evaluator import (
+    create_onnx_evaluator,
+    evaluate_policy_logits_values,
+    evaluate_policy_logits_values_with_onnx,
+)
+from great_kingdom_ai.reanalyze_sampling import sample_indexes
+from great_kingdom_ai.reanalyze_targets import (
+    bootstrap_targets_from_store,
+    mcts_root_bootstrap_values_from_store,
+)
+from great_kingdom_ai.replay import FEATURE_SHAPE, TrajectoryReplayStore
 from great_kingdom_ai.replay_buffer import ReplaySample
 from great_kingdom_ai.search_reanalyze import (
     SearchReanalyzeConfig,
     refresh_policies_with_search,
-    refresh_sampled_policies_with_search,
 )
-from great_kingdom_ai.self_play_data import value_target_for_player
 
 SNAPSHOT_FORMAT = "reanalyze-target-v1"
 ReanalyzeProgressCallback = Callable[[str, int, int, str], None]
@@ -185,7 +191,7 @@ class ReanalyzeTargetSnapshot:
         return int(self.values.shape[0])
 
     def sample(self, batch_size: int, rng: random.Random) -> list[ReplaySample]:
-        indexes = _sample_indexes(len(self), batch_size, rng)
+        indexes = sample_indexes(len(self), batch_size, rng)
         return [
             ReplaySample(
                 features=self.features[index],
@@ -221,7 +227,7 @@ class ReanalyzeTargetSnapshot:
                 * sampled.importance_weights
             )
         else:
-            indexes = _sample_indexes(
+            indexes = sample_indexes(
                 len(self),
                 batch_size,
                 rng,
@@ -432,14 +438,14 @@ def build_reanalyze_snapshot_from_store(
     onnx_evaluator = (
         None
         if config.onnx_model_path is None
-        else _create_onnx_evaluator(
+        else create_onnx_evaluator(
             config.onnx_model_path,
             device=config.onnx_device or config.device,
             max_batch_size=config.onnx_max_batch_size,
         )
     )
     if onnx_evaluator is None:
-        policy_logits, refreshed_values = _evaluate_policy_logits_values(
+        policy_logits, refreshed_values = evaluate_policy_logits_values(
             state.model,
             features,
             legal_masks,
@@ -448,7 +454,7 @@ def build_reanalyze_snapshot_from_store(
             progress_callback=progress_callback,
         )
     else:
-        policy_logits, refreshed_values = _evaluate_policy_logits_values_with_onnx(
+        policy_logits, refreshed_values = evaluate_policy_logits_values_with_onnx(
             onnx_evaluator,
             features,
             batch_size=config.batch_size,
@@ -465,7 +471,7 @@ def build_reanalyze_snapshot_from_store(
     bootstrap_values = (
         refreshed_values
         if config.value_bootstrap_source == "value_head"
-        else _mcts_root_bootstrap_values_from_store(
+        else mcts_root_bootstrap_values_from_store(
             replay,
             policy_logits=policy_logits,
             refreshed_values=refreshed_values,
@@ -475,7 +481,7 @@ def build_reanalyze_snapshot_from_store(
             config=config.search,
         )
     )
-    values = _bootstrap_targets_from_store(
+    values = bootstrap_targets_from_store(
         replay,
         bootstrap_values,
         td_steps=config.bootstrap_td_steps,
@@ -661,298 +667,12 @@ def main() -> NoReturn:
     raise SystemExit(0)
 
 
-def _evaluate_policy_logits_values(
-    model: Any,
-    features: np.ndarray,
-    legal_masks: np.ndarray,
-    *,
-    batch_size: int,
-    device: str,
-    progress_callback: ReanalyzeProgressCallback | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    policy_logits: list[np.ndarray] = []
-    values: list[np.ndarray] = []
-    total_batches = math.ceil(features.shape[0] / batch_size)
-    _report_progress(
-        progress_callback,
-        "eval",
-        0,
-        total_batches,
-        f"rows={features.shape[0]}, batch_size={batch_size}, device={device}",
-    )
-    for start in range(0, features.shape[0], batch_size):
-        end = min(start + batch_size, features.shape[0])
-        batch_number = start // batch_size + 1
-        evaluation = evaluate_feature_arrays_logits_values(
-            model,
-            features[start:end],
-            legal_masks[start:end],
-            device=device,
-        )
-        policy_logits.append(evaluation.policy_logits)
-        values.append(evaluation.value)
-        _report_progress(
-            progress_callback,
-            "eval",
-            batch_number,
-            total_batches,
-            f"rows={start}:{end}",
-        )
-    return (
-        np.concatenate(policy_logits, axis=0).astype(np.float32),
-        np.concatenate(values, axis=0).astype(np.float32),
-    )
-
-
-def _create_onnx_evaluator(
-    onnx_model_path: str,
-    *,
-    device: str,
-    max_batch_size: int,
-) -> Any:
-    core = _import_core()
-    return core.OnnxEvaluator(
-        str(onnx_model_path),
-        device=device,
-        max_batch_size=max_batch_size,
-    )
-
-
-def _evaluate_policy_logits_values_with_onnx(
-    evaluator: Any,
-    features: np.ndarray,
-    *,
-    batch_size: int,
-    device: str,
-    progress_callback: ReanalyzeProgressCallback | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    core = _import_core()
-    policy_logits: list[np.ndarray] = []
-    values: list[np.ndarray] = []
-    total_batches = math.ceil(features.shape[0] / batch_size)
-    _report_progress(
-        progress_callback,
-        "eval",
-        0,
-        total_batches,
-        (
-            f"rows={features.shape[0]}, batch_size={batch_size}, "
-            f"device={device}, backend=onnx"
-        ),
-    )
-    for start in range(0, features.shape[0], batch_size):
-        end = min(start + batch_size, features.shape[0])
-        batch_number = start // batch_size + 1
-        request = _eval_request_from_feature_array(core, features[start:end])
-        batch_logits, batch_values = evaluator.evaluate(request)
-        policy_logits.append(np.asarray(batch_logits, dtype=np.float32))
-        values.append(np.asarray(batch_values, dtype=np.float32))
-        _report_progress(
-            progress_callback,
-            "eval",
-            batch_number,
-            total_batches,
-            f"rows={start}:{end}",
-        )
-    return (
-        np.concatenate(policy_logits, axis=0).astype(np.float32),
-        np.concatenate(values, axis=0).astype(np.float32),
-    )
-
-
-def _eval_request_from_feature_array(core: Any, features: np.ndarray) -> Any:
-    rows = np.ascontiguousarray(features.reshape(features.shape[0], -1), dtype=np.float32)
-    if hasattr(core.EvalRequest, "from_feature_plane_bytes"):
-        return core.EvalRequest.from_feature_plane_bytes(rows.shape[0], rows.tobytes())
-    return core.EvalRequest.from_feature_rows(rows.tolist())
-
-
-def _import_core() -> Any:
-    try:
-        return importlib.import_module("great_kingdom_core")
-    except ModuleNotFoundError as exc:
-        raise RuntimeError(
-            "great_kingdom_core is not installed. Build it with maturin before ONNX reanalyze."
-        ) from exc
-
-
-def _bootstrap_targets_from_refreshed_values(
-    episodes: Sequence[TrajectoryEpisode],
-    refreshed_values: np.ndarray,
-    *,
-    td_steps: int,
-    gamma: float,
-    model_version: int = 0,
-    dynamic_horizon_enabled: bool = False,
-    dynamic_horizon_tau: float = 0.3,
-    dynamic_horizon_total_steps: int | None = None,
-) -> np.ndarray:
-    targets = np.empty((refreshed_values.shape[0],), dtype=np.float32)
-    row_offset = 0
-    for episode in episodes:
-        terminal_index = len(episode.transitions) - 1
-        for index, transition in enumerate(episode.transitions):
-            row = row_offset + index
-            effective_td_steps = _effective_bootstrap_td_steps(
-                td_steps=td_steps,
-                model_version=model_version,
-                created_iteration=transition.created_iteration,
-                dynamic_horizon_enabled=dynamic_horizon_enabled,
-                dynamic_horizon_tau=dynamic_horizon_tau,
-                dynamic_horizon_total_steps=dynamic_horizon_total_steps,
-            )
-            target_index = index + effective_td_steps
-            if (
-                effective_td_steps == 0
-                or transition.terminal
-                or target_index >= terminal_index
-            ):
-                targets[row] = value_target_for_player(
-                    player=transition.player,
-                    winner=episode.winner,
-                )
-                continue
-
-            bootstrap = float(refreshed_values[row_offset + target_index])
-            bootstrap_transition = episode.transitions[target_index]
-            if bootstrap_transition.player != transition.player:
-                bootstrap = -bootstrap
-            targets[row] = np.float32((gamma**effective_td_steps) * bootstrap)
-        row_offset += len(episode.transitions)
-    return targets
-
-
-def _mcts_root_bootstrap_values_from_store(
-    replay: TrajectoryReplayStore,
-    *,
-    policy_logits: np.ndarray,
-    refreshed_values: np.ndarray,
-    model: Any,
-    device: str,
-    onnx_evaluator: Any | None,
-    config: SearchReanalyzeConfig,
-) -> np.ndarray:
-    search_result = refresh_sampled_policies_with_search(
-        transitions=replay.transition_refs(list(range(len(replay)))),
-        policies=np.ascontiguousarray(replay.policy_targets, dtype=np.float32),
-        policy_logits=policy_logits,
-        refreshed_values=refreshed_values,
-        model=model,
-        device=device,
-        onnx_evaluator=onnx_evaluator,
-        config=config,
-    )
-    if search_result.root_values is None or not np.isfinite(search_result.root_values).all():
-        raise RuntimeError("MCTS root bootstrap requires root values from search results")
-    return np.ascontiguousarray(search_result.root_values, dtype=np.float32)
-
-
-def _bootstrap_targets_from_store(
-    replay: TrajectoryReplayStore,
-    refreshed_values: np.ndarray,
-    *,
-    td_steps: int,
-    gamma: float,
-    model_version: int = 0,
-    dynamic_horizon_enabled: bool = False,
-    dynamic_horizon_tau: float = 0.3,
-    dynamic_horizon_total_steps: int | None = None,
-) -> np.ndarray:
-    targets = np.empty((refreshed_values.shape[0],), dtype=np.float32)
-    for episode_index in range(replay.episode_count):
-        start = int(replay.episode_offsets[episode_index])
-        end = int(replay.episode_offsets[episode_index + 1])
-        terminal_index = end - 1
-        winner = int(replay.episode_winners[episode_index])
-        for row in range(start, end):
-            effective_td_steps = _effective_bootstrap_td_steps(
-                td_steps=td_steps,
-                model_version=model_version,
-                created_iteration=int(replay.created_iterations[row]),
-                dynamic_horizon_enabled=dynamic_horizon_enabled,
-                dynamic_horizon_tau=dynamic_horizon_tau,
-                dynamic_horizon_total_steps=dynamic_horizon_total_steps,
-            )
-            target_index = row + effective_td_steps
-            if (
-                effective_td_steps == 0
-                or bool(replay.terminals[row])
-                or target_index >= terminal_index
-            ):
-                targets[row] = value_target_for_player(
-                    player=int(replay.players[row]),
-                    winner=winner,
-                )
-                continue
-
-            bootstrap = float(refreshed_values[target_index])
-            if int(replay.players[target_index]) != int(replay.players[row]):
-                bootstrap = -bootstrap
-            targets[row] = np.float32((gamma**effective_td_steps) * bootstrap)
-    return targets
-
-
-def _effective_bootstrap_td_steps(
-    *,
-    td_steps: int,
-    model_version: int,
-    created_iteration: int,
-    dynamic_horizon_enabled: bool,
-    dynamic_horizon_tau: float,
-    dynamic_horizon_total_steps: int | None,
-) -> int:
-    if td_steps <= 0 or not dynamic_horizon_enabled:
-        return td_steps
-    if dynamic_horizon_total_steps is None:
-        raise ValueError("dynamic_horizon_total_steps is required")
-    age = max(model_version - created_iteration, 0)
-    shrink = math.floor(age / (dynamic_horizon_tau * dynamic_horizon_total_steps))
-    return min(td_steps, max(1, td_steps - shrink))
-
-
 def _transition_episode_values(
     replay: TrajectoryReplayStore,
     episode_values: np.ndarray,
 ) -> np.ndarray:
     counts = np.diff(replay.episode_offsets)
     return np.repeat(np.asarray(episode_values, dtype=np.int64), counts).astype(np.int64)
-
-
-def _flatten_episodes(episodes: Sequence[TrajectoryEpisode]) -> list[Any]:
-    return [transition for episode in episodes for transition in episode.transitions]
-
-
-def _sample_indexes(
-    size: int,
-    batch_size: int,
-    rng: random.Random,
-    *,
-    recent_fraction: float = 0.0,
-    recent_window: int = 0,
-) -> list[int]:
-    if batch_size <= 0:
-        raise ValueError("batch_size must be positive")
-    if batch_size > size:
-        raise ValueError("batch_size exceeds reanalyze target snapshot size")
-    if recent_fraction <= 0.0:
-        return rng.sample(range(size), batch_size)
-    if recent_fraction > 1.0:
-        raise ValueError("recent_fraction must be in [0, 1]")
-    if recent_window <= 0:
-        raise ValueError("recent_window must be positive when recency sampling is enabled")
-
-    recent_count = min(recent_window, size)
-    old_count = size - recent_count
-    recent_take = min(round(batch_size * recent_fraction), recent_count, batch_size)
-    old_take = min(batch_size - recent_take, old_count)
-    recent_take = batch_size - old_take
-    if recent_take > recent_count:
-        raise ValueError("not enough rows to satisfy recency-biased sample")
-    recent_start = size - recent_count
-    indexes = [recent_start + index for index in rng.sample(range(recent_count), recent_take)]
-    indexes.extend(rng.sample(range(old_count), old_take))
-    rng.shuffle(indexes)
-    return indexes
 
 
 def _validated_snapshot(snapshot: ReanalyzeTargetSnapshot) -> ReanalyzeTargetSnapshot:
