@@ -13,7 +13,7 @@ from typing import Any, NoReturn
 import numpy as np
 
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
-from great_kingdom_ai.train import load_checkpoint
+from great_kingdom_ai.training import load_checkpoint
 
 DEFAULT_OPSET_VERSION = 17
 DEFAULT_PARITY_TOLERANCE = 1e-5

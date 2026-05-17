@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from great_kingdom_ai.train import TrainingConfig
+from great_kingdom_ai.training import TrainingConfig
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "compare_ema_decay_branches.py"
 SPEC = importlib.util.spec_from_file_location("compare_ema_decay_branches", SCRIPT_PATH)

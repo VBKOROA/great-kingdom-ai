@@ -13,7 +13,7 @@ from typing import Any, NoReturn
 import numpy as np
 from great_kingdom_ai.replay import TrajectoryReplayStore
 from great_kingdom_ai.self_play_data import value_target_for_player
-from great_kingdom_ai.train import load_checkpoint
+from great_kingdom_ai.training import load_checkpoint
 
 
 @dataclass(frozen=True)

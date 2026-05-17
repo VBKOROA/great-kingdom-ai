@@ -4,13 +4,11 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-
 from great_kingdom_ai.features import BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.onnx_quantization import (
     FeatureCalibrationDataReader,
     _calibration_features,
 )
-
 
 FEATURE_SHAPE = (FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
 

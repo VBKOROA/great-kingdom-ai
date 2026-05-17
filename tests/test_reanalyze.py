@@ -28,10 +28,9 @@ from great_kingdom_ai.replay import (
     legal_mask_from_features,
 )
 from great_kingdom_ai.search_reanalyze import select_search_reanalyze_indexes
-from great_kingdom_ai.train import (
+from great_kingdom_ai.training import (
     TrainingConfig,
     create_train_state,
-    load_training_replay,
     save_checkpoint,
 )
 
@@ -118,7 +117,6 @@ def test_reanalyze_target_snapshot_round_trips_and_samples_arrays(tmp_path: Path
     assert loaded.search_reanalyzed.tolist() == [True, False]
     assert batch.features.shape == (2, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
     assert sorted(batch.sample_weights.tolist()) == pytest.approx([1.0, 2.0])
-    assert load_training_replay(path).__class__ is ReanalyzeTargetSnapshot
 
 
 def test_dynamic_horizon_shrinks_td_steps_for_older_rows() -> None:

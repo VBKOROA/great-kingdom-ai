@@ -16,7 +16,7 @@ torch = importlib.import_module("torch") if _torch_spec is not None else None
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS  # noqa: E402
 from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample  # noqa: E402
 from great_kingdom_ai.single_batch_overfit import run_single_batch_overfit  # noqa: E402
-from great_kingdom_ai.train import TrainingConfig  # noqa: E402
+from great_kingdom_ai.training import TrainingConfig  # noqa: E402
 
 
 def make_sample(index: int, value: float = 1.0) -> ReplaySample:

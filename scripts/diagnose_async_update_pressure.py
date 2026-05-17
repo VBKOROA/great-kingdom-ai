@@ -15,7 +15,7 @@ from great_kingdom_ai.async_v2 import load_learner_v2_config
 from great_kingdom_ai.evaluator import evaluate_feature_arrays_logits_values
 from great_kingdom_ai.replay import TrajectoryReplayStore
 from great_kingdom_ai.self_play_data import value_target_for_player
-from great_kingdom_ai.train import load_checkpoint, load_training_config
+from great_kingdom_ai.training import load_checkpoint, load_training_config
 
 DEFAULT_REPLAY = Path("data/runpod/train-v2-gumbel-512k/replay/trajectory-replay.npz")
 DEFAULT_TRAIN_CONFIG = Path("configs/runpod/train.json")

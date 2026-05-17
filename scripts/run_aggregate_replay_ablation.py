@@ -28,7 +28,7 @@ from great_kingdom_ai.replay_aggregate import (
     save_replay as save_aggregated_replay,
 )
 from great_kingdom_ai.replay_buffer import ReplayBuffer
-from great_kingdom_ai.train import TrainingConfig, load_training_config, train_from_replay
+from great_kingdom_ai.training import TrainingConfig, load_training_config, train_from_replay
 
 DEFAULT_WORK_DIR = Path("data/runpod/onnx-aggregate-diagnostics")
 DEFAULT_TRAIN_CONFIG = Path("configs/runpod/train.json")

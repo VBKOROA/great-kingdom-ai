@@ -29,8 +29,7 @@ dev = [
 [project.scripts]
 great-kingdom-play = "great_kingdom_ai.cli:main"
 great-kingdom-random-self-play = "great_kingdom_ai.self_play:main"
-great-kingdom-train = "great_kingdom_ai.train:main"
-great-kingdom-migrate-checkpoint = "great_kingdom_ai.checkpoint_migration:main"
+great-kingdom-train = "great_kingdom_ai.training.cli:main"
 great-kingdom-single-batch-overfit = "great_kingdom_ai.single_batch_overfit:main"
 great-kingdom-replay-diagnostics = "great_kingdom_ai.replay_diagnostics:main"
 great-kingdom-reanalyze = "great_kingdom_ai.reanalyze:main"

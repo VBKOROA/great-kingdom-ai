@@ -34,7 +34,7 @@ from great_kingdom_ai.replay import (
 )
 from great_kingdom_ai.rust_onnx_self_play import RustOnnxSelfPlayConfig, RustSelfPlayRunSummary
 from great_kingdom_ai.self_play import GameLog, MoveLog
-from great_kingdom_ai.train import TrainingConfig
+from great_kingdom_ai.training import TrainingConfig
 
 
 def make_features(action: int = PASS_ACTION) -> np.ndarray:

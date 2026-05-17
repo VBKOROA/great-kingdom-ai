@@ -22,12 +22,12 @@ from great_kingdom_ai.replay import (
     legal_mask_from_features,
 )
 from great_kingdom_ai.search_reanalyze import SearchReanalyzeConfig, SearchReanalyzeResult
-from great_kingdom_ai.train import (
+from great_kingdom_ai.training import (
     TrainingConfig,
-    _sample_training_batch,
     create_train_state,
     save_checkpoint,
 )
+from great_kingdom_ai.training.batch import _sample_training_batch
 
 _torch_spec = importlib.util.find_spec("torch")
 torch = importlib.import_module("torch") if _torch_spec is not None else None

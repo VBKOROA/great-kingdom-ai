@@ -10,7 +10,7 @@ import shutil
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, NoReturn, cast
+from typing import Any, NoReturn, TypedDict, cast
 
 from great_kingdom_ai.evaluate import (
     ArenaConfig,
@@ -41,7 +41,7 @@ from great_kingdom_ai.rust_onnx_self_play import (
 )
 from great_kingdom_ai.search_reanalyze import SearchReanalyzeConfig
 from great_kingdom_ai.self_play import SelfPlayConfig
-from great_kingdom_ai.train import (
+from great_kingdom_ai.training import (
     TrainingConfig,
     create_train_state,
     load_training_config,
@@ -148,6 +148,11 @@ class TrainV2PipelineSummary:
                 else None
             ),
         }
+
+
+class TrainCheckpointKwargs(TypedDict):
+    resume_path: Path | None
+    bootstrap_weights_path: Path | None
 
 
 def run_train_v2_pipeline(
@@ -978,7 +983,7 @@ def _search_config_hash(config: SelfPlayConfig) -> str:
 def _train_checkpoint_kwargs(
     config: TrainV2PipelineConfig,
     checkpoint: Path,
-) -> dict[str, Path | None]:
+) -> TrainCheckpointKwargs:
     if config.train_checkpoint_mode == "resume":
         return {"resume_path": checkpoint, "bootstrap_weights_path": None}
     if config.train_checkpoint_mode == "bootstrap":

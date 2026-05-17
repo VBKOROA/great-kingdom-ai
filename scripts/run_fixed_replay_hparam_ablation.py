@@ -18,7 +18,7 @@ from great_kingdom_ai.evaluate import (
     save_arena_report,
 )
 from great_kingdom_ai.replay_buffer import ReplayBuffer
-from great_kingdom_ai.train import TrainingConfig, load_training_config, train_from_replay
+from great_kingdom_ai.training import TrainingConfig, load_training_config, train_from_replay
 
 DEFAULT_WORK_DIR = Path("data/runpod/pure-gumbel-medium-plus")
 DEFAULT_TRAIN_CONFIG = Path("configs/runpod/train.json")

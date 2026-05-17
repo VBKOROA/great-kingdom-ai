@@ -20,7 +20,7 @@ assert SPEC.loader is not None
 sys.modules[SPEC.name] = module
 SPEC.loader.exec_module(module)
 
-from great_kingdom_ai.train import (  # noqa: E402
+from great_kingdom_ai.training import (  # noqa: E402
     TrainingConfig,
     create_train_state,
     save_checkpoint,

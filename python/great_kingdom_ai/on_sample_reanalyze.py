@@ -95,7 +95,7 @@ class OnSampleReanalyzeDataset:
         checkpoint_path: str | Path,
         config: ReanalyzeConfig,
     ) -> None:
-        from great_kingdom_ai.train import load_checkpoint
+        from great_kingdom_ai.training import load_checkpoint
 
         if len(replay) == 0:
             raise ValueError("trajectory replay must contain at least one transition")

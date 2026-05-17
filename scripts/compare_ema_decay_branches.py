@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 from great_kingdom_ai.replay import TrajectoryReplayDataset, TrajectoryReplayStore
-from great_kingdom_ai.train import TrainingConfig, load_training_config, train_from_replay
+from great_kingdom_ai.training import TrainingConfig, load_training_config, train_from_replay
 
 DEFAULT_REPLAY = Path("data/runpod/train-v2-gumbel-512k/replay/trajectory-replay.npz")
 DEFAULT_SOURCE = Path("data/runpod/train-v2-gumbel-512k/checkpoints/training-latest.pt")

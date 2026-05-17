@@ -407,7 +407,7 @@ def build_reanalyze_snapshot_from_store(
     config: ReanalyzeConfig,
     progress_callback: ReanalyzeProgressCallback | None = None,
 ) -> ReanalyzeTargetSnapshot:
-    from great_kingdom_ai.train import load_checkpoint
+    from great_kingdom_ai.training import load_checkpoint
 
     if len(replay) == 0:
         raise ValueError("trajectory replay must contain at least one transition")

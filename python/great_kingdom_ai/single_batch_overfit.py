@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
 
 from great_kingdom_ai.replay_buffer import ReplayBuffer
-from great_kingdom_ai.train import (
+from great_kingdom_ai.training import (
     TrainingBatch,
     TrainingConfig,
     compute_losses,

@@ -36,7 +36,7 @@ def main() -> NoReturn:
 
     from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
     from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
-    from great_kingdom_ai.train import TrainingConfig, load_training_config, train_from_replay
+    from great_kingdom_ai.training import TrainingConfig, load_training_config, train_from_replay
 
     config = load_training_config(args.config)
     device_name = args.device or config.device

@@ -22,7 +22,11 @@ from great_kingdom_ai.onnx_export import (  # noqa: E402
     compare_checkpoint_to_onnx,
     export_checkpoint_to_onnx,
 )
-from great_kingdom_ai.train import TrainingConfig, create_train_state, save_checkpoint  # noqa: E402
+from great_kingdom_ai.training import (  # noqa: E402
+    TrainingConfig,
+    create_train_state,
+    save_checkpoint,
+)
 
 
 def _save_test_checkpoint(tmp_path) -> object:

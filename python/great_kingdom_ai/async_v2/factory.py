@@ -11,7 +11,7 @@ from great_kingdom_ai.async_v2.config import FactoryInitV2Config, FactoryInitV2S
 from great_kingdom_ai.async_v2.paths import _factory_checkpoint_path, _factory_onnx_output_path
 from great_kingdom_ai.onnx_export import export_checkpoint_to_onnx
 from great_kingdom_ai.pipeline_printer import PipelinePrinter
-from great_kingdom_ai.train import TrainingConfig, create_train_state, save_checkpoint
+from great_kingdom_ai.training import TrainingConfig, create_train_state, save_checkpoint
 
 
 def run_factory_init_v2_once(

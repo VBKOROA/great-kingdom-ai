@@ -576,7 +576,7 @@ def load_model_from_checkpoint(
     device: str = "cpu",
     prefer_ema: bool = True,
 ) -> Any:
-    from great_kingdom_ai.train import load_checkpoint
+    from great_kingdom_ai.training import load_checkpoint
 
     state = load_checkpoint(path, device=device, prefer_ema=prefer_ema)
     state.model.eval()

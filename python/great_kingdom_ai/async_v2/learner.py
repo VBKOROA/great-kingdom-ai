@@ -30,7 +30,7 @@ from great_kingdom_ai.onnx_export import export_checkpoint_to_onnx
 from great_kingdom_ai.pipeline_printer import PipelinePrinter
 from great_kingdom_ai.replay import TrajectoryReplayDataset, TrajectoryReplayStore
 from great_kingdom_ai.runpod_pruning import PruneItem, prune_items
-from great_kingdom_ai.train import (
+from great_kingdom_ai.training import (
     TrainingConfig,
     summarize_checkpoint_optimizer_state,
     train_from_replay,

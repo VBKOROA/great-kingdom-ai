@@ -20,7 +20,7 @@ from great_kingdom_ai.evaluate import (
 )
 from great_kingdom_ai.online_aggregate_replay import OnlineAggregateReplayBuffer
 from great_kingdom_ai.replay_aggregate import _sample_weights_from_counts
-from great_kingdom_ai.train import TrainingConfig, load_training_config, train_from_replay
+from great_kingdom_ai.training import TrainingConfig, load_training_config, train_from_replay
 
 DEFAULT_WORK_DIR = Path("data/runpod/pure-gumbel-medium-plus")
 DEFAULT_TRAIN_CONFIG = Path("configs/runpod/train.json")
