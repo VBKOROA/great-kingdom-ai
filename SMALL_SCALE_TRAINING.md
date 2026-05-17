@@ -145,6 +145,95 @@ sample_metadata:
 과거 policy 자체를 opponent로 많이 저장하지 못하더라도, `root_policy_or_logits`를 저장하면
 학습 중 과거 target을 일부 유지할 수 있다.
 
+## Batch-Local PER
+
+학습 시간을 거의 늘리지 않는 priority sampling은 batch-local PER 형태로 구현한다. replay 전체를
+현재 model로 다시 평가해서 priority를 갱신하는 방식은 추가 forward 비용이 크므로 기본 구조에서
+제외한다. MCTS/reanalyse 기반 priority도 search 비용이 크므로 중반 이후 필요할 때만 검토한다.
+
+PER에서 세 종류의 weight는 분리한다.
+
+```text
+sampling_priorities[i]:
+  sample i를 얼마나 자주 뽑을지 결정하는 값
+
+sample_loss_weights[i]:
+  replay가 원래 가진 loss 가중치
+  기본값은 1
+
+importance_weights[i]:
+  priority sampling이 만든 bias를 보정하는 IS weight
+```
+
+최종 loss row weight는 아래처럼 계산한다.
+
+```text
+final_weight_i = sample_loss_weights_i * importance_weights_i
+```
+
+`sample_loss_weights`를 priority로도 쓰고 loss weight로도 쓰지 않는다. 두 역할을 섞으면 priority가
+높은 샘플이 더 자주 뽑히면서 loss에서도 더 세게 반영되어 이중 가중이 된다.
+
+샘플링 확률은 일반적인 PER 형태를 따른다.
+
+```text
+P(i) = sampling_priorities[i]^alpha / sum_j sampling_priorities[j]^alpha
+
+importance_weight_i = (N * P(i))^-beta
+importance_weight_i = importance_weight_i / max(importance_weight)
+```
+
+batch-local PER의 update는 train step에서 이미 계산한 per-sample loss를 사용한다. 별도 model
+forward를 추가하지 않는다.
+
+```text
+1. priority 기반으로 replay index batch를 뽑는다.
+2. model forward로 policy logits와 value를 계산한다.
+3. reduction 전에 per-sample policy KL/value error를 계산한다.
+4. weighted loss로 backward/update를 수행한다.
+5. 방금 학습한 replay indexes의 sampling priority만 갱신한다.
+```
+
+권장 priority score:
+
+```yaml
+batch_local_per:
+  enabled: true
+  alpha: 0.5-0.6
+  beta: 0.2-0.4
+  epsilon: 0.001
+  max_priority: 8-16
+  priority_ema: 0.9
+  score:
+    policy_kl_weight: 1.0
+    value_abs_error_weight: 0.5
+```
+
+score 계산:
+
+```text
+policy_kl_i = cross_entropy(target_policy_i, current_policy_i) - entropy(target_policy_i)
+value_abs_error_i = abs(predicted_value_i - target_value_i)
+
+new_priority_i =
+  epsilon
+  + policy_kl_weight * policy_kl_i
+  + value_abs_error_weight * value_abs_error_i
+
+sampling_priorities[i] =
+  priority_ema * old_priority_i
+  + (1 - priority_ema) * clamp(new_priority_i, epsilon, max_priority)
+```
+
+새로 import된 transition은 현재 최대 priority로 초기화한다.
+
+```text
+new_sample_priority = current_max_priority
+```
+
+이렇게 하면 새 self-play 데이터가 replay에 들어온 뒤 한 번도 학습되지 못하고 묻히는 문제를 줄일 수
+있다. 한 번 학습된 뒤에는 실제 per-sample error에 따라 priority가 조정된다.
+
 ## Reanalyse
 
 전체 buffer reanalyse는 단일 GPU 환경에서 비싸다. 따라서 batch 일부만 최신 network로 다시
@@ -366,6 +455,16 @@ replay:
   hard_case_games: 3000-8000
   store_policy_logits: true
 
+batch_local_per:
+  enabled: true
+  alpha: 0.5-0.6
+  beta: 0.2-0.4
+  epsilon: 0.001
+  max_priority: 8-16
+  priority_ema: 0.9
+  policy_kl_weight: 1.0
+  value_abs_error_weight: 0.5
+
 reanalyze:
   enabled: true
   batch_ratio: 0.25
@@ -409,6 +508,7 @@ old anchor opponent로 과거 메타를 보존하며, hard case와 partial reana
 
 - latest-vs-latest만 돌리지 않는다.
 - replay를 recent-only로 만들지 않는다.
+- priority sampling은 replay-wide refresh가 아니라 batch-local PER로 시작한다.
 - best snapshot과 arena gate는 초기 구조에서 제외한다.
 - fp16 weight-only snapshot으로 저장공간 부담을 낮춘다.
 - 전체 reanalyse보다 partial reanalyse를 우선한다.
