@@ -176,19 +176,6 @@ nohup ./scripts/save_training_snapshots.sh > snapshots.log 2>&1 &
 현재 async v2에서는 arena promote를 자동으로 하지 않습니다. 가장 최신 모델은
 `checkpoints/training-latest.pt`이고, "검증된 최강"은 snapshot끼리 arena 비교해서 고릅니다.
 
-### 단일 파이프라인
-
-actor/learner 분리 없이 한 프로세스로 전체 iteration을 돌리고 싶을 때만
-`great-kingdom-train-v2`를 사용합니다.
-
-```bash
-great-kingdom-train-v2 \
-  --device cuda \
-  --pipeline-config configs/runpod/train-v2-pipeline.json \
-  --train-config configs/runpod/train.json \
-  --arena-config configs/runpod/arena.json
-```
-
 ## Runpod 설치
 
 Runpod에서는 기본 PyTorch/CUDA 설치를 유지하기 위해 setup script를 사용합니다.
@@ -394,13 +381,12 @@ great-kingdom-play --replay-actions '20,68,77' --pause
 
 ## 기타 명령
 
-async v2에서는 learner를 직접 실행하는 대신 `great-kingdom-learner-v2`를 사용합니다.
-단일 `train-v2` 파이프라인에서 target snapshot이 준비되어 있을 때만 저수준 learner CLI를 직접
-사용합니다.
+async v2 운영 경로에서는 `great-kingdom-learner-v2`를 사용합니다. 저수준 learner CLI는 이미
+준비된 trajectory replay를 대상으로 한 수동 학습/진단에만 사용합니다.
 
 ```bash
 great-kingdom-train \
-  --replay data/runpod/train-v2-gumbel-512k/targets/latest.npz \
+  --replay data/runpod/train-v2-gumbel-512k/replay/trajectory-replay.npz \
   --checkpoint data/runpod/train-v2-gumbel-512k/checkpoints/candidate.pt \
   --resume data/runpod/train-v2-gumbel-512k/checkpoints/training-latest.pt \
   --config configs/runpod/train.json \
@@ -411,7 +397,7 @@ great-kingdom-train \
 
 ```bash
 great-kingdom-single-batch-overfit \
-  --replay data/runpod/train-v2-gumbel-512k/targets/latest.npz \
+  --replay data/runpod/train-v2-gumbel-512k/replay/trajectory-replay.npz \
   --config configs/runpod/train.json \
   --device cuda \
   --steps 1000 \

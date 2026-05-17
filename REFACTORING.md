@@ -281,6 +281,7 @@ Python 경계가 안정된 뒤 Rust를 정리한다.
 - Rust Gumbel search의 PyO3 binding, root search helper, profiling 구조를 분리했다.
 - legacy `ReplayBuffer` 저장소와 `.npz` replay 저장/로드 경로를 제거했다.
 - aggregate replay와 오래된 ablation 실험 경로를 제거했다.
+- 단일 train v2 pipeline 경로를 제거했다.
 
 아직 남은 작업은 새 구조 분리보다 legacy 제거와 최종 API 축소에 가깝다.
 
@@ -310,29 +311,25 @@ Python 경계가 안정된 뒤 Rust를 정리한다.
 - `rust_onnx_replay.py`는 Rust self-play 산출물을 `TrajectoryReplayStore`로 물질화하고
   game log를 append하는 trajectory-only helper로 축소했다.
 
-### 남은 작업 1: 단일 train v2 pipeline 제거
+### 완료된 추가 작업 3: 단일 train v2 pipeline 제거
 
-async v2가 주 실행 경로가 되었으므로 단일 pipeline 경로는 제거 대상이다.
+2026-05-17에 async v2가 주 실행 경로가 되었으므로 단일 pipeline 경로를 제거했다.
 
-남은 주요 파일:
+정리된 내용:
 
-- `python/great_kingdom_ai/train_v2_pipeline.py`
-- `tests/test_train_v2_pipeline.py`
-- `great-kingdom-train-v2` entrypoint
+- `python/great_kingdom_ai/train_v2_pipeline.py`를 삭제했다.
+- `tests/test_train_v2_pipeline.py`를 삭제했다.
+- `great-kingdom-train-v2` entrypoint를 제거했다.
+- README의 단일 pipeline 실행 안내를 제거하고, 저수준 learner CLI는 trajectory replay 대상
+  수동 학습/진단 용도로만 설명했다.
 
-정리 방향:
-
-- smoke 용도만 남아 있으면 `scripts/run_m*_smoke.py`에서 async v2 함수 조합으로 대체한다.
-- 과거 자동 promote 정책은 복구하지 않는다.
-- 삭제 후 깨지는 테스트가 단일 pipeline 전용이면 제거한다.
-
-### 남은 작업 2: entrypoint 최종 정리
+### 남은 작업 1: entrypoint 최종 정리
 
 현재 최종 주 경로와 무관한 entrypoint가 일부 남아 있다.
 
 제거 후보:
 
-- `great-kingdom-train-v2`
+- 최종 주 경로와 무관해진 진단/실험 entrypoint
 
 유지 후보:
 
@@ -344,7 +341,7 @@ async v2가 주 실행 경로가 되었으므로 단일 pipeline 경로는 제�
 - `great-kingdom-replay-monitor-v2`
 - 현재 운영에 필요한 진단 명령
 
-### 남은 작업 3: 검증 debt 정리
+### 남은 작업 2: 검증 debt 정리
 
 기능 테스트는 통과하지만 정적 검증 debt가 남아 있다.
 
@@ -368,7 +365,7 @@ async v2가 주 실행 경로가 되었으므로 단일 pipeline 경로는 제�
 6. production code의 `ReplayBuffer` 저장/로드 제거 (완료)
 7. migration modules 제거
 8. aggregate/ablation scripts 제거 또는 trajectory-only로 축소 (완료)
-9. 단일 train v2 pipeline 제거
+9. 단일 train v2 pipeline 제거 (완료)
 
 ## 테스트 전략
 
