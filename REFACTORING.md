@@ -280,6 +280,7 @@ Python 경계가 안정된 뒤 Rust를 정리한다.
 - self-play/arena Python 경계를 정리하고 Rust core adapter 공통 helper를 만들었다.
 - Rust Gumbel search의 PyO3 binding, root search helper, profiling 구조를 분리했다.
 - legacy `ReplayBuffer` 저장소와 `.npz` replay 저장/로드 경로를 제거했다.
+- aggregate replay와 오래된 ablation 실험 경로를 제거했다.
 
 아직 남은 작업은 새 구조 분리보다 legacy 제거와 최종 API 축소에 가깝다.
 
@@ -296,30 +297,20 @@ Python 경계가 안정된 뒤 Rust를 정리한다.
 - 테스트 fixture는 `tests/_training_helpers.py`의 작은 in-memory `ReplayDataset`으로 대체했다.
 - self-play artifact helper의 legacy `replay.npz` 저장/로드 API와 테스트를 제거했다.
 
-### 남은 작업 1: aggregate/ablation 실험 코드 제거 또는 축소
+### 완료된 추가 작업 2: aggregate/ablation 실험 코드 제거
 
-aggregate replay와 오래된 ablation 경로는 아직 남아 있다.
+2026-05-17에 aggregate replay와 오래된 ablation 경로를 제거했다.
 
-남은 주요 파일:
+정리된 내용:
 
-- `python/great_kingdom_ai/online_aggregate_replay.py`
-- `python/great_kingdom_ai/replay_aggregate.py`
-- `python/great_kingdom_ai/rust_onnx_replay.py`
-- `scripts/run_aggregate_replay_ablation.py`
-- `scripts/run_aggregate_weight_mode_comparison.py`
-- `scripts/run_fixed_replay_hparam_ablation.py`
-- `tests/test_online_aggregate_replay.py`
-- `tests/test_replay_aggregate.py`
-- `tests/test_rust_onnx_replay.py`
-- `tests/test_aggregate_weight_mode_comparison_script.py`
+- `online_aggregate_replay.py`와 `replay_aggregate.py`를 삭제했다.
+- aggregate replay ablation, aggregate weight comparison, fixed replay hparam ablation script를 삭제했다.
+- `great-kingdom-aggregate-replay` entrypoint를 제거했다.
+- aggregate 전용 테스트를 삭제했다.
+- `rust_onnx_replay.py`는 Rust self-play 산출물을 `TrajectoryReplayStore`로 물질화하고
+  game log를 append하는 trajectory-only helper로 축소했다.
 
-정리 방향:
-
-- 현재 운영 의사결정에 쓰지 않는 ablation script는 삭제한다.
-- 남길 진단 도구는 `TrajectoryReplayStore`만 입력으로 받게 바꾼다.
-- `great-kingdom-aggregate-replay` entrypoint는 제거 후보로 둔다.
-
-### 남은 작업 2: 단일 train v2 pipeline 제거
+### 남은 작업 1: 단일 train v2 pipeline 제거
 
 async v2가 주 실행 경로가 되었으므로 단일 pipeline 경로는 제거 대상이다.
 
@@ -335,13 +326,12 @@ async v2가 주 실행 경로가 되었으므로 단일 pipeline 경로는 제�
 - 과거 자동 promote 정책은 복구하지 않는다.
 - 삭제 후 깨지는 테스트가 단일 pipeline 전용이면 제거한다.
 
-### 남은 작업 3: entrypoint 최종 정리
+### 남은 작업 2: entrypoint 최종 정리
 
 현재 최종 주 경로와 무관한 entrypoint가 일부 남아 있다.
 
 제거 후보:
 
-- `great-kingdom-aggregate-replay`
 - `great-kingdom-train-v2`
 
 유지 후보:
@@ -354,7 +344,7 @@ async v2가 주 실행 경로가 되었으므로 단일 pipeline 경로는 제�
 - `great-kingdom-replay-monitor-v2`
 - 현재 운영에 필요한 진단 명령
 
-### 남은 작업 4: 검증 debt 정리
+### 남은 작업 3: 검증 debt 정리
 
 기능 테스트는 통과하지만 정적 검증 debt가 남아 있다.
 
@@ -377,7 +367,7 @@ async v2가 주 실행 경로가 되었으므로 단일 pipeline 경로는 제�
 5. `TrajectoryReplayBuffer` 제거
 6. production code의 `ReplayBuffer` 저장/로드 제거 (완료)
 7. migration modules 제거
-8. aggregate/ablation scripts 제거 또는 trajectory-only로 축소
+8. aggregate/ablation scripts 제거 또는 trajectory-only로 축소 (완료)
 9. 단일 train v2 pipeline 제거
 
 ## 테스트 전략

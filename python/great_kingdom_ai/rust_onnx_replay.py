@@ -8,9 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-import numpy as np
-
-from great_kingdom_ai.online_aggregate_replay import OnlineAggregateReplayBuffer
 from great_kingdom_ai.replay.sample import ReplaySample
 from great_kingdom_ai.replay.schema import GameLogLike, TrajectoryEpisode
 from great_kingdom_ai.replay.trajectory import (
@@ -18,7 +15,6 @@ from great_kingdom_ai.replay.trajectory import (
     trajectory_episode_from_self_play_result,
 )
 from great_kingdom_ai.self_play import GameLog
-from great_kingdom_ai.self_play_data import value_target_for_player
 
 
 @dataclass(frozen=True)
@@ -47,20 +43,12 @@ def import_rust_self_play_samples(
     replay_path: str | Path,
     replay_capacity: int,
     game_log_path: str | Path | None = None,
-    aggregate_replay_path: str | Path | None = None,
-    aggregate_replay_weight_mode: str = "sqrt_count",
-    aggregate_replay_weight_cap: float | None = 16.0,
-    materialize_raw_replay: bool = True,
-    aggregate_replay: OnlineAggregateReplayBuffer | None = None,
-    save_aggregate_replay: bool = True,
 ) -> RustReplayImportSummary:
-    if not materialize_raw_replay and aggregate_replay_path is None:
-        raise ValueError("materialize_raw_replay=False requires aggregate_replay_path")
-
     artifact = Path(artifact_dir)
     replay_file = Path(replay_path)
     replay_samples = 0
-    if materialize_raw_replay:
+
+    if samples:
         replay = (
             TrajectoryReplayStore.load(replay_file)
             if replay_file.exists()
@@ -75,20 +63,6 @@ def import_rust_self_play_samples(
         )
         replay.save(replay_file, compressed=False)
         replay_samples = len(replay)
-    if aggregate_replay_path is not None:
-        aggregate_samples = _extend_online_aggregate_replay(
-            aggregate_replay_path=Path(aggregate_replay_path),
-            raw_replay_path=replay_file,
-            replay_capacity=replay_capacity,
-            samples=samples,
-            sample_weight_mode=aggregate_replay_weight_mode,
-            sample_weight_cap=aggregate_replay_weight_cap,
-            raw_replay_includes_samples=materialize_raw_replay,
-            aggregate_replay=aggregate_replay,
-            save=save_aggregate_replay,
-        )
-        if not materialize_raw_replay:
-            replay_samples = aggregate_samples
 
     if game_log_path is not None:
         log_path = Path(game_log_path)
@@ -106,54 +80,6 @@ def import_rust_self_play_samples(
         replay_samples=replay_samples,
         imported_games=len(logs),
     )
-
-
-def _extend_online_aggregate_replay(
-    *,
-    aggregate_replay_path: Path,
-    raw_replay_path: Path,
-    replay_capacity: int,
-    samples: Sequence[ReplaySample],
-    sample_weight_mode: str,
-    sample_weight_cap: float | None,
-    raw_replay_includes_samples: bool,
-    aggregate_replay: OnlineAggregateReplayBuffer | None = None,
-    save: bool = True,
-) -> int:
-    if aggregate_replay is not None:
-        replay = aggregate_replay
-        replay.extend(samples)
-    elif aggregate_replay_path.exists():
-        replay = OnlineAggregateReplayBuffer.load(
-            aggregate_replay_path,
-            capacity=replay_capacity,
-            sample_weight_mode=sample_weight_mode,
-            sample_weight_cap=sample_weight_cap,
-        )
-        replay.extend(samples)
-    else:
-        replay = OnlineAggregateReplayBuffer(
-            replay_capacity,
-            sample_weight_mode=sample_weight_mode,
-            sample_weight_cap=sample_weight_cap,
-        )
-        if raw_replay_path.exists():
-            _extend_online_aggregate_from_file(
-                replay,
-                raw_replay_path,
-            )
-        if not raw_replay_includes_samples:
-            replay.extend(samples)
-    if save:
-        replay.save(aggregate_replay_path, compressed=False)
-    return len(replay)
-
-
-def _extend_online_aggregate_from_file(
-    replay: OnlineAggregateReplayBuffer,
-    raw_replay_path: Path,
-) -> None:
-    replay.extend(_samples_from_trajectory_store(TrajectoryReplayStore.load(raw_replay_path)))
 
 
 def _episodes_from_logs_and_samples(
@@ -182,35 +108,6 @@ def _episodes_from_logs_and_samples(
     if sample_offset != len(samples):
         raise ValueError("replay samples must be grouped by game log moves")
     return episodes
-
-
-def _samples_from_trajectory_store(store: TrajectoryReplayStore) -> list[ReplaySample]:
-    episode_indexes = np.searchsorted(
-        store.episode_offsets,
-        np.arange(len(store), dtype=np.int64),
-        side="right",
-    ) - 1
-    samples = []
-    for row in range(len(store)):
-        samples.append(
-            ReplaySample(
-                features=store.features[row],
-                policy=store.policy_targets[row],
-                value=value_target_for_player(
-                    player=int(store.players[row]),
-                    winner=int(store.episode_winners[int(episode_indexes[row])]),
-                ),
-                root_policy_logits=(
-                    store.root_policy_logits[row]
-                    if store.root_policy_logits is not None
-                    and store.root_policy_logits_present is not None
-                    and store.root_policy_logits_present[row]
-                    else None
-                ),
-                sample_weight=float(store.sample_weights[row]),
-            )
-        )
-    return samples
 
 
 def _read_json_list(path: Path) -> list[dict[str, Any]]:
