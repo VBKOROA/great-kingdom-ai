@@ -18,6 +18,7 @@ from great_kingdom_ai.evaluate import (
     run_arena,
     save_arena_report,
 )
+from great_kingdom_ai.replay import TrajectoryReplayDataset, TrajectoryReplayStore
 from great_kingdom_ai.replay_aggregate import (
     aggregate_duplicate_replay,
 )
@@ -27,7 +28,6 @@ from great_kingdom_ai.replay_aggregate import (
 from great_kingdom_ai.replay_aggregate import (
     save_replay as save_aggregated_replay,
 )
-from great_kingdom_ai.replay_buffer import ReplayBuffer
 from great_kingdom_ai.training import TrainingConfig, load_training_config, train_from_replay
 
 DEFAULT_WORK_DIR = Path("data/runpod/onnx-aggregate-diagnostics")
@@ -73,7 +73,7 @@ def main() -> NoReturn:
     args = build_parser().parse_args()
     work_dir = args.work_dir
     best_checkpoint = work_dir / "checkpoints" / "best.pt"
-    raw_replay_path = work_dir / "replay" / "replay.npz"
+    raw_replay_path = work_dir / "replay" / "trajectory-replay.npz"
     aggregate_replay_path = work_dir / "replay" / "replay-aggregated.npz"
     output_dir = work_dir / "reports" / "aggregate-ablation"
     candidate_dir = work_dir / "checkpoints" / "aggregate-ablation"
@@ -107,7 +107,7 @@ def main() -> NoReturn:
 
     for variant in args.variants:
         replay_path = raw_replay_path if variant == "raw" else aggregate_replay_path
-        replay = ReplayBuffer.load(replay_path)
+        replay = TrajectoryReplayDataset(TrajectoryReplayStore.load(replay_path))
         for steps in args.steps:
             run_id = f"{variant}-steps{steps:04d}"
             candidate_path = candidate_dir / f"{run_id}.pt"

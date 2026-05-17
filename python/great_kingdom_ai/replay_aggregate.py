@@ -14,7 +14,7 @@ import numpy as np
 import numpy.typing as npt
 
 from great_kingdom_ai.features import ACTION_SPACE
-from great_kingdom_ai.replay_buffer import FEATURE_SHAPE
+from great_kingdom_ai.replay.schema import FEATURE_SHAPE
 
 FloatArray = npt.NDArray[np.float32]
 IntArray = npt.NDArray[np.int64]

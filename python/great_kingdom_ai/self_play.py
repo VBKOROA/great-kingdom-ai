@@ -9,7 +9,7 @@ from collections.abc import Callable, Sequence
 from typing import Any, NoReturn, cast
 
 from great_kingdom_ai import game_core
-from great_kingdom_ai.replay_buffer import ReplaySample
+from great_kingdom_ai.replay.sample import ReplaySample
 from great_kingdom_ai.self_play_runner import play_self_play_game as _play_self_play_game
 from great_kingdom_ai.self_play_runner import (
     play_self_play_games_batched as _play_self_play_games_batched,

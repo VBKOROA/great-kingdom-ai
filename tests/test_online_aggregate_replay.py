@@ -8,7 +8,7 @@ import pytest
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.online_aggregate_replay import OnlineAggregateReplayBuffer
 from great_kingdom_ai.priority_sampling import PrioritySamplingConfig
-from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
+from great_kingdom_ai.replay.sample import ReplaySample
 
 
 def make_sample(
@@ -70,8 +70,7 @@ def test_online_aggregate_replay_save_load_preserves_counts(tmp_path: Path) -> N
     loaded.push(make_sample(0, 2, value=1.0))
     loaded.save(path)
 
-    as_training_replay = ReplayBuffer.load(path)
-    sample = as_training_replay.sample(1, random.Random(0))[0]
+    sample = loaded.sample(1, random.Random(0))[0]
 
     assert len(loaded) == 1
     assert loaded.raw_sample_count == 3

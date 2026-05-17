@@ -8,8 +8,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from great_kingdom_ai.priority_sampling import PrioritySamplingConfig, sample_priority_indexes
+from great_kingdom_ai.replay.sample import ReplaySample
 from great_kingdom_ai.replay.trajectory import TrajectoryReplayStore
-from great_kingdom_ai.replay_buffer import ReplaySample
 from great_kingdom_ai.self_play_data import value_target_for_player
 
 

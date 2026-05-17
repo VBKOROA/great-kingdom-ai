@@ -10,7 +10,7 @@ from great_kingdom_ai.augmentation import (
     augment_training_arrays_randomly,
 )
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
-from great_kingdom_ai.replay_buffer import ReplaySample
+from great_kingdom_ai.replay.sample import ReplaySample
 
 
 def make_sample(action: int) -> ReplaySample:

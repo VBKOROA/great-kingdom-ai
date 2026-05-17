@@ -16,7 +16,7 @@ from great_kingdom_ai.augmentation import (
 from great_kingdom_ai.features import BOARD_CELLS, LEGAL_PLACE_FEATURE_CHANNEL, PASS_ACTION
 from great_kingdom_ai.learner_prefetch import PrefetchIterator
 from great_kingdom_ai.priority_sampling import PrioritySamplingConfig
-from great_kingdom_ai.replay_buffer import ReplaySample
+from great_kingdom_ai.replay.sample import ReplaySample
 from great_kingdom_ai.training.config import TrainingConfig
 from great_kingdom_ai.training.torch_utils import _import_torch
 

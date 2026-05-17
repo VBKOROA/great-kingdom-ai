@@ -15,7 +15,7 @@ from great_kingdom_ai.replay import (
     TrajectoryTransition,
     legal_mask_from_features,
 )
-from great_kingdom_ai.replay_buffer import ReplaySample
+from great_kingdom_ai.replay.sample import ReplaySample
 from great_kingdom_ai.self_play import GameLog, MoveLog, SelfPlayConfig
 from great_kingdom_ai.self_play_data import value_target_for_player
 

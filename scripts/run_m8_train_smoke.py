@@ -8,11 +8,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 from dataclasses import asdict
 from pathlib import Path
 from typing import NoReturn
 
 import numpy as np
+from great_kingdom_ai.priority_sampling import legal_masks_from_features
+from great_kingdom_ai.replay.sample import ReplaySample
+from great_kingdom_ai.training.batch import TrainingArrays
 
 DEFAULT_CONFIG = Path("configs/m8-train-smoke.json")
 
@@ -35,7 +39,6 @@ def main() -> NoReturn:
         raise SystemExit("PyTorch is required for M8 train smoke test") from exc
 
     from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
-    from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
     from great_kingdom_ai.training import TrainingConfig, load_training_config, train_from_replay
 
     config = load_training_config(args.config)
@@ -47,18 +50,18 @@ def main() -> NoReturn:
     config = TrainingConfig(**{**asdict(config), "device": device_name})
 
     args.work_dir.mkdir(parents=True, exist_ok=True)
-    replay = ReplayBuffer(capacity=max(8, config.batch_size))
+    samples: list[ReplaySample] = []
     for index in range(max(8, config.batch_size)):
         features = np.zeros((FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
         features[index % FEATURE_CHANNELS, index % BOARD_SIZE, (index * 2) % BOARD_SIZE] = 1.0
+        features[4, :, :] = 1.0
         policy = np.zeros(ACTION_SPACE, dtype=np.float32)
         policy[index % ACTION_SPACE] = 1.0
-        replay.push(
+        samples.append(
             ReplaySample(features=features, policy=policy, value=1.0 if index % 2 else -1.0)
         )
 
-    replay_path = args.work_dir / "replay.npz"
-    replay.save(replay_path)
+    replay = _ToyReplayDataset(samples)
     checkpoint_path = args.work_dir / "checkpoint.pt"
     summary = train_from_replay(replay, config, checkpoint_path=checkpoint_path, log_every=1)
     print(
@@ -68,13 +71,48 @@ def main() -> NoReturn:
                 "start_step": summary.start_step,
                 "end_step": summary.end_step,
                 "checkpoint": str(summary.checkpoint_path),
-                "replay": str(replay_path),
+                "replay_samples": len(replay),
                 "losses": summary.losses,
             },
             sort_keys=True,
         )
     )
     raise SystemExit(0)
+
+
+class _ToyReplayDataset:
+    def __init__(self, samples: list[ReplaySample]) -> None:
+        self._samples = samples
+
+    def __len__(self) -> int:
+        return len(self._samples)
+
+    def sample(self, batch_size: int, rng: random.Random) -> list[ReplaySample]:
+        return [self._samples[index] for index in rng.sample(range(len(self._samples)), batch_size)]
+
+    def sample_arrays(
+        self,
+        batch_size: int,
+        rng: random.Random,
+        *,
+        recent_fraction: float = 0.0,
+        recent_window: int = 0,
+    ) -> TrainingArrays:
+        del recent_fraction, recent_window
+        batch = self.sample(batch_size, rng)
+        features = np.stack([sample.features for sample in batch], axis=0).astype(np.float32)
+        return TrainingArrays(
+            features=np.ascontiguousarray(features, dtype=np.float32),
+            policies=np.ascontiguousarray(
+                np.stack([sample.policy for sample in batch], axis=0),
+                dtype=np.float32,
+            ),
+            values=np.ascontiguousarray(
+                np.asarray([sample.value for sample in batch], dtype=np.float32)
+            ),
+            sample_weights=np.ones((batch_size,), dtype=np.float32),
+            legal_masks=legal_masks_from_features(features),
+        )
 
 
 if __name__ == "__main__":

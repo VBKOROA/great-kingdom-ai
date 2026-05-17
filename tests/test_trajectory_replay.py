@@ -12,7 +12,7 @@ from great_kingdom_ai.replay import (
     legal_mask_from_features,
     trajectory_episode_from_self_play_result,
 )
-from great_kingdom_ai.replay_buffer import ReplaySample
+from great_kingdom_ai.replay.sample import ReplaySample
 from great_kingdom_ai.trajectory_targets import (
     BootstrapValueTargetConfig,
     bootstrap_value_target_for_transition,

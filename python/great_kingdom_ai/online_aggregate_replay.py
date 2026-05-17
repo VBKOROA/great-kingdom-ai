@@ -18,8 +18,9 @@ from great_kingdom_ai.priority_sampling import (
     legal_masks_from_features,
     sample_priority_indexes,
 )
+from great_kingdom_ai.replay.sample import ReplaySample, validate_replay_sample
+from great_kingdom_ai.replay.schema import FEATURE_SHAPE
 from great_kingdom_ai.replay_aggregate import _sample_weights_from_counts
-from great_kingdom_ai.replay_buffer import FEATURE_SHAPE, ReplaySample, _validated_sample
 
 
 @dataclass
@@ -76,7 +77,7 @@ class OnlineAggregateReplayBuffer:
         return len(self._entries)
 
     def push(self, sample: ReplaySample) -> None:
-        validated = _validated_sample(sample)
+        validated = validate_replay_sample(sample)
         digest = _feature_digest(validated.features)
         entry = self._entries.get(digest)
         if entry is None:

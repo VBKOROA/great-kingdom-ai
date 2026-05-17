@@ -25,7 +25,7 @@ from _training_helpers import (  # noqa: E402
     make_weighted_sample,
 )
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS  # noqa: E402
-from great_kingdom_ai.replay_buffer import ReplaySample  # noqa: E402
+from great_kingdom_ai.replay.sample import ReplaySample  # noqa: E402
 from great_kingdom_ai.training.batch import (  # noqa: E402
     TrainingArrays,
     arrays_to_batch,

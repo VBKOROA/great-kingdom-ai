@@ -9,7 +9,8 @@ from typing import Literal
 import numpy as np
 
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE
-from great_kingdom_ai.replay_buffer import FEATURE_SHAPE, ReplaySample
+from great_kingdom_ai.replay.sample import ReplaySample
+from great_kingdom_ai.replay.schema import FEATURE_SHAPE
 
 Symmetry = Literal[
     "identity",

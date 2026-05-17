@@ -279,30 +279,24 @@ Python 경계가 안정된 뒤 Rust를 정리한다.
 - reanalyze evaluator/target public API를 분리해 private cross-module import를 제거했다.
 - self-play/arena Python 경계를 정리하고 Rust core adapter 공통 helper를 만들었다.
 - Rust Gumbel search의 PyO3 binding, root search helper, profiling 구조를 분리했다.
+- legacy `ReplayBuffer` 저장소와 `.npz` replay 저장/로드 경로를 제거했다.
 
 아직 남은 작업은 새 구조 분리보다 legacy 제거와 최종 API 축소에 가깝다.
 
-### 남은 작업 1: ReplayBuffer legacy 제거
+### 완료된 추가 작업 1: ReplayBuffer legacy 제거
 
-`ReplayBuffer`는 아직 실험/fixture/보조 도구에 남아 있다.
+2026-05-17에 `ReplayBuffer` class와 legacy 저장 포맷 테스트를 제거했다.
 
-남은 주요 파일:
+정리된 내용:
 
-- `python/great_kingdom_ai/replay_buffer.py`
-- `python/great_kingdom_ai/artifacts.py`
-- `python/great_kingdom_ai/single_batch_overfit.py`
-- `python/great_kingdom_ai/rust_onnx_replay.py`
-- `scripts/run_m8_train_smoke.py`
-- `tests/test_replay_buffer.py`
-- `tests/_training_helpers.py`
+- `ReplaySample`과 검증 helper는 `replay.sample`로 옮겼다.
+- production 학습/diagnostic entrypoint에서 `ReplayBuffer.load()` 의존을 제거했다.
+- `single_batch_overfit` CLI는 `TrajectoryReplayStore`/`TrajectoryReplayDataset`을 입력으로 받는다.
+- Rust ONNX replay import의 raw materialization은 trajectory replay store를 사용한다.
+- 테스트 fixture는 `tests/_training_helpers.py`의 작은 in-memory `ReplayDataset`으로 대체했다.
+- self-play artifact helper의 legacy `replay.npz` 저장/로드 API와 테스트를 제거했다.
 
-정리 방향:
-
-- production 학습 경로에서 `ReplayBuffer.load()`와 `.npz` replay 저장/로드를 제거한다.
-- 테스트 fixture는 `ReplayDataset` protocol 또는 작은 trajectory fixture dataset으로 대체한다.
-- `ReplaySample`이 꼭 필요하면 test-only fixture 타입으로 좁힌다.
-
-### 남은 작업 2: aggregate/ablation 실험 코드 제거 또는 축소
+### 남은 작업 1: aggregate/ablation 실험 코드 제거 또는 축소
 
 aggregate replay와 오래된 ablation 경로는 아직 남아 있다.
 
@@ -325,7 +319,7 @@ aggregate replay와 오래된 ablation 경로는 아직 남아 있다.
 - 남길 진단 도구는 `TrajectoryReplayStore`만 입력으로 받게 바꾼다.
 - `great-kingdom-aggregate-replay` entrypoint는 제거 후보로 둔다.
 
-### 남은 작업 3: 단일 train v2 pipeline 제거
+### 남은 작업 2: 단일 train v2 pipeline 제거
 
 async v2가 주 실행 경로가 되었으므로 단일 pipeline 경로는 제거 대상이다.
 
@@ -341,7 +335,7 @@ async v2가 주 실행 경로가 되었으므로 단일 pipeline 경로는 제�
 - 과거 자동 promote 정책은 복구하지 않는다.
 - 삭제 후 깨지는 테스트가 단일 pipeline 전용이면 제거한다.
 
-### 남은 작업 4: entrypoint 최종 정리
+### 남은 작업 3: entrypoint 최종 정리
 
 현재 최종 주 경로와 무관한 entrypoint가 일부 남아 있다.
 
@@ -360,7 +354,7 @@ async v2가 주 실행 경로가 되었으므로 단일 pipeline 경로는 제�
 - `great-kingdom-replay-monitor-v2`
 - 현재 운영에 필요한 진단 명령
 
-### 남은 작업 5: 검증 debt 정리
+### 남은 작업 4: 검증 debt 정리
 
 기능 테스트는 통과하지만 정적 검증 debt가 남아 있다.
 
@@ -381,7 +375,7 @@ async v2가 주 실행 경로가 되었으므로 단일 pipeline 경로는 제�
 3. v1 actor/learner modules 제거
 4. legacy replay compatibility tests 제거
 5. `TrajectoryReplayBuffer` 제거
-6. production code의 `ReplayBuffer` 저장/로드 제거
+6. production code의 `ReplayBuffer` 저장/로드 제거 (완료)
 7. migration modules 제거
 8. aggregate/ablation scripts 제거 또는 trajectory-only로 축소
 9. 단일 train v2 pipeline 제거

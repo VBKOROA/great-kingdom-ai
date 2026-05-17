@@ -20,7 +20,7 @@ from great_kingdom_ai.features import (
     LEGAL_PLACE_FEATURE_CHANNEL,
     PASS_ACTION,
 )
-from great_kingdom_ai.replay_buffer import FEATURE_SHAPE
+from great_kingdom_ai.replay.schema import FEATURE_SHAPE
 
 FloatArray = npt.NDArray[np.float32]
 BoolArray = npt.NDArray[np.bool_]

@@ -15,7 +15,7 @@ from great_kingdom_ai.game_core import (
     evaluate_core_batch_priors,
     flat_features_for_replay,
 )
-from great_kingdom_ai.replay_buffer import ReplaySample
+from great_kingdom_ai.replay.sample import ReplaySample
 from great_kingdom_ai.self_play_data import (
     policy_target_from_visit_counts,
     value_target_for_player,

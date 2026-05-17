@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib
 import importlib.util
 
-import numpy as np
 import pytest
 
 _torch_spec = importlib.util.find_spec("torch")
@@ -13,26 +12,9 @@ pytestmark = pytest.mark.skipif(
 )
 torch = importlib.import_module("torch") if _torch_spec is not None else None
 
-from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS  # noqa: E402
-from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample  # noqa: E402
+from _training_helpers import make_replay  # noqa: E402
 from great_kingdom_ai.single_batch_overfit import run_single_batch_overfit  # noqa: E402
 from great_kingdom_ai.training import TrainingConfig  # noqa: E402
-
-
-def make_sample(index: int, value: float = 1.0) -> ReplaySample:
-    features = np.zeros((FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
-    features[index % FEATURE_CHANNELS, index % BOARD_SIZE, (index * 3) % BOARD_SIZE] = 1.0
-    features[4, :, :] = 1.0
-    policy = np.zeros(ACTION_SPACE, dtype=np.float32)
-    policy[index % ACTION_SPACE] = 1.0
-    return ReplaySample(features=features, policy=policy, value=value)
-
-
-def make_replay(size: int = 4) -> ReplayBuffer:
-    replay = ReplayBuffer(capacity=size)
-    for index in range(size):
-        replay.push(make_sample(index, value=1.0 if index % 2 else -1.0))
-    return replay
 
 
 def test_single_batch_overfit_saves_checkpoint_and_logs_losses(tmp_path) -> None:

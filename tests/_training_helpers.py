@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import random
+from dataclasses import replace
 
 import numpy as np
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
-from great_kingdom_ai.priority_sampling import PrioritySamplingConfig
-from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
+from great_kingdom_ai.priority_sampling import (
+    PrioritySamplingConfig,
+    legal_masks_from_features,
+    sample_priority_indexes,
+)
+from great_kingdom_ai.replay.sample import ReplaySample, validate_replay_sample
 from great_kingdom_ai.training.batch import TrainingArrays
 
 
@@ -28,11 +33,98 @@ def make_weighted_sample(index: int, value: float, sample_weight: float) -> Repl
     )
 
 
-def make_replay(size: int = 6) -> ReplayBuffer:
-    buffer = ReplayBuffer(capacity=size)
+def make_replay(size: int = 6) -> InMemoryReplayDataset:
+    buffer = InMemoryReplayDataset(capacity=size)
     for index in range(size):
         buffer.push(make_sample(index, value=1.0 if index % 2 else -1.0))
     return buffer
+
+
+class InMemoryReplayDataset:
+    def __init__(self, capacity: int) -> None:
+        if capacity <= 0:
+            raise ValueError("capacity must be positive")
+        self._capacity = capacity
+        self._samples: list[ReplaySample] = []
+
+    @property
+    def capacity(self) -> int:
+        return self._capacity
+
+    def __len__(self) -> int:
+        return len(self._samples)
+
+    def push(self, sample: ReplaySample) -> None:
+        if len(self._samples) == self._capacity:
+            self._samples.pop(0)
+        self._samples.append(validate_replay_sample(sample))
+
+    def sample(self, batch_size: int, rng: random.Random) -> list[ReplaySample]:
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if batch_size > len(self._samples):
+            raise ValueError("batch_size exceeds replay size")
+        return [self._samples[index] for index in rng.sample(range(len(self._samples)), batch_size)]
+
+    def sample_priority_biased(
+        self,
+        batch_size: int,
+        rng: random.Random,
+        *,
+        priority_config: PrioritySamplingConfig,
+        recent_fraction: float = 0.0,
+        recent_window: int = 0,
+    ) -> list[ReplaySample]:
+        sampled = sample_priority_indexes(
+            priorities=np.asarray(
+                [sample.sample_weight for sample in self._samples],
+                dtype=np.float32,
+            )
+            ** np.float32(priority_config.alpha),
+            batch_size=batch_size,
+            rng=rng,
+            beta=priority_config.beta,
+            recent_fraction=recent_fraction,
+            recent_window=recent_window,
+        )
+        return [
+            replace(
+                self._samples[index],
+                sample_weight=float(self._samples[index].sample_weight * importance_weight),
+            )
+            for index, importance_weight in zip(
+                sampled.indexes,
+                sampled.importance_weights,
+                strict=True,
+            )
+        ]
+
+    def sample_arrays(
+        self,
+        batch_size: int,
+        rng: random.Random,
+        *,
+        recent_fraction: float = 0.0,
+        recent_window: int = 0,
+        priority_config: PrioritySamplingConfig | None = None,
+    ) -> TrainingArrays:
+        del recent_fraction, recent_window, priority_config
+        selected = self.sample(batch_size, rng)
+        features = np.stack([sample.features for sample in selected], axis=0).astype(np.float32)
+        return TrainingArrays(
+            features=np.ascontiguousarray(features, dtype=np.float32),
+            policies=np.ascontiguousarray(
+                np.stack([sample.policy for sample in selected], axis=0),
+                dtype=np.float32,
+            ),
+            values=np.ascontiguousarray(
+                np.asarray([sample.value for sample in selected], dtype=np.float32)
+            ),
+            sample_weights=np.ascontiguousarray(
+                np.asarray([sample.sample_weight for sample in selected], dtype=np.float32)
+            ),
+            legal_masks=legal_masks_from_features(features),
+        )
 
 
 class RecencyReplay:

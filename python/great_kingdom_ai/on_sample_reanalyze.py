@@ -28,7 +28,7 @@ from great_kingdom_ai.reanalyze_evaluator import (
 from great_kingdom_ai.reanalyze_sampling import sample_indexes
 from great_kingdom_ai.reanalyze_targets import effective_bootstrap_td_steps
 from great_kingdom_ai.replay import TrajectoryReplayStore
-from great_kingdom_ai.replay_buffer import ReplaySample
+from great_kingdom_ai.replay.sample import ReplaySample
 from great_kingdom_ai.search_reanalyze import refresh_sampled_policies_with_search
 from great_kingdom_ai.self_play_data import value_target_for_player
 

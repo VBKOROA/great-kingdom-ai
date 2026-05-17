@@ -17,7 +17,7 @@ from great_kingdom_ai.evaluate import (
     run_arena,
     save_arena_report,
 )
-from great_kingdom_ai.replay_buffer import ReplayBuffer
+from great_kingdom_ai.replay import TrajectoryReplayDataset, TrajectoryReplayStore
 from great_kingdom_ai.training import TrainingConfig, load_training_config, train_from_replay
 
 DEFAULT_WORK_DIR = Path("data/runpod/pure-gumbel-medium-plus")
@@ -71,7 +71,7 @@ def main() -> NoReturn:
     args = build_parser().parse_args()
     work_dir = args.work_dir
     best_checkpoint = args.best or work_dir / "checkpoints" / "best.pt"
-    replay_path = args.replay or work_dir / "replay" / "replay-aggregated.npz"
+    replay_path = args.replay or work_dir / "replay" / "trajectory-replay.npz"
     output_dir = args.output_dir or work_dir / "reports" / "fixed-replay-hparam-ablation"
     candidate_dir = (
         args.candidate_dir or work_dir / "checkpoints" / "fixed-replay-hparam-ablation"
@@ -91,7 +91,7 @@ def main() -> NoReturn:
     )
     specs = [_parse_spec(spec) for spec in args.spec]
     train_seeds = args.train_seed or [base_train_config.seed]
-    replay = ReplayBuffer.load(replay_path)
+    replay = TrajectoryReplayDataset(TrajectoryReplayStore.load(replay_path))
     results_path = output_dir / "results.jsonl"
     results: list[dict[str, Any]] = []
 

@@ -31,7 +31,7 @@ from great_kingdom_ai.reanalyze_targets import (
     mcts_root_bootstrap_values_from_store,
 )
 from great_kingdom_ai.replay import FEATURE_SHAPE, TrajectoryReplayStore
-from great_kingdom_ai.replay_buffer import ReplaySample
+from great_kingdom_ai.replay.sample import ReplaySample
 from great_kingdom_ai.search_reanalyze import (
     SearchReanalyzeConfig,
     refresh_policies_with_search,

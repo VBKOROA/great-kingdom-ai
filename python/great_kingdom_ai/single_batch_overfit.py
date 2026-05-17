@@ -10,8 +10,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
 
-from great_kingdom_ai.replay_buffer import ReplayBuffer
+from great_kingdom_ai.replay import TrajectoryReplayDataset, TrajectoryReplayStore
 from great_kingdom_ai.training import (
+    ReplayDataset,
     TrainingBatch,
     TrainingConfig,
     compute_losses,
@@ -38,7 +39,7 @@ class SingleBatchOverfitSummary:
 
 
 def run_single_batch_overfit(
-    replay: ReplayBuffer,
+    replay: ReplayDataset,
     config: TrainingConfig,
     *,
     checkpoint_path: str | Path | None = None,
@@ -240,7 +241,7 @@ def _import_torch() -> Any:
 def main() -> NoReturn:
     args = build_parser().parse_args()
     config = _config_from_args(args)
-    replay = ReplayBuffer.load(args.replay)
+    replay = TrajectoryReplayDataset(TrajectoryReplayStore.load(args.replay))
     rng = random.Random(config.seed)
     diagnostic_batch = samples_to_batch(replay.sample(config.batch_size, rng), device=config.device)
 

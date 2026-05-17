@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from great_kingdom_ai.features import ACTION_SPACE
-from great_kingdom_ai.replay_buffer import FEATURE_SHAPE
+from great_kingdom_ai.replay.schema import FEATURE_SHAPE
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[1] / "scripts" / "run_aggregate_weight_mode_comparison.py"

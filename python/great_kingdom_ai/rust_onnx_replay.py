@@ -6,13 +6,19 @@ import json
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
 from great_kingdom_ai.online_aggregate_replay import OnlineAggregateReplayBuffer
-from great_kingdom_ai.replay_buffer import ReplayBuffer, ReplaySample
+from great_kingdom_ai.replay.sample import ReplaySample
+from great_kingdom_ai.replay.schema import GameLogLike, TrajectoryEpisode
+from great_kingdom_ai.replay.trajectory import (
+    TrajectoryReplayStore,
+    trajectory_episode_from_self_play_result,
+)
 from great_kingdom_ai.self_play import GameLog
+from great_kingdom_ai.self_play_data import value_target_for_player
 
 
 @dataclass(frozen=True)
@@ -56,11 +62,17 @@ def import_rust_self_play_samples(
     replay_samples = 0
     if materialize_raw_replay:
         replay = (
-            ReplayBuffer.load(replay_file)
+            TrajectoryReplayStore.load(replay_file)
             if replay_file.exists()
-            else ReplayBuffer(replay_capacity)
+            else TrajectoryReplayStore.empty(replay_capacity)
         )
-        replay.extend(samples)
+        replay.extend_episodes(
+            _episodes_from_logs_and_samples(
+                logs=logs,
+                samples=samples,
+                first_episode_id=replay.episode_count,
+            )
+        )
         replay.save(replay_file, compressed=False)
         replay_samples = len(replay)
     if aggregate_replay_path is not None:
@@ -141,35 +153,64 @@ def _extend_online_aggregate_from_file(
     replay: OnlineAggregateReplayBuffer,
     raw_replay_path: Path,
 ) -> None:
-    with np.load(raw_replay_path) as data:
-        features = np.asarray(data["features"], dtype=np.float32)
-        policies = np.asarray(data["policies"], dtype=np.float32)
-        values = np.asarray(data["values"], dtype=np.float32)
-        root_policy_logits = (
-            np.asarray(data["root_policy_logits"], dtype=np.float32)
-            if "root_policy_logits" in data
-            else None
-        )
-        sample_weights = (
-            np.asarray(data["sample_weights"], dtype=np.float32)
-            if "sample_weights" in data
-            else np.ones(values.shape, dtype=np.float32)
-        )
-    for index in range(features.shape[0]):
-        replay.push(
-            ReplaySample(
-                features=features[index],
-                policy=policies[index],
-                value=float(values[index]),
-                root_policy_logits=(
-                    root_policy_logits[index]
-                    if root_policy_logits is not None
-                    and np.isfinite(root_policy_logits[index]).all()
-                    else None
-                ),
-                sample_weight=float(sample_weights[index]),
+    replay.extend(_samples_from_trajectory_store(TrajectoryReplayStore.load(raw_replay_path)))
+
+
+def _episodes_from_logs_and_samples(
+    *,
+    logs: Sequence[GameLog],
+    samples: Sequence[ReplaySample],
+    first_episode_id: int,
+) -> list[TrajectoryEpisode]:
+    episodes = []
+    sample_offset = 0
+    for index, log in enumerate(logs):
+        sample_end = sample_offset + len(log.moves)
+        if sample_end > len(samples):
+            raise ValueError("not enough replay samples for game logs")
+        episode_samples = samples[sample_offset:sample_end]
+        sample_offset = sample_end
+        if not episode_samples:
+            continue
+        episodes.append(
+            trajectory_episode_from_self_play_result(
+                cast(GameLogLike, log),
+                episode_samples,
+                episode_id=first_episode_id + index,
             )
         )
+    if sample_offset != len(samples):
+        raise ValueError("replay samples must be grouped by game log moves")
+    return episodes
+
+
+def _samples_from_trajectory_store(store: TrajectoryReplayStore) -> list[ReplaySample]:
+    episode_indexes = np.searchsorted(
+        store.episode_offsets,
+        np.arange(len(store), dtype=np.int64),
+        side="right",
+    ) - 1
+    samples = []
+    for row in range(len(store)):
+        samples.append(
+            ReplaySample(
+                features=store.features[row],
+                policy=store.policy_targets[row],
+                value=value_target_for_player(
+                    player=int(store.players[row]),
+                    winner=int(store.episode_winners[int(episode_indexes[row])]),
+                ),
+                root_policy_logits=(
+                    store.root_policy_logits[row]
+                    if store.root_policy_logits is not None
+                    and store.root_policy_logits_present is not None
+                    and store.root_policy_logits_present[row]
+                    else None
+                ),
+                sample_weight=float(store.sample_weights[row]),
+            )
+        )
+    return samples
 
 
 def _read_json_list(path: Path) -> list[dict[str, Any]]:

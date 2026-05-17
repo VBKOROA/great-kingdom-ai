@@ -16,13 +16,13 @@ from great_kingdom_ai.features import (
     PASS_ACTION,
 )
 from great_kingdom_ai.replay.persistence import save_npz_atomic
+from great_kingdom_ai.replay.sample import ReplaySample
 from great_kingdom_ai.replay.schema import (
     FEATURE_SHAPE,
     GameLogLike,
     TrajectoryEpisode,
     TrajectoryTransition,
 )
-from great_kingdom_ai.replay_buffer import ReplaySample
 
 
 @dataclass
