@@ -203,7 +203,7 @@ def _can_create_core_self_play_batch() -> bool:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="great-kingdom-random-self-play",
+        prog="python -m great_kingdom_ai.self_play",
         description="Run random self-play games against the Rust rules engine.",
     )
     parser.add_argument("--games", type=int, default=10, help="number of games to run")

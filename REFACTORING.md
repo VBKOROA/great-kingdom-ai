@@ -282,6 +282,7 @@ Python 경계가 안정된 뒤 Rust를 정리한다.
 - legacy `ReplayBuffer` 저장소와 `.npz` replay 저장/로드 경로를 제거했다.
 - aggregate replay와 오래된 ablation 실험 경로를 제거했다.
 - 단일 train v2 pipeline 경로를 제거했다.
+- 공개 entrypoint 목록을 async v2 운영/평가/수동 진단 명령으로 축소했다.
 
 아직 남은 작업은 새 구조 분리보다 legacy 제거와 최종 API 축소에 가깝다.
 
@@ -323,25 +324,30 @@ Python 경계가 안정된 뒤 Rust를 정리한다.
 - README의 단일 pipeline 실행 안내를 제거하고, 저수준 learner CLI는 trajectory replay 대상
   수동 학습/진단 용도로만 설명했다.
 
-### 남은 작업 1: entrypoint 최종 정리
+### 완료된 추가 작업 4: entrypoint 최종 정리
 
-현재 최종 주 경로와 무관한 entrypoint가 일부 남아 있다.
+2026-05-17에 최종 주 경로와 무관한 console script entrypoint를 제거했다.
 
-제거 후보:
+정리된 내용:
 
-- 최종 주 경로와 무관해진 진단/실험 entrypoint
+- `great-kingdom-random-self-play` entrypoint를 제거했다.
+- `great-kingdom-reanalyze` entrypoint를 제거했다.
+- `great-kingdom-replay-diagnostics` entrypoint를 제거했다.
+- 현재 공개 console script 목록을 `tests/test_package_import.py`에서 고정했다.
 
-유지 후보:
+유지 entrypoint:
 
+- `great-kingdom-play`
+- `great-kingdom-train`
+- `great-kingdom-single-batch-overfit`
 - `great-kingdom-init-async-v2`
 - `great-kingdom-actor-v2`
 - `great-kingdom-learner-v2`
 - `great-kingdom-evaluate`
 - `great-kingdom-export-onnx`
 - `great-kingdom-replay-monitor-v2`
-- 현재 운영에 필요한 진단 명령
 
-### 남은 작업 2: 검증 debt 정리
+### 남은 작업 1: 검증 debt 정리
 
 기능 테스트는 통과하지만 정적 검증 debt가 남아 있다.
 
