@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 import numpy as np
-from great_kingdom_ai.actor_learner_v2 import load_learner_v2_config
+from great_kingdom_ai.async_v2 import load_learner_v2_config
 from great_kingdom_ai.evaluator import evaluate_feature_arrays_logits_values
 from great_kingdom_ai.self_play_data import value_target_for_player
 from great_kingdom_ai.train import load_checkpoint, load_training_config

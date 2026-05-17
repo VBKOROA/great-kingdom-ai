@@ -5,22 +5,25 @@ import json
 from pathlib import Path
 from typing import Any
 
-import great_kingdom_ai.actor_learner_v2 as actor_learner_v2_module
+import great_kingdom_ai.async_v2.actor as actor_v2_module
+import great_kingdom_ai.async_v2.cli as async_v2_cli_module
+import great_kingdom_ai.async_v2.factory as factory_v2_module
+import great_kingdom_ai.async_v2.learner as learner_v2_module
 import numpy as np
 import pytest
-from great_kingdom_ai.actor_learner_v2 import (
+from great_kingdom_ai.async_v2 import (
     ActorV2Config,
     FactoryInitV2Config,
     LearnerV2Config,
-    _continuous_train_steps,
-    _next_actor_seed_start,
-    _run_learner_cli,
     load_v2_shard_records,
     pending_v2_shards,
     run_actor_v2_once,
     run_factory_init_v2_once,
     run_learner_v2_once,
 )
+from great_kingdom_ai.async_v2.actor import _next_actor_seed_start
+from great_kingdom_ai.async_v2.cli import _run_learner_cli
+from great_kingdom_ai.async_v2.learner import _continuous_train_steps
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS, PASS_ACTION
 from great_kingdom_ai.pipeline_printer import PipelinePrinter
 from great_kingdom_ai.rust_onnx_self_play import RustOnnxSelfPlayConfig, RustSelfPlayRunSummary
@@ -200,7 +203,7 @@ def test_factory_init_v2_checks_onnx_dependencies_before_writing(
             raise ModuleNotFoundError(name)
         return object()
 
-    monkeypatch.setattr(actor_learner_v2_module.importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(factory_v2_module.importlib, "import_module", fake_import_module)
 
     with pytest.raises(RuntimeError, match="factory ONNX export dependencies are missing"):
         run_factory_init_v2_once(
@@ -289,7 +292,7 @@ def test_actor_v2_cli_reserves_seed_ranges_across_restarts(
     tmp_path: Path,
     monkeypatch: Any,
 ) -> None:
-    monkeypatch.setattr(actor_learner_v2_module, "run_rust_onnx_self_play", fake_actor_runner)
+    monkeypatch.setattr(actor_v2_module, "run_rust_onnx_self_play", fake_actor_runner)
     args = argparse.Namespace(loop=True, max_cycles=2, sleep_seconds=0.0, json=True)
     config = ActorV2Config(
         work_dir=tmp_path,
@@ -300,8 +303,8 @@ def test_actor_v2_cli_reserves_seed_ranges_across_restarts(
         onnx_device="cpu",
     )
 
-    first = actor_learner_v2_module._run_actor_cli(config, args)
-    second = actor_learner_v2_module._run_actor_cli(config, args)
+    first = async_v2_cli_module._run_actor_cli(config, args)
+    second = async_v2_cli_module._run_actor_cli(config, args)
 
     assert [summary["shard"]["seed_start"] for summary in first] == [100, 102]
     assert [summary["shard"]["seed_start"] for summary in second] == [104, 106]
@@ -456,7 +459,7 @@ def test_learner_v2_prints_resume_optimizer_state(
         return FakeTrainSummary(destination)
 
     monkeypatch.setattr(
-        actor_learner_v2_module,
+        learner_v2_module,
         "summarize_checkpoint_optimizer_state",
         fake_optimizer_summary,
     )
@@ -575,8 +578,13 @@ def test_learner_v2_continuous_consumes_optimizer_lr_override_once(
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(output_path).write_text("onnx", encoding="utf-8")
 
-    monkeypatch.setattr(actor_learner_v2_module, "train_from_replay", fake_train)
-    monkeypatch.setattr(actor_learner_v2_module, "export_checkpoint_to_onnx", fake_export)
+    monkeypatch.setattr(async_v2_cli_module, "train_from_replay", fake_train)
+    monkeypatch.setattr(async_v2_cli_module, "export_checkpoint_to_onnx", fake_export)
+    monkeypatch.setattr(
+        learner_v2_module,
+        "summarize_checkpoint_optimizer_state",
+        lambda path: {"checkpoint_step": 4},
+    )
 
     args = argparse.Namespace(
         loop=True,
@@ -585,7 +593,7 @@ def test_learner_v2_continuous_consumes_optimizer_lr_override_once(
         sleep_seconds=0.0,
         override_optimizer_lr=5e-5,
     )
-    actor_learner_v2_module._run_learner_continuous_cli(
+    async_v2_cli_module._run_learner_continuous_cli(
         LearnerV2Config(
             work_dir=tmp_path,
             replay_capacity=32,
@@ -644,9 +652,9 @@ def test_learner_v2_continuous_prints_resume_optimizer_state(
         destination.write_text("candidate", encoding="utf-8")
         return FakeTrainSummary(destination)
 
-    monkeypatch.setattr(actor_learner_v2_module, "train_from_replay", fake_train)
+    monkeypatch.setattr(async_v2_cli_module, "train_from_replay", fake_train)
     monkeypatch.setattr(
-        actor_learner_v2_module,
+        learner_v2_module,
         "summarize_checkpoint_optimizer_state",
         fake_optimizer_summary,
     )
@@ -658,7 +666,7 @@ def test_learner_v2_continuous_prints_resume_optimizer_state(
         sleep_seconds=0.0,
         override_optimizer_lr=None,
     )
-    actor_learner_v2_module._run_learner_continuous_cli(
+    async_v2_cli_module._run_learner_continuous_cli(
         LearnerV2Config(
             work_dir=tmp_path,
             replay_capacity=32,
@@ -730,9 +738,9 @@ def test_learner_v2_continuous_keeps_optimizer_lr_override_while_waiting(
                 printer=PipelinePrinter(enabled=False),
             )
 
-    monkeypatch.setattr(actor_learner_v2_module, "train_from_replay", fake_train)
-    monkeypatch.setattr(actor_learner_v2_module, "export_checkpoint_to_onnx", fake_export)
-    monkeypatch.setattr(actor_learner_v2_module.time, "sleep", fake_sleep)
+    monkeypatch.setattr(async_v2_cli_module, "train_from_replay", fake_train)
+    monkeypatch.setattr(async_v2_cli_module, "export_checkpoint_to_onnx", fake_export)
+    monkeypatch.setattr(async_v2_cli_module.time, "sleep", fake_sleep)
 
     args = argparse.Namespace(
         loop=True,
@@ -741,7 +749,7 @@ def test_learner_v2_continuous_keeps_optimizer_lr_override_while_waiting(
         sleep_seconds=0.0,
         override_optimizer_lr=5e-5,
     )
-    actor_learner_v2_module._run_learner_continuous_cli(
+    async_v2_cli_module._run_learner_continuous_cli(
         LearnerV2Config(
             work_dir=tmp_path,
             replay_capacity=32,
@@ -850,7 +858,7 @@ def test_learner_v2_does_not_load_replay_when_no_pending_shards(
     def fail_load(path: Path) -> TrajectoryReplayStore:
         raise AssertionError(f"unexpected replay load: {path}")
 
-    monkeypatch.setattr(actor_learner_v2_module.TrajectoryReplayStore, "load", fail_load)
+    monkeypatch.setattr(learner_v2_module.TrajectoryReplayStore, "load", fail_load)
 
     summary = run_learner_v2_once(
         LearnerV2Config(
@@ -933,7 +941,7 @@ def test_learner_v2_loop_trains_from_imported_transition_budget(
         destination.write_text("candidate", encoding="utf-8")
         return FakeTrainSummary(destination)
 
-    monkeypatch.setattr(actor_learner_v2_module, "train_from_replay", fake_train)
+    monkeypatch.setattr(async_v2_cli_module, "train_from_replay", fake_train)
     summaries = _run_learner_cli(
         LearnerV2Config(
             work_dir=tmp_path,
