@@ -956,9 +956,9 @@ def _load_optional_array(
     *,
     key: str,
     shape: tuple[int, ...],
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray | None, np.ndarray]:
     if key not in data:
-        return np.empty(shape, dtype=np.float32), np.zeros((shape[0],), dtype=np.bool_)
+        return None, np.zeros((shape[0],), dtype=np.bool_)
     values = np.asarray(data[key], dtype=np.float32)
     present = np.asarray(data[f"{key}_present"], dtype=np.bool_)
     if values.shape != shape:
