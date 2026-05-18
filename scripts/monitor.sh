@@ -2,12 +2,10 @@
 INTERVAL=${1:-10}
 
 read_cpu_stat() {
-    awk '/^cpu / {
-        idle=$5+$6
-        total=0
-        for (i=2; i<=NF; i++) total += $i
-        print idle, total
-    }' /proc/stat
+    read -r _cpu user nice system idle iowait irq softirq steal guest guest_nice _rest < /proc/stat
+    idle_all=$((idle + iowait))
+    total=$((user + nice + system + idle + iowait + irq + softirq + steal + guest + guest_nice))
+    echo "$idle_all $total"
 }
 
 visible_vcpus() {
