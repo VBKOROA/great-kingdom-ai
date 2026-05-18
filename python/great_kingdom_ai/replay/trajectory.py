@@ -233,6 +233,11 @@ class TrajectoryReplayStore:
         if not episodes:
             return
         incoming = TrajectoryReplayStore.from_episodes(self.capacity, episodes)
+        self.extend_store(incoming)
+
+    def extend_store(self, incoming: TrajectoryReplayStore) -> None:
+        if len(incoming) == 0:
+            return
         if len(incoming) > self.capacity:
             raise ValueError("episode transition count exceeds replay capacity")
         combined = _concat_stores(self, incoming)

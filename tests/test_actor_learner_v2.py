@@ -406,6 +406,16 @@ def test_learner_v2_imports_pending_shards_trains_and_exports(tmp_path: Path) ->
     ) == "onnx"
     records = load_v2_shard_records(tmp_path / "shards" / "metadata.jsonl")
     assert [record.status for record in records] == ["imported"]
+    metadata_text = (tmp_path / "shards" / "metadata.jsonl").read_text(encoding="utf-8")
+    metadata_events = [
+        json.loads(line)
+        for line in metadata_text.splitlines()
+    ]
+    import_event = metadata_events[-1]
+    assert import_event["event"] == "shard_imported"
+    assert import_event["import_load_seconds"] >= 0.0
+    assert import_event["import_extend_seconds"] >= 0.0
+    assert import_event["import_total_seconds"] >= 0.0
     replay = TrajectoryReplayStore.load(tmp_path / "replay" / "trajectory-replay.npz")
     assert replay.root_policy_logits is not None
     assert replay.next_features is None

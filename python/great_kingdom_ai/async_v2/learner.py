@@ -6,7 +6,9 @@ import json
 import math
 import shutil
 import time
+import zipfile
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -87,23 +89,28 @@ def run_learner_v2_once(
     imported_transitions = 0
     imported_games = 0
     for shard in pending:
-        printer.step(f"importing shard {shard.shard_id}")
-        shard_replay = TrajectoryReplayStore.load(shard.replay_path)
-        _drop_async_unused_replay_arrays(shard_replay)
-        replay.extend_episodes(shard_replay.episodes)
-        imported_transitions += len(shard_replay)
-        imported_games += shard_replay.episode_count
+        stats = _import_shard_into_replay(
+            replay,
+            shard_id=shard.shard_id,
+            replay_path=shard.replay_path,
+            printer=printer,
+        )
+        imported_transitions += stats.transitions
+        imported_games += stats.games
         _append_event(
             paths["metadata_path"],
             {
                 "event": "shard_imported",
                 "shard_id": shard.shard_id,
                 "imported_at": _utc_now(),
-                "imported_transitions": len(shard_replay),
+                "imported_transitions": stats.transitions,
                 "replay_transitions": len(replay),
+                "import_load_seconds": stats.load_seconds,
+                "import_extend_seconds": stats.extend_seconds,
+                "import_total_seconds": stats.total_seconds,
             },
         )
-    replay.save(paths["replay_path"], compressed=False)
+    _save_replay_with_timing(replay, paths["replay_path"], printer=printer)
     _append_game_logs(paths["game_log_path"], pending)
     printer.metric("imported games", imported_games)
     printer.metric("imported rows", imported_transitions)
@@ -222,6 +229,127 @@ def _load_or_create_replay(path: Path, *, capacity: int) -> TrajectoryReplayStor
 def _drop_async_unused_replay_arrays(replay: TrajectoryReplayStore) -> None:
     replay.next_features = None
     replay.next_features_present = None
+
+
+@dataclass(frozen=True)
+class ShardImportStats:
+    transitions: int
+    games: int
+    load_seconds: float
+    extend_seconds: float
+    total_seconds: float
+
+
+@dataclass(frozen=True)
+class _NpzReplayFileStats:
+    size_bytes: int
+    uncompressed_bytes: int
+    compressed_members: int
+    total_members: int
+    optional_keys: tuple[str, ...]
+
+
+def _import_shard_into_replay(
+    replay: TrajectoryReplayStore,
+    *,
+    shard_id: str,
+    replay_path: Path,
+    printer: PipelinePrinter,
+) -> ShardImportStats:
+    started_at = time.monotonic()
+    printer.step(f"importing shard {shard_id}")
+    file_stats = _inspect_npz_replay_file(replay_path)
+    load_started_at = time.monotonic()
+    shard_replay = TrajectoryReplayStore.load(replay_path)
+    load_seconds = time.monotonic() - load_started_at
+    _drop_async_unused_replay_arrays(shard_replay)
+    extend_started_at = time.monotonic()
+    replay.extend_store(shard_replay)
+    extend_seconds = time.monotonic() - extend_started_at
+    total_seconds = time.monotonic() - started_at
+    _print_shard_import_stats(
+        printer,
+        shard_id=shard_id,
+        file_stats=file_stats,
+        transitions=len(shard_replay),
+        games=shard_replay.episode_count,
+        load_seconds=load_seconds,
+        extend_seconds=extend_seconds,
+        total_seconds=total_seconds,
+    )
+    return ShardImportStats(
+        transitions=len(shard_replay),
+        games=shard_replay.episode_count,
+        load_seconds=load_seconds,
+        extend_seconds=extend_seconds,
+        total_seconds=total_seconds,
+    )
+
+
+def _inspect_npz_replay_file(path: Path) -> _NpzReplayFileStats:
+    size_bytes = path.stat().st_size
+    with zipfile.ZipFile(path) as archive:
+        members = archive.infolist()
+    keys = tuple(member.filename.removesuffix(".npy") for member in members)
+    optional_keys = tuple(
+        key
+        for key in ("root_policy_logits", "next_features")
+        if key in keys
+    )
+    return _NpzReplayFileStats(
+        size_bytes=size_bytes,
+        uncompressed_bytes=sum(member.file_size for member in members),
+        compressed_members=sum(
+            1 for member in members if member.compress_type != zipfile.ZIP_STORED
+        ),
+        total_members=len(members),
+        optional_keys=optional_keys,
+    )
+
+
+def _print_shard_import_stats(
+    printer: PipelinePrinter,
+    *,
+    shard_id: str,
+    file_stats: _NpzReplayFileStats,
+    transitions: int,
+    games: int,
+    load_seconds: float,
+    extend_seconds: float,
+    total_seconds: float,
+) -> None:
+    optional = ",".join(file_stats.optional_keys) if file_stats.optional_keys else "none"
+    printer.done(
+        f"imported shard {shard_id}: rows={transitions}, games={games}, "
+        f"file={_format_bytes(file_stats.size_bytes)}, "
+        f"npz_raw={_format_bytes(file_stats.uncompressed_bytes)}, "
+        f"compressed_members={file_stats.compressed_members}/{file_stats.total_members}, "
+        f"optional={optional}, load={load_seconds:.2f}s, "
+        f"extend={extend_seconds:.2f}s, total={total_seconds:.2f}s"
+    )
+
+
+def _save_replay_with_timing(
+    replay: TrajectoryReplayStore,
+    path: Path,
+    *,
+    printer: PipelinePrinter,
+) -> float:
+    printer.step(f"saving replay -> {path}")
+    started_at = time.monotonic()
+    replay.save(path, compressed=False)
+    seconds = time.monotonic() - started_at
+    printer.done(f"saved replay: file={_format_bytes(path.stat().st_size)}, total={seconds:.2f}s")
+    return seconds
+
+
+def _format_bytes(size: int) -> str:
+    value = float(size)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if value < 1024.0 or unit == "GiB":
+            return f"{value:.1f}{unit}"
+        value /= 1024.0
+    raise AssertionError("unreachable")
 
 def _continuous_train_steps(
     *,

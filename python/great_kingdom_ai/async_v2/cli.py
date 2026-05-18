@@ -24,9 +24,11 @@ from great_kingdom_ai.async_v2.learner import (
     _continuous_train_steps,
     _drop_async_unused_replay_arrays,
     _format_train_loss_detail,
+    _import_shard_into_replay,
     _load_or_create_replay,
     _print_learner_optimizer_state,
     _prune_learner_artifacts,
+    _save_replay_with_timing,
     _train_checkpoint_kwargs,
     _validate_learner_config,
     run_learner_v2_once,
@@ -47,7 +49,7 @@ from great_kingdom_ai.async_v2.paths import (
 )
 from great_kingdom_ai.onnx_export import export_checkpoint_to_onnx
 from great_kingdom_ai.pipeline_printer import PipelinePrinter
-from great_kingdom_ai.replay import TrajectoryReplayDataset, TrajectoryReplayStore
+from great_kingdom_ai.replay import TrajectoryReplayDataset
 from great_kingdom_ai.self_play import SelfPlayConfig
 from great_kingdom_ai.training import TrainingConfig, load_training_config, train_from_replay
 
@@ -317,25 +319,30 @@ def _run_learner_continuous_cli(
         printer.metric("budget samples", int(train_budget_samples))
 
         for shard in pending:
-            printer.step(f"importing shard {shard.shard_id}")
-            shard_replay = TrajectoryReplayStore.load(shard.replay_path)
-            _drop_async_unused_replay_arrays(shard_replay)
-            replay.extend_episodes(shard_replay.episodes)
-            imported_transitions += len(shard_replay)
-            imported_games += shard_replay.episode_count
+            stats = _import_shard_into_replay(
+                replay,
+                shard_id=shard.shard_id,
+                replay_path=shard.replay_path,
+                printer=printer,
+            )
+            imported_transitions += stats.transitions
+            imported_games += stats.games
             _append_event(
                 paths["metadata_path"],
                 {
                     "event": "shard_imported",
                     "shard_id": shard.shard_id,
                     "imported_at": _utc_now(),
-                    "imported_transitions": len(shard_replay),
+                    "imported_transitions": stats.transitions,
                     "replay_transitions": len(replay),
+                    "import_load_seconds": stats.load_seconds,
+                    "import_extend_seconds": stats.extend_seconds,
+                    "import_total_seconds": stats.total_seconds,
                 },
             )
 
         if pending:
-            replay.save(paths["replay_path"], compressed=False)
+            _save_replay_with_timing(replay, paths["replay_path"], printer=printer)
             _append_game_logs(paths["game_log_path"], pending)
             train_budget_samples += imported_transitions * config.train_reuse_factor
             printer.metric("imported games", imported_games)

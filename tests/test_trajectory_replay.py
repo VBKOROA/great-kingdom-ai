@@ -228,6 +228,50 @@ def test_trajectory_replay_capacity_evicts_whole_old_episodes() -> None:
     assert [episode.episode_id for episode in replay.episodes] == [1]
 
 
+def test_trajectory_replay_extends_from_store_without_episode_roundtrip() -> None:
+    replay = TrajectoryReplayStore.from_episodes(
+        8,
+        (make_episode(0, actions=[1, 2]),),
+    )
+    replay.update_sampling_priorities(
+        np.asarray([0, 1], dtype=np.int64),
+        np.asarray([4.0, 7.0], dtype=np.float32),
+        ema=0.0,
+        epsilon=1e-6,
+        max_priority=None,
+    )
+    incoming = TrajectoryReplayStore.from_episodes(
+        8,
+        (
+            TrajectoryEpisode(
+                episode_id=1,
+                seed=101,
+                transitions=(
+                    make_transition(
+                        episode_id=1,
+                        timestep=0,
+                        action=3,
+                        with_metadata=True,
+                    ),
+                ),
+                winner=1,
+                end_reason=1,
+                territory_scores=(3, 1),
+            ),
+        ),
+    )
+
+    replay.extend_store(incoming)
+
+    assert len(replay) == 3
+    assert replay.episode_ids.tolist() == [0, 1]
+    assert replay.sampling_priorities.tolist() == pytest.approx([4.0, 7.0, 7.0])
+    assert replay.root_policy_logits is not None
+    assert replay.root_policy_logits_present is not None
+    assert replay.root_policy_logits_present.tolist() == [False, False, True]
+    assert replay.search_config_hash_table.tolist() == ["", "search-v1"]
+
+
 def test_bootstrap_value_target_uses_future_root_value_from_sample_player_perspective() -> None:
     episode = make_episode(
         0,
