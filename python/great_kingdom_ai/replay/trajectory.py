@@ -15,7 +15,7 @@ from great_kingdom_ai.features import (
     LEGAL_PLACE_FEATURE_CHANNEL,
     PASS_ACTION,
 )
-from great_kingdom_ai.replay.persistence import save_npz_atomic
+from great_kingdom_ai.replay.persistence import NpzSaveStats, save_npz_atomic
 from great_kingdom_ai.replay.sample import ReplaySample
 from great_kingdom_ai.replay.schema import (
     FEATURE_SHAPE,
@@ -244,11 +244,11 @@ class TrajectoryReplayStore:
         kept = _evict_to_capacity(combined)
         self.__dict__.update(kept.__dict__)
 
-    def save(self, path: str | Path, *, compressed: bool = True) -> None:
+    def save(self, path: str | Path, *, compressed: bool = True) -> NpzSaveStats:
         destination = Path(path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         payload = self.to_payload()
-        save_npz_atomic(destination, payload, compressed=compressed)
+        return save_npz_atomic(destination, payload, compressed=compressed)
 
     def to_payload(self) -> dict[str, np.ndarray]:
         payload: dict[str, np.ndarray] = {

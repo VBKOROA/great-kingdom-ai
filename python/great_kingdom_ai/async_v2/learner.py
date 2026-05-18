@@ -88,6 +88,7 @@ def run_learner_v2_once(
     replay = _load_or_create_replay(paths["replay_path"], capacity=config.replay_capacity)
     imported_transitions = 0
     imported_games = 0
+    imported_events: list[tuple[str, ShardImportStats, int]] = []
     for shard in pending:
         stats = _import_shard_into_replay(
             replay,
@@ -97,20 +98,15 @@ def run_learner_v2_once(
         )
         imported_transitions += stats.transitions
         imported_games += stats.games
-        _append_event(
-            paths["metadata_path"],
-            {
-                "event": "shard_imported",
-                "shard_id": shard.shard_id,
-                "imported_at": _utc_now(),
-                "imported_transitions": stats.transitions,
-                "replay_transitions": len(replay),
-                "import_load_seconds": stats.load_seconds,
-                "import_extend_seconds": stats.extend_seconds,
-                "import_total_seconds": stats.total_seconds,
-            },
-        )
+        imported_events.append((shard.shard_id, stats, len(replay)))
     _save_replay_with_timing(replay, paths["replay_path"], printer=printer)
+    for shard_id, stats, replay_transitions in imported_events:
+        _append_shard_import_event(
+            paths["metadata_path"],
+            shard_id=shard_id,
+            stats=stats,
+            replay_transitions=replay_transitions,
+        )
     _append_game_logs(paths["game_log_path"], pending)
     printer.metric("imported games", imported_games)
     printer.metric("imported rows", imported_transitions)
@@ -329,6 +325,28 @@ def _print_shard_import_stats(
     )
 
 
+def _append_shard_import_event(
+    metadata_path: Path,
+    *,
+    shard_id: str,
+    stats: ShardImportStats,
+    replay_transitions: int,
+) -> None:
+    _append_event(
+        metadata_path,
+        {
+            "event": "shard_imported",
+            "shard_id": shard_id,
+            "imported_at": _utc_now(),
+            "imported_transitions": stats.transitions,
+            "replay_transitions": replay_transitions,
+            "import_load_seconds": stats.load_seconds,
+            "import_extend_seconds": stats.extend_seconds,
+            "import_total_seconds": stats.total_seconds,
+        },
+    )
+
+
 def _save_replay_with_timing(
     replay: TrajectoryReplayStore,
     path: Path,
@@ -337,10 +355,25 @@ def _save_replay_with_timing(
 ) -> float:
     printer.step(f"saving replay -> {path}")
     started_at = time.monotonic()
-    replay.save(path, compressed=False)
+    save_stats = replay.save(path, compressed=False)
     seconds = time.monotonic() - started_at
-    printer.done(f"saved replay: file={_format_bytes(path.stat().st_size)}, total={seconds:.2f}s")
+    printer.done(
+        f"saved replay: file={_format_bytes(path.stat().st_size)}, "
+        f"write={save_stats.write_seconds:.2f}s, "
+        f"replace={save_stats.replace_seconds:.2f}s, "
+        f"total={seconds:.2f}s, slowest={_format_slowest_npz_writes(save_stats)}"
+    )
     return seconds
+
+
+def _format_slowest_npz_writes(save_stats: Any) -> str:
+    slowest = sorted(save_stats.array_stats, key=lambda stat: stat.seconds, reverse=True)[:3]
+    if not slowest:
+        return "none"
+    return ",".join(
+        f"{stat.key}:{stat.seconds:.2f}s/{_format_bytes(stat.bytes)}"
+        for stat in slowest
+    )
 
 
 def _format_bytes(size: int) -> str:

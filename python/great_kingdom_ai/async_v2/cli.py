@@ -21,6 +21,7 @@ from great_kingdom_ai.async_v2.config import (
 )
 from great_kingdom_ai.async_v2.factory import run_factory_init_v2_once
 from great_kingdom_ai.async_v2.learner import (
+    _append_shard_import_event,
     _continuous_train_steps,
     _drop_async_unused_replay_arrays,
     _format_train_loss_detail,
@@ -34,9 +35,7 @@ from great_kingdom_ai.async_v2.learner import (
     run_learner_v2_once,
 )
 from great_kingdom_ai.async_v2.metadata import (
-    _append_event,
     _append_game_logs,
-    _utc_now,
     pending_v2_shards,
 )
 from great_kingdom_ai.async_v2.paths import (
@@ -308,6 +307,7 @@ def _run_learner_continuous_cli(
         pending = pending_v2_shards(paths["metadata_path"])
         imported_transitions = 0
         imported_games = 0
+        imported_events: list[tuple[str, Any, int]] = []
 
         printer.title("Learner V2 Continuous")
         printer.metric("work dir", config.work_dir)
@@ -327,22 +327,17 @@ def _run_learner_continuous_cli(
             )
             imported_transitions += stats.transitions
             imported_games += stats.games
-            _append_event(
-                paths["metadata_path"],
-                {
-                    "event": "shard_imported",
-                    "shard_id": shard.shard_id,
-                    "imported_at": _utc_now(),
-                    "imported_transitions": stats.transitions,
-                    "replay_transitions": len(replay),
-                    "import_load_seconds": stats.load_seconds,
-                    "import_extend_seconds": stats.extend_seconds,
-                    "import_total_seconds": stats.total_seconds,
-                },
-            )
+            imported_events.append((shard.shard_id, stats, len(replay)))
 
         if pending:
             _save_replay_with_timing(replay, paths["replay_path"], printer=printer)
+            for shard_id, stats, replay_transitions in imported_events:
+                _append_shard_import_event(
+                    paths["metadata_path"],
+                    shard_id=shard_id,
+                    stats=stats,
+                    replay_transitions=replay_transitions,
+                )
             _append_game_logs(paths["game_log_path"], pending)
             train_budget_samples += imported_transitions * config.train_reuse_factor
             printer.metric("imported games", imported_games)

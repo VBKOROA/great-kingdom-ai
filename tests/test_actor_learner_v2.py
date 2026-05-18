@@ -494,6 +494,54 @@ def test_learner_v2_prints_resume_optimizer_state(
     assert '"state_entries": 3' in output
 
 
+def test_learner_v2_marks_shards_imported_only_after_replay_save(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_actor_v2_once(
+        ActorV2Config(
+            work_dir=tmp_path,
+            onnx_model_path=tmp_path / "model.onnx",
+            model_version="ema",
+            games=2,
+            seed_start=0,
+            onnx_device="cpu",
+        ),
+        runner=fake_actor_runner,
+        printer=PipelinePrinter(enabled=False),
+    )
+
+    def fail_save(
+        self: TrajectoryReplayStore,
+        path: str | Path,
+        *,
+        compressed: bool = True,
+    ) -> None:
+        del self, path, compressed
+        raise RuntimeError("save failed")
+
+    monkeypatch.setattr(TrajectoryReplayStore, "save", fail_save)
+
+    with pytest.raises(RuntimeError, match="save failed"):
+        run_learner_v2_once(
+            LearnerV2Config(
+                work_dir=tmp_path,
+                replay_capacity=16,
+                min_replay_transitions=1,
+                export_onnx=False,
+            ),
+            TrainingConfig(batch_size=2, steps=1, device="cpu"),
+            trainer=lambda *args, **kwargs: FakeTrainSummary(tmp_path / "candidate.pt"),
+            printer=PipelinePrinter(enabled=False),
+        )
+
+    records = load_v2_shard_records(tmp_path / "shards" / "metadata.jsonl")
+    assert [record.status for record in records] == ["completed"]
+    pending = pending_v2_shards(tmp_path / "shards" / "metadata.jsonl")
+    assert [record.shard_id for record in pending]
+    assert not (tmp_path / "replay" / "game_logs.jsonl").exists()
+
+
 def test_learner_v2_passes_one_shot_optimizer_lr_override(tmp_path: Path) -> None:
     run_actor_v2_once(
         ActorV2Config(
