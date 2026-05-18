@@ -36,6 +36,8 @@ def main() -> NoReturn:
     args = _parser().parse_args()
     replay = TrajectoryReplayStore.load(args.replay)
     targets = _terminal_value_targets(replay)
+    policy_entropy = _policy_entropy(replay.policy_targets)
+    legal_action_counts = replay.legal_masks.sum(axis=1).astype(np.int64, copy=False)
     summary: dict[str, Any] = {
         "replay": str(args.replay),
         "rows": len(replay),
@@ -48,8 +50,18 @@ def main() -> NoReturn:
         "value_targets": _describe_array(targets),
         "value_target_counts": _counts(targets),
         "mse_zero": float(np.mean(targets**2)) if targets.size else math.nan,
-        "policy_entropy": _describe_array(_policy_entropy(replay.policy_targets)),
+        "legal_action_counts": _describe_array(legal_action_counts),
+        "legal_action_count_counts": _counts(legal_action_counts),
+        "policy_entropy": _describe_array(policy_entropy),
+        "policy_normalized_entropy": _describe_array(
+            _normalized_entropy(policy_entropy, legal_action_counts),
+        ),
         "policy_max_prob": _describe_array(replay.policy_targets.max(axis=1)),
+        "policy_by_legal_actions": _policy_by_legal_actions(
+            entropy=policy_entropy,
+            max_prob=replay.policy_targets.max(axis=1),
+            legal_action_counts=legal_action_counts,
+        ),
         "sample_weights": _describe_array(replay.sample_weights),
         "timesteps": _describe_array(replay.timesteps),
         "model_versions": _counts(replay.model_versions),
@@ -175,6 +187,56 @@ def _policy_entropy(policies: np.ndarray) -> np.ndarray:
     terms = np.zeros_like(policy, dtype=np.float32)
     terms[positive] = policy[positive] * np.log(np.clip(policy[positive], 1e-45, 1.0))
     return -terms.sum(axis=1)
+
+
+def _normalized_entropy(entropy: np.ndarray, legal_action_counts: np.ndarray) -> np.ndarray:
+    entropy = np.asarray(entropy, dtype=np.float32)
+    legal_counts = np.asarray(legal_action_counts, dtype=np.int64)
+    values = np.empty_like(entropy, dtype=np.float32)
+    values.fill(np.nan)
+    mask = legal_counts > 1
+    values[mask] = entropy[mask] / np.log(legal_counts[mask].astype(np.float32))
+    return values[np.isfinite(values)]
+
+
+def _policy_by_legal_actions(
+    *,
+    entropy: np.ndarray,
+    max_prob: np.ndarray,
+    legal_action_counts: np.ndarray,
+) -> dict[str, dict[str, float | int]]:
+    buckets = {
+        "1": legal_action_counts == 1,
+        "2": legal_action_counts == 2,
+        "3": legal_action_counts == 3,
+        "4": legal_action_counts == 4,
+        "5-8": (legal_action_counts >= 5) & (legal_action_counts <= 8),
+        "9-16": (legal_action_counts >= 9) & (legal_action_counts <= 16),
+        "17-32": (legal_action_counts >= 17) & (legal_action_counts <= 32),
+        "33+": legal_action_counts >= 33,
+    }
+    summary: dict[str, dict[str, float | int]] = {}
+    for label, mask in buckets.items():
+        if not np.any(mask):
+            continue
+        legal_counts = legal_action_counts[mask]
+        bucket_entropy = entropy[mask]
+        bucket_max_prob = max_prob[mask]
+        normalized = _normalized_entropy(bucket_entropy, legal_counts)
+        summary[label] = {
+            "rows": int(mask.sum()),
+            "entropy_mean": float(bucket_entropy.mean()),
+            "entropy_p50": float(np.percentile(bucket_entropy, 50)),
+            "max_prob_mean": float(bucket_max_prob.mean()),
+            "max_prob_p50": float(np.percentile(bucket_max_prob, 50)),
+            "normalized_entropy_mean": (
+                float(normalized.mean()) if normalized.size else math.nan
+            ),
+            "normalized_entropy_p50": (
+                float(np.percentile(normalized, 50)) if normalized.size else math.nan
+            ),
+        }
+    return summary
 
 
 def _describe_array(values: np.ndarray) -> dict[str, float]:
