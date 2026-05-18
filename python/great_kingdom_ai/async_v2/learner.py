@@ -14,6 +14,7 @@ from typing import Any
 
 from great_kingdom_ai.async_v2.config import LearnerV2Config, LearnerV2Summary
 from great_kingdom_ai.async_v2.metadata import (
+    V2ShardRecord,
     _append_event,
     _append_game_logs,
     _utc_now,
@@ -86,19 +87,9 @@ def run_learner_v2_once(
             cycle_seconds=cycle_seconds,
         )
     replay = _load_or_create_replay(paths["replay_path"], capacity=config.replay_capacity)
-    imported_transitions = 0
-    imported_games = 0
-    imported_events: list[tuple[str, ShardImportStats, int]] = []
-    for shard in pending:
-        stats = _import_shard_into_replay(
-            replay,
-            shard_id=shard.shard_id,
-            replay_path=shard.replay_path,
-            printer=printer,
-        )
-        imported_transitions += stats.transitions
-        imported_games += stats.games
-        imported_events.append((shard.shard_id, stats, len(replay)))
+    imported_events = _import_shards_into_replay(replay, pending, printer=printer)
+    imported_transitions = sum(stats.transitions for _, stats, _ in imported_events)
+    imported_games = sum(stats.games for _, stats, _ in imported_events)
     _save_replay_with_timing(replay, paths["replay_path"], printer=printer)
     for shard_id, stats, replay_transitions in imported_events:
         _append_shard_import_event(
@@ -245,6 +236,15 @@ class _NpzReplayFileStats:
     optional_keys: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class _LoadedShardReplay:
+    shard_id: str
+    replay: TrajectoryReplayStore
+    file_stats: _NpzReplayFileStats
+    load_seconds: float
+    total_seconds_before_extend: float
+
+
 def _import_shard_into_replay(
     replay: TrajectoryReplayStore,
     *,
@@ -252,6 +252,82 @@ def _import_shard_into_replay(
     replay_path: Path,
     printer: PipelinePrinter,
 ) -> ShardImportStats:
+    return _import_shards_into_replay(
+        replay,
+        [
+            V2ShardRecord(
+                shard_id=shard_id,
+                status="completed",
+                shard_dir=replay_path.parent,
+                replay_path=replay_path,
+                log_path=replay_path.parent / "game_logs.json",
+                model_version="",
+                model_path=Path(),
+                seed_start=0,
+                games=0,
+                transitions=0,
+                created_at="",
+            )
+        ],
+        printer=printer,
+    )[0][1]
+
+
+def _import_shards_into_replay(
+    replay: TrajectoryReplayStore,
+    shards: list[V2ShardRecord],
+    *,
+    printer: PipelinePrinter,
+) -> list[tuple[str, ShardImportStats, int]]:
+    loaded = [
+        _load_shard_replay(
+            shard_id=shard.shard_id,
+            replay_path=shard.replay_path,
+            printer=printer,
+        )
+        for shard in shards
+    ]
+    if not loaded:
+        return []
+    extend_started_at = time.monotonic()
+    replay.extend_stores([item.replay for item in loaded])
+    extend_seconds = time.monotonic() - extend_started_at
+    total_transitions = sum(len(item.replay) for item in loaded)
+    imported_events: list[tuple[str, ShardImportStats, int]] = []
+    for item in loaded:
+        extend_share = _proportional_seconds(
+            extend_seconds,
+            part=len(item.replay),
+            total=total_transitions,
+        )
+        total_seconds = item.total_seconds_before_extend + extend_share
+        stats = ShardImportStats(
+            transitions=len(item.replay),
+            games=item.replay.episode_count,
+            load_seconds=item.load_seconds,
+            extend_seconds=extend_share,
+            total_seconds=total_seconds,
+        )
+        _print_shard_import_stats(
+            printer,
+            shard_id=item.shard_id,
+            file_stats=item.file_stats,
+            transitions=stats.transitions,
+            games=stats.games,
+            load_seconds=stats.load_seconds,
+            extend_seconds=stats.extend_seconds,
+            total_seconds=stats.total_seconds,
+        )
+        imported_events.append((item.shard_id, stats, len(replay)))
+    return imported_events
+
+
+def _load_shard_replay(
+    *,
+    shard_id: str,
+    replay_path: Path,
+    printer: PipelinePrinter,
+) -> _LoadedShardReplay:
     started_at = time.monotonic()
     printer.step(f"importing shard {shard_id}")
     file_stats = _inspect_npz_replay_file(replay_path)
@@ -259,27 +335,19 @@ def _import_shard_into_replay(
     shard_replay = TrajectoryReplayStore.load(replay_path)
     load_seconds = time.monotonic() - load_started_at
     _drop_async_unused_replay_arrays(shard_replay)
-    extend_started_at = time.monotonic()
-    replay.extend_store(shard_replay)
-    extend_seconds = time.monotonic() - extend_started_at
-    total_seconds = time.monotonic() - started_at
-    _print_shard_import_stats(
-        printer,
+    return _LoadedShardReplay(
         shard_id=shard_id,
+        replay=shard_replay,
         file_stats=file_stats,
-        transitions=len(shard_replay),
-        games=shard_replay.episode_count,
         load_seconds=load_seconds,
-        extend_seconds=extend_seconds,
-        total_seconds=total_seconds,
+        total_seconds_before_extend=time.monotonic() - started_at,
     )
-    return ShardImportStats(
-        transitions=len(shard_replay),
-        games=shard_replay.episode_count,
-        load_seconds=load_seconds,
-        extend_seconds=extend_seconds,
-        total_seconds=total_seconds,
-    )
+
+
+def _proportional_seconds(seconds: float, *, part: int, total: int) -> float:
+    if total <= 0:
+        return 0.0
+    return seconds * (part / total)
 
 
 def _inspect_npz_replay_file(path: Path) -> _NpzReplayFileStats:

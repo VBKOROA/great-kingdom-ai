@@ -25,7 +25,7 @@ from great_kingdom_ai.async_v2.learner import (
     _continuous_train_steps,
     _drop_async_unused_replay_arrays,
     _format_train_loss_detail,
-    _import_shard_into_replay,
+    _import_shards_into_replay,
     _load_or_create_replay,
     _print_learner_optimizer_state,
     _prune_learner_artifacts,
@@ -318,16 +318,9 @@ def _run_learner_continuous_cli(
         printer.metric("reuse factor", config.train_reuse_factor)
         printer.metric("budget samples", int(train_budget_samples))
 
-        for shard in pending:
-            stats = _import_shard_into_replay(
-                replay,
-                shard_id=shard.shard_id,
-                replay_path=shard.replay_path,
-                printer=printer,
-            )
-            imported_transitions += stats.transitions
-            imported_games += stats.games
-            imported_events.append((shard.shard_id, stats, len(replay)))
+        imported_events = _import_shards_into_replay(replay, pending, printer=printer)
+        imported_transitions = sum(stats.transitions for _, stats, _ in imported_events)
+        imported_games = sum(stats.games for _, stats, _ in imported_events)
 
         if pending:
             _save_replay_with_timing(replay, paths["replay_path"], printer=printer)

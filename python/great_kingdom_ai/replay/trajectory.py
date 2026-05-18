@@ -236,11 +236,15 @@ class TrajectoryReplayStore:
         self.extend_store(incoming)
 
     def extend_store(self, incoming: TrajectoryReplayStore) -> None:
-        if len(incoming) == 0:
+        self.extend_stores((incoming,))
+
+    def extend_stores(self, incoming_stores: Sequence[TrajectoryReplayStore]) -> None:
+        non_empty = tuple(store for store in incoming_stores if len(store) > 0)
+        if not non_empty:
             return
-        if len(incoming) > self.capacity:
+        if any(len(store) > self.capacity for store in non_empty):
             raise ValueError("episode transition count exceeds replay capacity")
-        combined = _concat_stores(self, incoming)
+        combined = _concat_many_stores(self, non_empty)
         kept = _evict_to_capacity(combined)
         self.__dict__.update(kept.__dict__)
 
@@ -674,52 +678,62 @@ def _concat_stores(
     left: TrajectoryReplayStore,
     right: TrajectoryReplayStore,
 ) -> TrajectoryReplayStore:
-    left_hashes = _decode_search_config_hashes(
-        left.search_config_hash_table,
-        left.search_config_hash_ids,
-    )
-    right_hashes = _decode_search_config_hashes(
-        right.search_config_hash_table,
-        right.search_config_hash_ids,
-    )
+    return _concat_many_stores(left, (right,))
+
+
+def _concat_many_stores(
+    left: TrajectoryReplayStore,
+    rights: Sequence[TrajectoryReplayStore],
+) -> TrajectoryReplayStore:
+    stores = (left, *rights)
+    max_priority = left.current_max_sampling_priority()
     payload: dict[str, np.ndarray] = {
         "capacity": np.asarray(left.capacity, dtype=np.int64),
-        "episode_ids": np.concatenate([left.episode_ids, right.episode_ids]),
-        "episode_seeds": np.concatenate([left.episode_seeds, right.episode_seeds]),
-        "episode_winners": np.concatenate([left.episode_winners, right.episode_winners]),
+        "episode_ids": np.concatenate([store.episode_ids for store in stores]),
+        "episode_seeds": np.concatenate([store.episode_seeds for store in stores]),
+        "episode_winners": np.concatenate([store.episode_winners for store in stores]),
         "episode_end_reasons": np.concatenate(
-            [left.episode_end_reasons, right.episode_end_reasons]
+            [store.episode_end_reasons for store in stores]
         ),
-        "territory_scores": np.concatenate([left.territory_scores, right.territory_scores]),
-        "episode_offsets": _concat_offsets(left.episode_offsets, right.episode_offsets),
-        "timesteps": np.concatenate([left.timesteps, right.timesteps]),
-        "players": np.concatenate([left.players, right.players]),
-        "actions": np.concatenate([left.actions, right.actions]),
-        "features": np.concatenate([left.features, right.features]),
-        "legal_masks": np.concatenate([left.legal_masks, right.legal_masks]),
-        "policy_targets": np.concatenate([left.policy_targets, right.policy_targets]),
-        "winners": np.concatenate([left.winners, right.winners]),
-        "terminals": np.concatenate([left.terminals, right.terminals]),
-        "root_values": np.concatenate([left.root_values, right.root_values]),
-        "model_versions": np.concatenate([left.model_versions, right.model_versions]),
+        "territory_scores": np.concatenate([store.territory_scores for store in stores]),
+        "episode_offsets": _concat_many_offsets([store.episode_offsets for store in stores]),
+        "timesteps": np.concatenate([store.timesteps for store in stores]),
+        "players": np.concatenate([store.players for store in stores]),
+        "actions": np.concatenate([store.actions for store in stores]),
+        "features": np.concatenate([store.features for store in stores]),
+        "legal_masks": np.concatenate([store.legal_masks for store in stores]),
+        "policy_targets": np.concatenate([store.policy_targets for store in stores]),
+        "winners": np.concatenate([store.winners for store in stores]),
+        "terminals": np.concatenate([store.terminals for store in stores]),
+        "root_values": np.concatenate([store.root_values for store in stores]),
+        "model_versions": np.concatenate([store.model_versions for store in stores]),
         "created_iterations": np.concatenate(
-            [left.created_iterations, right.created_iterations]
+            [store.created_iterations for store in stores]
         ),
-        "sample_weights": np.concatenate([left.sample_weights, right.sample_weights]),
+        "sample_weights": np.concatenate([store.sample_weights for store in stores]),
         "sampling_priorities": np.concatenate(
             [
                 left.sampling_priorities,
-                np.full(
-                    (len(right),),
-                    left.current_max_sampling_priority(),
-                    dtype=np.float32,
-                ),
+                *[
+                    np.full((len(store),), max_priority, dtype=np.float32)
+                    for store in rights
+                ],
             ]
         ),
     }
-    _add_search_config_hashes(payload, [*left_hashes, *right_hashes])
-    _add_optional_concat(payload, left, right, "root_policy_logits", (ACTION_SPACE,))
-    _add_optional_concat(payload, left, right, "next_features", FEATURE_SHAPE)
+    _add_search_config_hashes(
+        payload,
+        [
+            hash_value
+            for store in stores
+            for hash_value in _decode_search_config_hashes(
+                store.search_config_hash_table,
+                store.search_config_hash_ids,
+            )
+        ],
+    )
+    _add_optional_concat_many(payload, stores, "root_policy_logits", (ACTION_SPACE,))
+    _add_optional_concat_many(payload, stores, "next_features", FEATURE_SHAPE)
     return TrajectoryReplayStore.from_payload(payload)
 
 
@@ -730,6 +744,20 @@ def _concat_offsets(left_offsets: np.ndarray, right_offsets: np.ndarray) -> np.n
     return np.concatenate([left_offsets, right_tail.astype(np.int64)])
 
 
+def _concat_many_offsets(offsets: Sequence[np.ndarray]) -> np.ndarray:
+    if not offsets:
+        return np.asarray([0], dtype=np.int64)
+    combined = offsets[0].astype(np.int64, copy=True)
+    transition_count = int(combined[-1])
+    for offset in offsets[1:]:
+        if offset.shape == (1,):
+            continue
+        tail = offset[1:].astype(np.int64, copy=False) + transition_count
+        combined = np.concatenate([combined, tail])
+        transition_count = int(combined[-1])
+    return combined
+
+
 def _add_optional_concat(
     payload: dict[str, np.ndarray],
     left: TrajectoryReplayStore,
@@ -737,20 +765,29 @@ def _add_optional_concat(
     key: str,
     shape: tuple[int, ...],
 ) -> None:
-    left_values = getattr(left, key)
-    right_values = getattr(right, key)
-    left_present = getattr(left, f"{key}_present")
-    right_present = getattr(right, f"{key}_present")
-    if left_values is None and right_values is None:
+    _add_optional_concat_many(payload, (left, right), key, shape)
+
+
+def _add_optional_concat_many(
+    payload: dict[str, np.ndarray],
+    stores: Sequence[TrajectoryReplayStore],
+    key: str,
+    shape: tuple[int, ...],
+) -> None:
+    total_rows = sum(len(store) for store in stores)
+    if not any(getattr(store, key) is not None for store in stores):
         return
-    values = np.full((len(left) + len(right), *shape), np.nan, dtype=np.float32)
-    present = np.zeros((len(left) + len(right),), dtype=np.bool_)
-    if left_values is not None and left_present is not None:
-        values[: len(left)] = left_values
-        present[: len(left)] = left_present
-    if right_values is not None and right_present is not None:
-        values[len(left) :] = right_values
-        present[len(left) :] = right_present
+    values = np.full((total_rows, *shape), np.nan, dtype=np.float32)
+    present = np.zeros((total_rows,), dtype=np.bool_)
+    offset = 0
+    for store in stores:
+        store_rows = len(store)
+        store_values = getattr(store, key)
+        store_present = getattr(store, f"{key}_present")
+        if store_values is not None and store_present is not None:
+            values[offset : offset + store_rows] = store_values
+            present[offset : offset + store_rows] = store_present
+        offset += store_rows
     payload[key] = values
     payload[f"{key}_present"] = present
 
