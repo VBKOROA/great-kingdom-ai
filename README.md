@@ -341,6 +341,11 @@ snapshot끼리 비교할 때는 `--candidate`와 `--best`에 비교할 `.pt` 또
 넣습니다. async v2는 자동 promote를 하지 않으므로, 가장 강한 모델은 이런 arena 비교 결과로
 고릅니다.
 
+`training-latest`가 특정 snapshot에게 반복해서 지면
+[UPDATE_PRESSURE_TUNING.md](UPDATE_PRESSURE_TUNING.md)에 따라
+update pressure를 진단하고 `learning_rate`, `train_reuse_factor`, `ema_decay`, replay sampling
+파라미터를 조정합니다.
+
 직접 대국:
 
 ```bash
