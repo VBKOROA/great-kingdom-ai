@@ -31,6 +31,7 @@ class TrainingBatch:
     value: torch.Tensor
     legal_mask: torch.Tensor
     sample_weight: torch.Tensor
+    replay_indexes: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,7 @@ class TrainingArrays:
     values: np.ndarray
     sample_weights: np.ndarray
     legal_masks: np.ndarray | None = None
+    indexes: np.ndarray | None = None
 
 
 
@@ -76,6 +78,7 @@ def samples_to_batch(
         sample_weight=_tensor_from_numpy(torch, sample_weights, pin_memory=pin_memory).to(
             device=device
         ),
+        replay_indexes=None,
     )
 
 
@@ -108,6 +111,11 @@ def arrays_to_batch(
         ),
         sample_weight=_tensor_from_numpy(torch, sample_weights, pin_memory=pin_memory).to(
             device=device
+        ),
+        replay_indexes=(
+            None
+            if arrays.indexes is None
+            else np.ascontiguousarray(arrays.indexes, dtype=np.int64)
         ),
     )
 
@@ -218,6 +226,11 @@ def _sample_training_batch(
                 if getattr(raw_arrays, "legal_masks", None) is None
                 else np.asarray(raw_arrays.legal_masks, dtype=np.bool_)
             ),
+            indexes=(
+                None
+                if getattr(raw_arrays, "indexes", None) is None
+                else np.asarray(raw_arrays.indexes, dtype=np.int64)
+            ),
         )
         if config.symmetry_augmentation:
             features, policies, legal_masks = augment_training_arrays_randomly(
@@ -232,6 +245,7 @@ def _sample_training_batch(
                 values=arrays.values,
                 sample_weights=arrays.sample_weights,
                 legal_masks=legal_masks,
+                indexes=arrays.indexes,
             )
         return arrays_to_batch(arrays, device=device, pin_memory=pin_memory)
 
@@ -268,6 +282,7 @@ def _batch_to_device(
         value=batch.value.to(device=device, non_blocking=non_blocking),
         legal_mask=batch.legal_mask.to(device=device, non_blocking=non_blocking),
         sample_weight=batch.sample_weight.to(device=device, non_blocking=non_blocking),
+        replay_indexes=batch.replay_indexes,
     )
 
 

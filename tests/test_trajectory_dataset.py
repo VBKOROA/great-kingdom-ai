@@ -103,7 +103,8 @@ def test_trajectory_replay_dataset_supports_priority_sampling() -> None:
         8,
         (make_episode(0, winner=1), make_episode(1, winner=2)),
     )
-    store.sample_weights[:] = np.asarray([1.0, 1.0, 8.0, 8.0], dtype=np.float32)
+    store.sample_weights[:] = np.asarray([2.0, 2.0, 2.0, 2.0], dtype=np.float32)
+    store.sampling_priorities[:] = np.asarray([1.0, 1.0, 8.0, 8.0], dtype=np.float32)
     dataset = TrajectoryReplayDataset(store)
 
     batch = dataset.sample_arrays(
@@ -115,3 +116,23 @@ def test_trajectory_replay_dataset_supports_priority_sampling() -> None:
     assert batch.indexes.shape == (2,)
     assert batch.sample_weights.shape == (2,)
     assert np.all(batch.sample_weights > 0.0)
+    assert np.all(batch.sample_weights <= 2.0)
+
+
+def test_trajectory_replay_dataset_updates_sampling_priorities_separately() -> None:
+    store = TrajectoryReplayStore.from_episodes(
+        8,
+        (make_episode(0, winner=1), make_episode(1, winner=2)),
+    )
+    dataset = TrajectoryReplayDataset(store)
+
+    dataset.update_sampling_priorities(
+        np.asarray([1, 3], dtype=np.int64),
+        np.asarray([5.0, 9.0], dtype=np.float32),
+        ema=0.0,
+        epsilon=0.001,
+        max_priority=8.0,
+    )
+
+    assert store.sample_weights.tolist() == pytest.approx([1.0, 1.0, 1.0, 1.0])
+    assert store.sampling_priorities.tolist() == pytest.approx([1.0, 5.0, 1.0, 8.0])

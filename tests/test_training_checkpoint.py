@@ -117,6 +117,51 @@ def test_checkpoint_round_trips_model_outputs_and_optimizer_state(tmp_path) -> N
     assert loaded.optimizer.state_dict()["state"]
 
 
+def test_create_train_state_supports_sgd_optimizer() -> None:
+    config = TrainingConfig(
+        optimizer="sgd",
+        learning_rate=0.02,
+        momentum=0.9,
+        weight_decay=1e-4,
+    )
+    state = create_train_state(config)
+
+    assert isinstance(state.optimizer, torch.optim.SGD)
+    assert state.optimizer.param_groups[0]["lr"] == pytest.approx(0.02)
+    assert state.optimizer.param_groups[0]["momentum"] == pytest.approx(0.9)
+    assert state.optimizer.param_groups[0]["weight_decay"] == pytest.approx(1e-4)
+
+
+def test_load_checkpoint_resets_optimizer_state_when_optimizer_changes(tmp_path) -> None:
+    save_config = TrainingConfig(batch_size=2, steps=1, seed=5)
+    state = create_train_state(save_config)
+    batch = samples_to_batch(make_replay().sample(2, random.Random(5)))
+    train_step(state, batch, save_config)
+    checkpoint_path = save_checkpoint(
+        type(state)(
+            model=state.model,
+            optimizer=state.optimizer,
+            scheduler=state.scheduler,
+            step=4,
+            model_preset=state.model_preset,
+        ),
+        tmp_path / "adamw.pt",
+    )
+
+    loaded = load_checkpoint(
+        checkpoint_path,
+        optimizer="sgd",
+        learning_rate=0.02,
+        momentum=0.9,
+        weight_decay=1e-4,
+    )
+
+    assert loaded.step == 4
+    assert isinstance(loaded.optimizer, torch.optim.SGD)
+    assert loaded.optimizer.state_dict()["state"] == {}
+    assert loaded.optimizer.param_groups[0]["lr"] == pytest.approx(0.02)
+
+
 def test_summarize_checkpoint_optimizer_state_reports_adam_buffers(tmp_path) -> None:
     config = TrainingConfig(batch_size=2, steps=1, seed=5)
     state = create_train_state(config)
@@ -206,4 +251,3 @@ def test_checkpoint_weight_bootstrap_keeps_model_and_resets_training_state(tmp_p
     assert loaded.optimizer.param_groups[0]["weight_decay"] == pytest.approx(2e-3)
     assert loaded.scheduler.state_dict()["step_size"] == 17
     assert loaded.scheduler.state_dict()["gamma"] == pytest.approx(0.8)
-

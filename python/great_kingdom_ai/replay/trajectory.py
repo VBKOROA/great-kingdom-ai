@@ -48,6 +48,7 @@ class TrajectoryReplayStore:
     model_versions: np.ndarray
     created_iterations: np.ndarray
     sample_weights: np.ndarray
+    sampling_priorities: np.ndarray
     search_config_hash_table: np.ndarray
     search_config_hash_ids: np.ndarray
     root_policy_logits: np.ndarray | None = None
@@ -113,6 +114,7 @@ class TrajectoryReplayStore:
             model_versions=np.asarray(data["model_versions"], dtype=np.int64),
             created_iterations=np.asarray(data["created_iterations"], dtype=np.int64),
             sample_weights=np.asarray(data["sample_weights"], dtype=np.float32),
+            sampling_priorities=_load_sampling_priorities(data, transition_count),
             search_config_hash_table=table,
             search_config_hash_ids=ids,
             root_policy_logits=root_policy_logits if root_policy_logits_present.any() else None,
@@ -161,6 +163,7 @@ class TrajectoryReplayStore:
             self.model_versions,
             self.created_iterations,
             self.sample_weights,
+            self.sampling_priorities,
             self.search_config_hash_ids,
         )
         for array in per_transition:
@@ -182,6 +185,49 @@ class TrajectoryReplayStore:
             self.search_config_hash_ids >= len(self.search_config_hash_table)
         ):
             raise ValueError("trajectory replay search_config_hash_ids contain invalid indexes")
+        if not np.isfinite(self.sampling_priorities).all() or np.any(
+            self.sampling_priorities <= 0.0
+        ):
+            raise ValueError("trajectory replay sampling_priorities must be finite and positive")
+
+    def current_max_sampling_priority(self) -> float:
+        if len(self) == 0:
+            return 1.0
+        return float(np.max(self.sampling_priorities, initial=np.float32(1.0)))
+
+    def update_sampling_priorities(
+        self,
+        indexes: np.ndarray,
+        priorities: np.ndarray,
+        *,
+        ema: float,
+        epsilon: float,
+        max_priority: float | None,
+    ) -> None:
+        index_array = np.asarray(indexes, dtype=np.int64)
+        priority_array = np.asarray(priorities, dtype=np.float32)
+        if index_array.shape != priority_array.shape:
+            raise ValueError("priority update indexes and priorities must have the same shape")
+        if not 0.0 <= ema <= 1.0 or not np.isfinite(ema):
+            raise ValueError("priority ema must be finite and in [0, 1]")
+        if not np.isfinite(epsilon) or epsilon <= 0.0:
+            raise ValueError("priority epsilon must be finite and positive")
+        if max_priority is not None and (
+            not np.isfinite(max_priority) or max_priority <= epsilon
+        ):
+            raise ValueError("priority max_priority must be greater than epsilon")
+        if np.any(index_array < 0) or np.any(index_array >= len(self)):
+            raise IndexError("priority update index is out of range")
+        if not np.isfinite(priority_array).all():
+            raise ValueError("updated priorities must be finite")
+        clipped = np.maximum(priority_array, np.float32(epsilon))
+        if max_priority is not None:
+            clipped = np.minimum(clipped, np.float32(max_priority))
+        old = self.sampling_priorities[index_array].astype(np.float32, copy=False)
+        self.sampling_priorities[index_array] = np.asarray(
+            np.float32(ema) * old + np.float32(1.0 - ema) * clipped,
+            dtype=np.float32,
+        )
 
     def extend_episodes(self, episodes: Sequence[TrajectoryEpisode]) -> None:
         if not episodes:
@@ -220,6 +266,7 @@ class TrajectoryReplayStore:
             "model_versions": self.model_versions,
             "created_iterations": self.created_iterations,
             "sample_weights": self.sample_weights,
+            "sampling_priorities": self.sampling_priorities,
             "search_config_hash_table": self.search_config_hash_table,
             "search_config_hash_ids": self.search_config_hash_ids,
         }
@@ -530,6 +577,7 @@ def _episodes_to_payload(
             [transition.sample_weight for transition in transitions],
             dtype=np.float32,
         ),
+        "sampling_priorities": np.ones((len(transitions),), dtype=np.float32),
     }
     _add_search_config_hashes(
         payload,
@@ -653,6 +701,16 @@ def _concat_stores(
             [left.created_iterations, right.created_iterations]
         ),
         "sample_weights": np.concatenate([left.sample_weights, right.sample_weights]),
+        "sampling_priorities": np.concatenate(
+            [
+                left.sampling_priorities,
+                np.full(
+                    (len(right),),
+                    left.current_max_sampling_priority(),
+                    dtype=np.float32,
+                ),
+            ]
+        ),
     }
     _add_search_config_hashes(payload, [*left_hashes, *right_hashes])
     _add_optional_concat(payload, left, right, "root_policy_logits", (ACTION_SPACE,))
@@ -727,6 +785,7 @@ def _evict_to_capacity(store: TrajectoryReplayStore) -> TrajectoryReplayStore:
         "model_versions",
         "created_iterations",
         "sample_weights",
+        "sampling_priorities",
         "search_config_hash_ids",
         "root_policy_logits",
         "root_policy_logits_present",
@@ -760,6 +819,15 @@ def _add_search_config_hashes(
 def _load_search_config_hashes(data: Any, transition_count: int) -> list[str]:
     table, ids = _load_search_config_hash_encoding(data, transition_count)
     return _decode_search_config_hashes(table, ids)
+
+
+def _load_sampling_priorities(data: Any, transition_count: int) -> np.ndarray:
+    if "sampling_priorities" not in data:
+        return np.ones((transition_count,), dtype=np.float32)
+    priorities = np.asarray(data["sampling_priorities"], dtype=np.float32)
+    if priorities.shape != (transition_count,):
+        raise ValueError("trajectory replay sampling_priorities length mismatch")
+    return priorities
 
 
 def _load_search_config_hash_encoding(
@@ -875,6 +943,11 @@ def _validate_payload_lengths(data: Any, transition_count: int) -> None:
     for key in per_transition_keys:
         if np.asarray(data[key]).shape[0] != transition_count:
             raise ValueError(f"trajectory replay {key} length mismatch")
+    if (
+        "sampling_priorities" in data
+        and np.asarray(data["sampling_priorities"]).shape[0] != transition_count
+    ):
+        raise ValueError("trajectory replay sampling_priorities length mismatch")
     offsets = np.asarray(data["episode_offsets"], dtype=np.int64)
     if offsets.size == 0 or int(offsets[0]) != 0 or int(offsets[-1]) != transition_count:
         raise ValueError("trajectory replay episode_offsets are inconsistent")

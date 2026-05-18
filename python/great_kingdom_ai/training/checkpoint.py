@@ -37,11 +37,7 @@ def create_train_state(config: TrainingConfig) -> TrainState:
 
     _validate_ema_decay(config.ema_decay)
     model = create_model(config.model_preset).to(config.device)
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=config.learning_rate,
-        weight_decay=config.weight_decay,
-    )
+    optimizer = create_optimizer(torch, model, config)
     scheduler = create_lr_scheduler(torch, optimizer, config)
     ema_model = _create_ema_model(model) if config.ema_decay is not None else None
     return TrainState(
@@ -65,6 +61,7 @@ def save_checkpoint(state: TrainState, path: str | Path) -> Path:
             "model_preset": state.model_preset,
             "model_config": asdict(state.model.config),
             "model_state": state.model.state_dict(),
+            "optimizer": _optimizer_type(state.optimizer),
             "optimizer_state": state.optimizer.state_dict(),
             "scheduler_state": state.scheduler.state_dict(),
             "scaler_state": None if state.scaler is None else state.scaler.state_dict(),
@@ -150,6 +147,9 @@ def load_checkpoint(
     lr_min_factor: float = 0.1,
     lr_cosine_steps: int = 0,
     steps: int = 1000,
+    optimizer: str = "adamw",
+    momentum: float = 0.9,
+    nesterov: bool = False,
     amp: bool = False,
     ema_decay: float | None = None,
     prefer_ema: bool = False,
@@ -167,28 +167,35 @@ def load_checkpoint(
     if prefer_ema and ema_model_state is not None:
         model_state = ema_model_state
     model.load_state_dict(model_state)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    optimizer.load_state_dict(checkpoint["optimizer_state"])
+    train_config = TrainingConfig(
+        steps=steps,
+        optimizer=optimizer,
+        learning_rate=learning_rate,
+        momentum=momentum,
+        nesterov=nesterov,
+        weight_decay=weight_decay,
+        lr_schedule=lr_schedule,
+        lr_decay_steps=lr_decay_steps,
+        lr_decay_gamma=lr_decay_gamma,
+        lr_warmup_steps=lr_warmup_steps,
+        lr_min_factor=lr_min_factor,
+        lr_cosine_steps=lr_cosine_steps,
+        device=str(device or "cpu"),
+    )
+    optimizer_instance = create_optimizer(torch, model, train_config)
+    saved_optimizer = str(checkpoint.get("optimizer", "adamw")).lower()
+    if saved_optimizer == train_config.optimizer.lower():
+        optimizer_instance.load_state_dict(checkpoint["optimizer_state"])
     scheduler = create_lr_scheduler(
         torch,
-        optimizer,
-        TrainingConfig(
-            steps=steps,
-            learning_rate=learning_rate,
-            weight_decay=weight_decay,
-            lr_schedule=lr_schedule,
-            lr_decay_steps=lr_decay_steps,
-            lr_decay_gamma=lr_decay_gamma,
-            lr_warmup_steps=lr_warmup_steps,
-            lr_min_factor=lr_min_factor,
-            lr_cosine_steps=lr_cosine_steps,
-            device=str(device or "cpu"),
-        ),
+        optimizer_instance,
+        train_config,
     )
-    scheduler.load_state_dict(checkpoint["scheduler_state"])
-    _restore_optimizer_lrs_from_scheduler(optimizer, scheduler)
+    if saved_optimizer == train_config.optimizer.lower():
+        scheduler.load_state_dict(checkpoint["scheduler_state"])
+    _restore_optimizer_lrs_from_scheduler(optimizer_instance, scheduler)
     if optimizer_lr_override is not None:
-        _override_optimizer_learning_rate(optimizer, scheduler, optimizer_lr_override)
+        _override_optimizer_learning_rate(optimizer_instance, scheduler, optimizer_lr_override)
     scaler = _create_grad_scaler_for_device(torch, device, enabled=amp)
     scaler_state = checkpoint.get("scaler_state")
     if scaler is not None and scaler_state is not None:
@@ -206,7 +213,7 @@ def load_checkpoint(
             parameter.requires_grad_(False)
     return TrainState(
         model=model,
-        optimizer=optimizer,
+        optimizer=optimizer_instance,
         scheduler=scheduler,
         scaler=scaler,
         ema_model=ema_model,
@@ -217,7 +224,7 @@ def load_checkpoint(
 
 
 def _optimizer_param_group_summary(group: Mapping[str, Any]) -> dict[str, Any]:
-    keys = ("lr", "weight_decay", "betas", "eps", "amsgrad")
+    keys = ("lr", "weight_decay", "betas", "eps", "amsgrad", "momentum", "nesterov")
     return {key: _optimizer_json_value(group[key]) for key in keys if key in group}
 
 
@@ -259,11 +266,7 @@ def load_checkpoint_weights(
     model_config = ModelConfig(**checkpoint["model_config"])
     model = PolicyValueNetwork(model_config).to(device=config.device)
     model.load_state_dict(checkpoint["model_state"])
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=config.learning_rate,
-        weight_decay=config.weight_decay,
-    )
+    optimizer = create_optimizer(torch, model, config)
     scheduler = create_lr_scheduler(torch, optimizer, config)
     ema_model = None
     if config.ema_decay is not None:
@@ -282,6 +285,46 @@ def load_checkpoint_weights(
         step=0,
         model_preset=str(checkpoint.get("model_preset", "custom")),
     )
+
+
+def create_optimizer(
+    torch: Any,
+    model: PolicyValueNetwork,
+    config: TrainingConfig,
+) -> Optimizer:
+    optimizer = config.optimizer.lower()
+    if optimizer == "adamw":
+        return cast(
+            "Optimizer",
+            torch.optim.AdamW(
+                model.parameters(),
+                lr=config.learning_rate,
+                weight_decay=config.weight_decay,
+            ),
+        )
+    if optimizer == "sgd":
+        if not math.isfinite(config.momentum) or config.momentum < 0.0:
+            raise ValueError("momentum must be finite and non-negative")
+        return cast(
+            "Optimizer",
+            torch.optim.SGD(
+                model.parameters(),
+                lr=config.learning_rate,
+                momentum=config.momentum,
+                weight_decay=config.weight_decay,
+                nesterov=config.nesterov,
+            ),
+        )
+    raise ValueError("optimizer must be one of: adamw, sgd")
+
+
+def _optimizer_type(optimizer: Optimizer) -> str:
+    name = optimizer.__class__.__name__.lower()
+    if name == "sgd":
+        return "sgd"
+    if name == "adamw":
+        return "adamw"
+    return name
 
 
 def create_lr_scheduler(
@@ -426,6 +469,7 @@ def _create_grad_scaler_for_device(
 
 __all__ = [
     "TrainState",
+    "create_optimizer",
     "create_lr_scheduler",
     "create_train_state",
     "load_checkpoint",

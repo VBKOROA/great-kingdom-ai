@@ -41,6 +41,8 @@ class LossBreakdown:
     policy_entropy: torch.Tensor
     policy_kl: torch.Tensor
     total: torch.Tensor
+    per_sample_policy_kl: torch.Tensor
+    per_sample_value_abs_error: torch.Tensor
 
     def to_float_dict(self) -> dict[str, float]:
         return {
@@ -84,13 +86,17 @@ def compute_losses(
         _validate_policy_targets_match_legal_mask(batch)
     _validate_sample_weight(batch)
     log_policy = torch.log_softmax(policy_logits, dim=1)
-    policy_loss = _weighted_mean(-(batch.policy * log_policy).sum(dim=1), batch.sample_weight)
-    policy_entropy = _policy_target_entropy(batch.policy, batch.sample_weight)
-    policy_kl = policy_loss - policy_entropy
-    value_loss = _weighted_mean(
-        torch.nn.functional.mse_loss(value, batch.value, reduction="none"),
-        batch.sample_weight,
+    per_sample_policy_loss = -(batch.policy * log_policy).sum(dim=1)
+    per_sample_policy_entropy = _policy_target_entropy_rows(batch.policy)
+    per_sample_policy_kl = torch.clamp(
+        per_sample_policy_loss - per_sample_policy_entropy,
+        min=0.0,
     )
+    policy_loss = _weighted_mean(per_sample_policy_loss, batch.sample_weight)
+    policy_entropy = _weighted_mean(per_sample_policy_entropy, batch.sample_weight)
+    policy_kl = policy_loss - policy_entropy
+    per_sample_value_error = value - batch.value
+    value_loss = _weighted_mean(per_sample_value_error.pow(2), batch.sample_weight)
     regularization = _l2_regularization(model) * l2_loss_weight
     total = policy_loss_weight * policy_loss + value_loss_weight * value_loss + regularization
     return LossBreakdown(
@@ -100,6 +106,8 @@ def compute_losses(
         policy_entropy=policy_entropy,
         policy_kl=policy_kl,
         total=total,
+        per_sample_policy_kl=per_sample_policy_kl,
+        per_sample_value_abs_error=per_sample_value_error.abs(),
     )
 
 def train_step(state: TrainState, batch: TrainingBatch, config: TrainingConfig) -> LossBreakdown:
@@ -120,11 +128,16 @@ def train_step(state: TrainState, batch: TrainingBatch, config: TrainingConfig) 
     if amp_enabled and state.scaler is not None:
         scale_before = float(state.scaler.get_scale())
         state.scaler.scale(losses.total).backward()
+        if config.gradient_clip_norm is not None:
+            state.scaler.unscale_(state.optimizer)
+            torch.nn.utils.clip_grad_norm_(state.model.parameters(), config.gradient_clip_norm)
         state.scaler.step(state.optimizer)
         state.scaler.update()
         optimizer_stepped = float(state.scaler.get_scale()) >= scale_before
     else:
         losses.total.backward()  # type: ignore[no-untyped-call]
+        if config.gradient_clip_norm is not None:
+            torch.nn.utils.clip_grad_norm_(state.model.parameters(), config.gradient_clip_norm)
         state.optimizer.step()
     if optimizer_stepped:
         state.scheduler.step()
@@ -172,6 +185,9 @@ def train_from_replay(
             lr_min_factor=config.lr_min_factor,
             lr_cosine_steps=config.lr_cosine_steps,
             steps=config.steps,
+            optimizer=config.optimizer,
+            momentum=config.momentum,
+            nesterov=config.nesterov,
             amp=config.amp,
             ema_decay=config.ema_decay,
             optimizer_lr_override=resume_optimizer_lr_override,
@@ -187,6 +203,7 @@ def train_from_replay(
         train_step_start = time.perf_counter()
         loss = train_step(state, batch, config)
         train_step_seconds = time.perf_counter() - train_step_start
+        _update_batch_local_priorities(replay, batch, loss, config)
         state = TrainState(
             model=state.model,
             optimizer=state.optimizer,
@@ -245,10 +262,13 @@ def _validate_sample_weight(batch: TrainingBatch) -> None:
 
 
 def _policy_target_entropy(policy: torch.Tensor, sample_weight: torch.Tensor) -> torch.Tensor:
+    return _weighted_mean(_policy_target_entropy_rows(policy), sample_weight)
+
+
+def _policy_target_entropy_rows(policy: torch.Tensor) -> torch.Tensor:
     torch = _import_torch()
     positive = policy > 0.0
-    per_row = -(torch.where(positive, policy * torch.log(policy.clamp_min(1e-45)), 0.0)).sum(dim=1)
-    return _weighted_mean(per_row, sample_weight)
+    return -(torch.where(positive, policy * torch.log(policy.clamp_min(1e-45)), 0.0)).sum(dim=1)
 
 
 def _weighted_mean(values: torch.Tensor, sample_weight: torch.Tensor) -> torch.Tensor:
@@ -259,6 +279,33 @@ def _weighted_mean(values: torch.Tensor, sample_weight: torch.Tensor) -> torch.T
 def _amp_enabled(config: TrainingConfig) -> bool:
     torch = _import_torch()
     return _cuda_amp_enabled(torch, config.device, enabled=config.amp)
+
+
+def _update_batch_local_priorities(
+    replay: ReplayDataset,
+    batch: TrainingBatch,
+    losses: LossBreakdown,
+    config: TrainingConfig,
+) -> None:
+    if not config.priority_enabled or batch.replay_indexes is None:
+        return
+    updater = getattr(replay, "update_sampling_priorities", None)
+    if updater is None:
+        return
+    priorities = (
+        config.priority_epsilon
+        + config.priority_policy_kl_weight
+        * losses.per_sample_policy_kl.detach().float().cpu().numpy()
+        + config.priority_value_error_weight
+        * losses.per_sample_value_abs_error.detach().float().cpu().numpy()
+    )
+    updater(
+        batch.replay_indexes,
+        priorities.astype("float32", copy=False),
+        ema=config.priority_ema,
+        epsilon=config.priority_epsilon,
+        max_priority=config.priority_max_priority,
+    )
 
 
 __all__ = [

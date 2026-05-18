@@ -335,6 +335,78 @@ def test_train_from_replay_passes_priority_config_to_array_sampler() -> None:
 
     assert replay.calls == [(2, 0.5, 3, True, 0.4, 0.2)]
 
+
+def test_train_from_replay_updates_batch_local_priorities() -> None:
+    class LocalPerReplay:
+        def __init__(self) -> None:
+            self.updates: list[tuple[np.ndarray, np.ndarray, float, float, float | None]] = []
+
+        def __len__(self) -> int:
+            return 4
+
+        def sample(self, batch_size: int, rng: random.Random) -> list[ReplaySample]:
+            del batch_size, rng
+            raise AssertionError("sample should not be used when sample_arrays exists")
+
+        def sample_arrays(
+            self,
+            batch_size: int,
+            rng: random.Random,
+            *,
+            recent_fraction: float = 0.0,
+            recent_window: int = 0,
+            priority_config=None,
+        ) -> TrainingArrays:
+            del rng, recent_fraction, recent_window, priority_config
+            samples = [make_sample(index) for index in range(batch_size)]
+            return TrainingArrays(
+                indexes=np.asarray([2, 3], dtype=np.int64),
+                features=np.stack([sample.features for sample in samples], axis=0).astype(
+                    np.float32
+                ),
+                policies=np.stack([sample.policy for sample in samples], axis=0).astype(
+                    np.float32
+                ),
+                values=np.asarray([sample.value for sample in samples], dtype=np.float32),
+                sample_weights=np.ones((batch_size,), dtype=np.float32),
+            )
+
+        def update_sampling_priorities(
+            self,
+            indexes: np.ndarray,
+            priorities: np.ndarray,
+            *,
+            ema: float,
+            epsilon: float,
+            max_priority: float | None,
+        ) -> None:
+            self.updates.append((indexes.copy(), priorities.copy(), ema, epsilon, max_priority))
+
+    replay = LocalPerReplay()
+    train_from_replay(
+        replay,
+        TrainingConfig(
+            batch_size=2,
+            steps=1,
+            priority_enabled=True,
+            priority_policy_kl_weight=1.0,
+            priority_value_error_weight=0.5,
+            priority_ema=0.75,
+            priority_epsilon=0.01,
+            priority_max_priority=8.0,
+        ),
+    )
+
+    assert len(replay.updates) == 1
+    indexes, priorities, ema, epsilon, max_priority = replay.updates[0]
+    assert indexes.tolist() == [2, 3]
+    assert np.all(np.isfinite(priorities))
+    assert np.all(priorities >= 0.01)
+    assert ema == pytest.approx(0.75)
+    assert epsilon == pytest.approx(0.01)
+    assert max_priority == pytest.approx(8.0)
+
+
 def test_masked_policy_loss_rejects_illegal_target_mass() -> None:
     config = TrainingConfig(batch_size=1)
     state = create_train_state(config)

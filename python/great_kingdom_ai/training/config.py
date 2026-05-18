@@ -11,8 +11,12 @@ from pathlib import Path
 class TrainingConfig:
     batch_size: int = 32
     steps: int = 1000
+    optimizer: str = "adamw"
     learning_rate: float = 1e-3
+    momentum: float = 0.9
+    nesterov: bool = False
     weight_decay: float = 1e-4
+    gradient_clip_norm: float | None = None
     value_loss_weight: float = 1.0
     policy_loss_weight: float = 1.0
     l2_loss_weight: float = 0.0
@@ -38,6 +42,8 @@ class TrainingConfig:
     priority_target_age_weight: float = 0.25
     priority_search_reanalyzed_boost: float = 1.0
     priority_max_priority: float | None = 64.0
+    priority_epsilon: float = 0.001
+    priority_ema: float = 0.9
     prefetch_batches: int = 1
     ema_decay: float | None = None
 

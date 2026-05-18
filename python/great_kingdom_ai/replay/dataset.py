@@ -71,7 +71,7 @@ class TrajectoryReplayDataset:
 
         if priority_config is not None and priority_config.enabled:
             priorities = np.maximum(
-                np.asarray(self._replay.sample_weights, dtype=np.float32),
+                np.asarray(self._replay.sampling_priorities, dtype=np.float32),
                 np.float32(1e-6),
             )
             sampled = sample_priority_indexes(
@@ -114,6 +114,23 @@ class TrajectoryReplayDataset:
                 self._replay.legal_masks[index_array],
                 dtype=np.bool_,
             ),
+        )
+
+    def update_sampling_priorities(
+        self,
+        indexes: np.ndarray,
+        priorities: np.ndarray,
+        *,
+        ema: float,
+        epsilon: float,
+        max_priority: float | None,
+    ) -> None:
+        self._replay.update_sampling_priorities(
+            indexes,
+            priorities,
+            ema=ema,
+            epsilon=epsilon,
+            max_priority=max_priority,
         )
 
 
