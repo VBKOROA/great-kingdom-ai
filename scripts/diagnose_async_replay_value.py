@@ -85,7 +85,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--replay",
         type=Path,
-        default=Path("data/runpod/train-v2-gumbel-512k/replay/trajectory-replay.npz"),
+        default=Path("data/runpod/train-v3/replay/trajectory-replay.npz"),
     )
     parser.add_argument("--checkpoint", type=Path, default=None)
     parser.add_argument("--eval-rows", type=int, default=8192)

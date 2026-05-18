@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-SOURCE=${1:-data/runpod/train-v2-gumbel-512k/checkpoints/training-latest.pt}
-DEST_DIR=${2:-data/runpod/train-v2-gumbel-512k/checkpoints/snapshots}
+SOURCE=${1:-data/runpod/train-v3/checkpoints/training-latest.pt}
+DEST_DIR=${2:-data/runpod/train-v3/checkpoints/snapshots}
 INTERVAL_SECONDS=${3:-600}
 KEEP_COUNT=${4:-0}
 STABLE_CHECK_SECONDS=${SNAPSHOT_STABLE_CHECK_SECONDS:-2}

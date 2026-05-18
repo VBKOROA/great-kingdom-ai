@@ -14,8 +14,8 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class ActorV2Config:
-    work_dir: Path = Path("data/runpod/async-v2")
-    onnx_model_path: Path = Path("data/runpod/async-v2/checkpoints/onnx/training-latest.onnx")
+    work_dir: Path = Path("data/runpod/train-v3")
+    onnx_model_path: Path = Path("data/runpod/train-v3/checkpoints/onnx/training-latest.onnx")
     model_version: str = "latest"
     model_iteration: int | None = None
     shard_id: str | None = None
@@ -28,7 +28,7 @@ class ActorV2Config:
 
 @dataclass(frozen=True)
 class LearnerV2Config:
-    work_dir: Path = Path("data/runpod/async-v2")
+    work_dir: Path = Path("data/runpod/train-v3")
     replay_capacity: int = 512000
     min_replay_transitions: int = 8192
     source_checkpoint: Path | None = None
@@ -46,7 +46,7 @@ class LearnerV2Config:
 
 @dataclass(frozen=True)
 class FactoryInitV2Config:
-    work_dir: Path = Path("data/runpod/async-v2")
+    work_dir: Path = Path("data/runpod/train-v3")
     checkpoint_path: Path | None = None
     onnx_output_path: Path | None = None
     overwrite: bool = False

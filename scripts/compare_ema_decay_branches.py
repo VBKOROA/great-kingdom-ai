@@ -14,10 +14,10 @@ from typing import Any, NoReturn
 from great_kingdom_ai.replay import TrajectoryReplayDataset, TrajectoryReplayStore
 from great_kingdom_ai.training import TrainingConfig, load_training_config, train_from_replay
 
-DEFAULT_REPLAY = Path("data/runpod/train-v2-gumbel-512k/replay/trajectory-replay.npz")
-DEFAULT_SOURCE = Path("data/runpod/train-v2-gumbel-512k/checkpoints/training-latest.pt")
+DEFAULT_REPLAY = Path("data/runpod/train-v3/replay/trajectory-replay.npz")
+DEFAULT_SOURCE = Path("data/runpod/train-v3/checkpoints/training-latest.pt")
 DEFAULT_TRAIN_CONFIG = Path("configs/runpod/train.json")
-DEFAULT_OUTPUT_DIR = Path("data/runpod/train-v2-gumbel-512k/reports/ema-branch-compare")
+DEFAULT_OUTPUT_DIR = Path("data/runpod/train-v3/reports/ema-branch-compare")
 
 
 def build_parser() -> argparse.ArgumentParser:

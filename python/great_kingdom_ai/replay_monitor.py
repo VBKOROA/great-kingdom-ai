@@ -14,7 +14,7 @@ import numpy as np
 
 from great_kingdom_ai.replay import TrajectoryReplayStore
 
-DEFAULT_REPLAY = Path("data/runpod/train-v2-gumbel-512k/replay/trajectory-replay.npz")
+DEFAULT_REPLAY = Path("data/runpod/train-v3/replay/trajectory-replay.npz")
 
 Severity = Literal["warning", "critical"]
 

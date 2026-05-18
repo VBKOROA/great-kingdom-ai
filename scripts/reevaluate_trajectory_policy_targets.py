@@ -18,8 +18,8 @@ from great_kingdom_ai.replay import TrajectoryReplayStore
 if TYPE_CHECKING:
     from great_kingdom_ai.model import PolicyValueNetwork
 
-DEFAULT_REPLAY = Path("data/runpod/train-v2-gumbel-512k/replay/trajectory-replay.npz")
-DEFAULT_CHECKPOINT = Path("data/runpod/train-v2-gumbel-512k/checkpoints/training-latest.pt")
+DEFAULT_REPLAY = Path("data/runpod/train-v3/replay/trajectory-replay.npz")
+DEFAULT_CHECKPOINT = Path("data/runpod/train-v3/checkpoints/training-latest.pt")
 
 
 @dataclass(frozen=True)

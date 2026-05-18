@@ -1,5 +1,5 @@
 {
-  "work_dir": "data/runpod/train-v2-gumbel-512k-adamw3e4-cscale01-r16",
+  "work_dir": "data/runpod/train-v3",
   "replay_capacity": 256000,
   "min_replay_transitions": 16384,
   "source_checkpoint": null,
@@ -7,7 +7,7 @@
   "training_latest_checkpoint": null,
   "train_checkpoint_mode": "resume",
   "export_onnx": true,
-  "onnx_output_path": "data/runpod/train-v2-gumbel-512k-adamw3e4-cscale01-r16/checkpoints/onnx/training-latest.onnx",
+  "onnx_output_path": "data/runpod/train-v3/checkpoints/onnx/training-latest.onnx",
   "onnx_device": "cuda",
   "onnx_precision": "fp16",
   "onnx_dummy_batch_size": 2,

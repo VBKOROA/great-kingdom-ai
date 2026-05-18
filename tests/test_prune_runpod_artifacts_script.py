@@ -61,7 +61,7 @@ def test_collect_prune_items_keeps_active_v2_training_state(tmp_path: Path) -> N
 def test_parser_defaults_match_current_runpod_training_layout() -> None:
     args = module.build_parser().parse_args([])
 
-    assert args.work_dir == Path("data/runpod/train-v2-large-policy")
+    assert args.work_dir == Path("data/runpod/train-v3")
     assert args.keep_candidates == 10
     assert args.keep_onnx == 11
 

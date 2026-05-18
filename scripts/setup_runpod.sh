@@ -263,5 +263,5 @@ echo "  great-kingdom-learner-v2 --learner-config configs/runpod/learner-v2.json
 echo "For 10-minute snapshots, run:"
 echo "  ./scripts/save_training_snapshots.sh"
 echo "To inspect or prune regenerable artifacts, run:"
-echo "  python scripts/prune_runpod_artifacts.py --work-dir data/runpod/train-v2-gumbel-512k"
-echo "  python scripts/prune_runpod_artifacts.py --work-dir data/runpod/train-v2-gumbel-512k --delete"
+echo "  python scripts/prune_runpod_artifacts.py --work-dir data/runpod/train-v3"
+echo "  python scripts/prune_runpod_artifacts.py --work-dir data/runpod/train-v3 --delete"

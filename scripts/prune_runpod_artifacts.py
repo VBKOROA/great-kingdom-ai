@@ -20,7 +20,7 @@ from great_kingdom_ai.runpod_pruning import (
     prune_items,
 )
 
-DEFAULT_WORK_DIR = Path("data/runpod/train-v2-large-policy")
+DEFAULT_WORK_DIR = Path("data/runpod/train-v3")
 __all__ = ["PruneItem", "collect_prune_items", "format_summary", "prune_items"]
 
 

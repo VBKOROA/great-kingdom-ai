@@ -12,7 +12,7 @@ from typing import Any, NoReturn
 
 import numpy as np
 
-DEFAULT_WORK_DIR = Path("data/runpod/train-v2-gumbel-512k-adamw3e4-cscale01-r16")
+DEFAULT_WORK_DIR = Path("data/runpod/train-v3")
 DEFAULT_RECENT_WINDOWS = (100, 500, 1000, 5000)
 DEFAULT_RECENT_PERCENTS = (1.0, 5.0, 10.0, 20.0, 25.0, 50.0)
 
