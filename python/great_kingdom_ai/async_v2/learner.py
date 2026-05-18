@@ -360,6 +360,7 @@ def _save_replay_with_timing(
     printer.done(
         f"saved replay: file={_format_bytes(path.stat().st_size)}, "
         f"write={save_stats.write_seconds:.2f}s, "
+        f"close={save_stats.close_seconds:.2f}s, "
         f"replace={save_stats.replace_seconds:.2f}s, "
         f"total={seconds:.2f}s, slowest={_format_slowest_npz_writes(save_stats)}"
     )

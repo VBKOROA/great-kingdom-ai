@@ -22,6 +22,7 @@ class NpzArrayWriteStat:
 class NpzSaveStats:
     array_stats: tuple[NpzArrayWriteStat, ...]
     write_seconds: float
+    close_seconds: float
     replace_seconds: float
     total_seconds: float
 
@@ -37,7 +38,9 @@ def save_npz_atomic(
     array_stats: list[NpzArrayWriteStat] = []
     compression = zipfile.ZIP_DEFLATED if compressed else zipfile.ZIP_STORED
     try:
-        with zipfile.ZipFile(temporary, mode="w", compression=compression) as archive:
+        archive = zipfile.ZipFile(temporary, mode="w", compression=compression)
+        close_started_at: float | None = None
+        try:
             for key, value in payload.items():
                 array = np.asanyarray(value)
                 array_started_at = time.monotonic()
@@ -50,6 +53,10 @@ def save_npz_atomic(
                         seconds=time.monotonic() - array_started_at,
                     )
                 )
+        finally:
+            close_started_at = time.monotonic()
+            archive.close()
+        close_seconds = time.monotonic() - close_started_at
         write_seconds = time.monotonic() - started_at
         replace_started_at = time.monotonic()
         temporary.replace(destination)
@@ -57,6 +64,7 @@ def save_npz_atomic(
         return NpzSaveStats(
             array_stats=tuple(array_stats),
             write_seconds=write_seconds,
+            close_seconds=close_seconds,
             replace_seconds=replace_seconds,
             total_seconds=time.monotonic() - started_at,
         )
