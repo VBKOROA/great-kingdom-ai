@@ -16,11 +16,11 @@ sys.modules[SPEC.name] = module
 SPEC.loader.exec_module(module)
 
 
-def test_extract_winners_sorts_by_match_index() -> None:
+def test_extract_winners_sorts_by_match_index_and_removes_duplicates() -> None:
     summary = {
         "matches": [
             {
-                "match_index": 2,
+                "match_index": 3,
                 "champion_before": "b.pt",
                 "challenger": "c.pt",
                 "winner": "c.pt",
@@ -31,12 +31,36 @@ def test_extract_winners_sorts_by_match_index() -> None:
                 "challenger": "b.pt",
                 "winner": "b.pt",
             },
+            {
+                "match_index": 2,
+                "champion_before": "b.pt",
+                "challenger": "keep-b.pt",
+                "winner": "b.pt",
+            },
         ]
     }
 
     winners = module.extract_winners(summary, include_initial_champion=False)
 
     assert winners == ["b.pt", "c.pt"]
+
+
+def test_extract_winners_can_keep_duplicates() -> None:
+    summary = {
+        "matches": [
+            {"match_index": 1, "champion_before": "a.pt", "winner": "a.pt"},
+            {"match_index": 2, "champion_before": "a.pt", "winner": "a.pt"},
+            {"match_index": 3, "champion_before": "a.pt", "winner": "b.pt"},
+        ]
+    }
+
+    winners = module.extract_winners(
+        summary,
+        include_initial_champion=False,
+        dedupe=False,
+    )
+
+    assert winners == ["a.pt", "a.pt", "b.pt"]
 
 
 def test_extract_winners_can_include_initial_champion() -> None:
