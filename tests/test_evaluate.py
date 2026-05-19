@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import types
 from dataclasses import asdict, dataclass
@@ -61,6 +62,64 @@ def test_evaluate_parser_accepts_gumbel_max_considered_actions_alias() -> None:
     config = evaluate_module._config_from_args(args)
 
     assert config.gumbel_max_considered_actions == 8
+
+
+def test_load_arena_config_randomizes_missing_seed_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "arena.json"
+    config_path.write_text(json.dumps({"games": 3}), encoding="utf-8")
+    seeds = iter([1234, 5678])
+    monkeypatch.setattr(evaluate_module, "_random_arena_seed", lambda: next(seeds))
+
+    config = evaluate_module.load_arena_config(config_path)
+
+    assert config.seed_start == 1234
+    assert config.gumbel_seed == 5678
+
+
+def test_load_arena_config_keeps_explicit_seed_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "arena.json"
+    config_path.write_text(
+        json.dumps({"seed_start": 0, "gumbel_seed": 0}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        evaluate_module,
+        "_random_arena_seed",
+        lambda: pytest.fail("explicit arena seeds should not be randomized"),
+    )
+
+    config = evaluate_module.load_arena_config(config_path)
+
+    assert config.seed_start == 0
+    assert config.gumbel_seed == 0
+
+
+def test_config_from_args_randomizes_default_seed_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = evaluate_module.build_parser().parse_args(
+        [
+            "--candidate",
+            "test.pt",
+            "--best",
+            "test-best.pt",
+            "--report",
+            "arena.json",
+        ]
+    )
+    seeds = iter([111, 222])
+    monkeypatch.setattr(evaluate_module, "_random_arena_seed", lambda: next(seeds))
+
+    config = evaluate_module._config_from_args(args)
+
+    assert config.seed_start == 111
+    assert config.gumbel_seed == 222
 
 
 def test_evaluate_parser_can_override_all_arena_config_fields() -> None:

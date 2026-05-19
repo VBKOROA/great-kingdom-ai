@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import secrets
 import shutil
 import tempfile
 from dataclasses import asdict
@@ -40,6 +41,8 @@ from great_kingdom_ai.evaluator import (
 )
 from great_kingdom_ai.onnx_export import export_checkpoint_to_onnx
 from great_kingdom_ai.self_play import SelfPlayState, create_core_game_state
+
+_ARENA_RANDOM_SEED_LIMIT = 2**31 - 1
 
 
 def _runtime() -> ArenaRuntime:
@@ -309,12 +312,40 @@ def create_core_arena_batch(
     )
 
 
-def load_arena_config(path: str | Path) -> ArenaConfig:
+def load_arena_config(
+    path: str | Path,
+    *,
+    randomize_missing_seed_start: bool = True,
+    randomize_missing_gumbel_seed: bool = True,
+) -> ArenaConfig:
     with Path(path).open("r", encoding="utf-8") as file:
         data = json.load(file)
     if not isinstance(data, dict):
         raise ValueError("arena config must be a JSON object")
+    data = _with_random_arena_seed_defaults(
+        data,
+        randomize_seed_start=randomize_missing_seed_start,
+        randomize_gumbel_seed=randomize_missing_gumbel_seed,
+    )
     return ArenaConfig(**data)
+
+
+def _with_random_arena_seed_defaults(
+    data: dict[str, Any],
+    *,
+    randomize_seed_start: bool,
+    randomize_gumbel_seed: bool,
+) -> dict[str, Any]:
+    resolved = dict(data)
+    if randomize_seed_start and resolved.get("seed_start") is None:
+        resolved["seed_start"] = _random_arena_seed()
+    if randomize_gumbel_seed and resolved.get("gumbel_seed") is None:
+        resolved["gumbel_seed"] = _random_arena_seed()
+    return resolved
+
+
+def _random_arena_seed() -> int:
+    return secrets.randbelow(_ARENA_RANDOM_SEED_LIMIT)
 
 
 def _arena_onnx_path(
@@ -395,7 +426,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _config_from_args(args: argparse.Namespace) -> ArenaConfig:
-    config = load_arena_config(args.config) if args.config is not None else ArenaConfig()
+    config = (
+        load_arena_config(
+            args.config,
+            randomize_missing_seed_start=args.seed_start is None,
+            randomize_missing_gumbel_seed=args.gumbel_seed is None,
+        )
+        if args.config is not None
+        else ArenaConfig(
+            **_with_random_arena_seed_defaults(
+                {},
+                randomize_seed_start=args.seed_start is None,
+                randomize_gumbel_seed=args.gumbel_seed is None,
+            )
+        )
+    )
     overrides = {
         "device": args.device,
         "games": args.games,
