@@ -31,5 +31,5 @@
   "priority_epsilon": 0.001,
   "priority_ema": 0.9,
   "prefetch_batches": 4,
-  "ema_decay": 0.997
+  "ema_decay": 0.999
 }
