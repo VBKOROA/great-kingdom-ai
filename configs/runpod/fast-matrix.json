@@ -15,5 +15,6 @@
   "paired_seeds": true,
   "leaf_batch_size": 2048,
   "device": "cuda",
-  "promotion_threshold": 1.0
+  "promotion_threshold": 1.0,
+  "require_side_win_rates_for_promotion": true
 }

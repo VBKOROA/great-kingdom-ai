@@ -414,6 +414,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--leaf-batch-size", type=int, default=None)
     parser.add_argument("--promotion-threshold", type=float, default=None)
     parser.add_argument(
+        "--require-side-win-rates-for-promotion",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "require candidate Blue and Orange win rates to both meet promotion-threshold "
+            "before report.summary.promoted is true"
+        ),
+    )
+    parser.add_argument(
         "--backend",
         choices=["onnx", "pytorch"],
         default="onnx",
@@ -461,6 +470,7 @@ def _config_from_args(args: argparse.Namespace) -> ArenaConfig:
         "paired_seeds": args.paired_seeds,
         "leaf_batch_size": args.leaf_batch_size,
         "promotion_threshold": args.promotion_threshold,
+        "require_side_win_rates_for_promotion": args.require_side_win_rates_for_promotion,
     }
     data = asdict(config)
     data.update({key: value for key, value in overrides.items() if value is not None})

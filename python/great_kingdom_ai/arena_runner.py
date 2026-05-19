@@ -171,7 +171,11 @@ def run_arena(
     return ArenaReport(
         config=config,
         games=games,
-        summary=summarize_arena(games, promotion_threshold=config.promotion_threshold),
+        summary=summarize_arena(
+            games,
+            promotion_threshold=config.promotion_threshold,
+            require_side_win_rates_for_promotion=config.require_side_win_rates_for_promotion,
+        ),
     )
 
 
@@ -277,6 +281,7 @@ def run_arena_batched(
         summary=summarize_arena(
             completed_games,
             promotion_threshold=config.promotion_threshold,
+            require_side_win_rates_for_promotion=config.require_side_win_rates_for_promotion,
         ),
     )
 
@@ -357,6 +362,7 @@ def summarize_arena(
     games: Sequence[ArenaGameResult],
     *,
     promotion_threshold: float,
+    require_side_win_rates_for_promotion: bool = False,
 ) -> ArenaSummary:
     if not 0.0 <= promotion_threshold <= 1.0:
         raise ValueError("promotion_threshold must be between 0 and 1")
@@ -374,9 +380,22 @@ def summarize_arena(
     )
     candidate_win_rate = candidate_wins / game_count if game_count else 0.0
     best_win_rate = best_wins / game_count if game_count else 0.0
+    candidate_blue_win_rate = (
+        candidate_blue_wins / candidate_blue_games if candidate_blue_games else 0.0
+    )
+    candidate_orange_win_rate = (
+        candidate_orange_wins / candidate_orange_games if candidate_orange_games else 0.0
+    )
     average_game_length = (
         sum(len(game.moves) for game in games) / game_count if game_count else 0.0
     )
+    promoted = game_count > 0 and candidate_win_rate >= promotion_threshold
+    if require_side_win_rates_for_promotion:
+        promoted = (
+            promoted
+            and candidate_blue_win_rate >= promotion_threshold
+            and candidate_orange_win_rate >= promotion_threshold
+        )
 
     return ArenaSummary(
         games=game_count,
@@ -389,7 +408,7 @@ def summarize_arena(
         candidate_orange_games=candidate_orange_games,
         candidate_orange_wins=candidate_orange_wins,
         average_game_length=average_game_length,
-        promoted=game_count > 0 and candidate_win_rate >= promotion_threshold,
+        promoted=promoted,
     )
 
 

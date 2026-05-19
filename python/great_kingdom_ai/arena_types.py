@@ -98,6 +98,7 @@ class ArenaConfig:
     leaf_batch_size: int = 8
     device: str = "cpu"
     promotion_threshold: float = 0.55
+    require_side_win_rates_for_promotion: bool = False
 
     def __post_init__(self) -> None:
         if self.batch_size <= 0:

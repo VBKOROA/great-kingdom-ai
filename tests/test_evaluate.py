@@ -168,6 +168,7 @@ def test_evaluate_parser_can_override_all_arena_config_fields() -> None:
             "cuda",
             "--promotion-threshold",
             "0.6",
+            "--require-side-win-rates-for-promotion",
         ]
     )
 
@@ -193,6 +194,7 @@ def test_evaluate_parser_can_override_all_arena_config_fields() -> None:
         "leaf_batch_size": 4,
         "device": "cuda",
         "promotion_threshold": 0.6,
+        "require_side_win_rates_for_promotion": True,
     }
 
 
@@ -1016,6 +1018,40 @@ def test_summarize_arena_reports_side_split_and_promotion() -> None:
     assert summary.candidate_orange_wins == 0
     assert summary.average_game_length == pytest.approx(1.5)
     assert summary.promoted is True
+
+
+def test_summarize_arena_can_require_promotion_threshold_on_both_sides() -> None:
+    games = [
+        ArenaGameResult(
+            seed=1,
+            candidate_player=1,
+            best_player=2,
+            winner=1,
+            end_reason=1,
+            moves=[MoveLog(turn=0, player=1, action=2)],
+            territory_scores=(0, 0),
+        ),
+        ArenaGameResult(
+            seed=2,
+            candidate_player=2,
+            best_player=1,
+            winner=1,
+            end_reason=1,
+            moves=[MoveLog(turn=0, player=1, action=3)],
+            territory_scores=(0, 0),
+        ),
+    ]
+
+    summary = summarize_arena(
+        games,
+        promotion_threshold=0.5,
+        require_side_win_rates_for_promotion=True,
+    )
+
+    assert summary.candidate_win_rate == pytest.approx(0.5)
+    assert summary.candidate_blue_wins == 1
+    assert summary.candidate_orange_wins == 0
+    assert summary.promoted is False
 
 
 def test_save_report_and_promote_candidate_copy_checkpoint(tmp_path: Path) -> None:

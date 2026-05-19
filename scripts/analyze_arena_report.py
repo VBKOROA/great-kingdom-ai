@@ -47,6 +47,10 @@ def analyze_report(path: Path, report: dict[str, Any]) -> dict[str, Any]:
 
     threshold_value = _first_present(config, "promotion_threshold", fallback=summary)
     threshold = _float_value(threshold_value, default=DEFAULT_PROMOTION_THRESHOLD)
+    require_side_win_rates = _bool_value(
+        _first_present(config, "require_side_win_rates_for_promotion", fallback=summary),
+        default=False,
+    )
     stats = _stats_from_games(games)
 
     summary_games = _int_value(summary.get("games"), default=0)
@@ -80,6 +84,8 @@ def analyze_report(path: Path, report: dict[str, Any]) -> dict[str, Any]:
         if games
         else _int_value(summary.get("candidate_orange_wins"), default=0)
     )
+    candidate_blue_win_rate = _rate(candidate_blue_wins, candidate_blue_games)
+    candidate_orange_win_rate = _rate(candidate_orange_wins, candidate_orange_games)
 
     ci_low, ci_high = wilson_interval(candidate_wins, game_count)
     return {
@@ -91,15 +97,23 @@ def analyze_report(path: Path, report: dict[str, Any]) -> dict[str, Any]:
         "best_win_rate": best_win_rate,
         "candidate_win_rate_ci95": [ci_low, ci_high],
         "promotion_threshold": threshold,
+        "require_side_win_rates_for_promotion": require_side_win_rates,
         "promotion_margin": candidate_win_rate - threshold,
-        "promoted": game_count > 0 and candidate_win_rate >= threshold,
+        "promoted": _is_promoted(
+            game_count=game_count,
+            candidate_win_rate=candidate_win_rate,
+            candidate_blue_win_rate=candidate_blue_win_rate,
+            candidate_orange_win_rate=candidate_orange_win_rate,
+            threshold=threshold,
+            require_side_win_rates=require_side_win_rates,
+        ),
         "wins_needed_for_threshold": wins_needed_for_threshold(game_count, threshold),
         "candidate_blue_games": candidate_blue_games,
         "candidate_blue_wins": candidate_blue_wins,
-        "candidate_blue_win_rate": _rate(candidate_blue_wins, candidate_blue_games),
+        "candidate_blue_win_rate": candidate_blue_win_rate,
         "candidate_orange_games": candidate_orange_games,
         "candidate_orange_wins": candidate_orange_wins,
-        "candidate_orange_win_rate": _rate(candidate_orange_wins, candidate_orange_games),
+        "candidate_orange_win_rate": candidate_orange_win_rate,
         "overall_blue_wins": stats["overall_blue_wins"],
         "overall_orange_wins": stats["overall_orange_wins"],
         "overall_color_games": stats["overall_color_games"],
@@ -126,6 +140,10 @@ def combine_analyses(path: str, analyses: list[dict[str, Any]]) -> dict[str, Any
     overall_orange_wins = sum(int(analysis["overall_orange_wins"]) for analysis in analyses)
     overall_color_games = sum(int(analysis["overall_color_games"]) for analysis in analyses)
     threshold = _common_threshold(analyses)
+    require_side_win_rates = any(
+        bool(analysis.get("require_side_win_rates_for_promotion", False))
+        for analysis in analyses
+    )
     ci_low, ci_high = wilson_interval(candidate_wins, games)
 
     lengths = _combine_length_stats([analysis["lengths"] for analysis in analyses])
@@ -142,8 +160,16 @@ def combine_analyses(path: str, analyses: list[dict[str, Any]]) -> dict[str, Any
         "best_win_rate": _rate(best_wins, games),
         "candidate_win_rate_ci95": [ci_low, ci_high],
         "promotion_threshold": threshold,
+        "require_side_win_rates_for_promotion": require_side_win_rates,
         "promotion_margin": _rate(candidate_wins, games) - threshold,
-        "promoted": games > 0 and _rate(candidate_wins, games) >= threshold,
+        "promoted": _is_promoted(
+            game_count=games,
+            candidate_win_rate=_rate(candidate_wins, games),
+            candidate_blue_win_rate=_rate(candidate_blue_wins, candidate_blue_games),
+            candidate_orange_win_rate=_rate(candidate_orange_wins, candidate_orange_games),
+            threshold=threshold,
+            require_side_win_rates=require_side_win_rates,
+        ),
         "wins_needed_for_threshold": wins_needed_for_threshold(games, threshold),
         "candidate_blue_games": candidate_blue_games,
         "candidate_blue_wins": candidate_blue_wins,
@@ -422,6 +448,25 @@ def _rate(numerator: int, denominator: int) -> float:
     return numerator / denominator if denominator else 0.0
 
 
+def _is_promoted(
+    *,
+    game_count: int,
+    candidate_win_rate: float,
+    candidate_blue_win_rate: float,
+    candidate_orange_win_rate: float,
+    threshold: float,
+    require_side_win_rates: bool,
+) -> bool:
+    promoted = game_count > 0 and candidate_win_rate >= threshold
+    if require_side_win_rates:
+        promoted = (
+            promoted
+            and candidate_blue_win_rate >= threshold
+            and candidate_orange_win_rate >= threshold
+        )
+    return promoted
+
+
 def _int_value(value: Any, *, default: int) -> int:
     if value is None:
         return default
@@ -440,6 +485,20 @@ def _float_value(value: Any, *, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _bool_value(value: Any, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
 
 
 def _score_pair(value: Any) -> tuple[int, int] | None:
