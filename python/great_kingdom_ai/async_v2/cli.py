@@ -6,7 +6,7 @@ import argparse
 import json
 import shutil
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -82,6 +82,14 @@ def build_learner_v2_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-replay-transitions", type=int, default=None)
     parser.add_argument("--source-checkpoint", type=Path, default=None)
     parser.add_argument("--train-checkpoint-mode", choices=["resume", "bootstrap"], default=None)
+    parser.add_argument(
+        "--bootstrap-once",
+        action="store_true",
+        help=(
+            "Use bootstrap checkpoint loading for the first training call only, then resume "
+            "from the newly written training-latest checkpoint."
+        ),
+    )
     parser.add_argument("--device", choices=["cpu", "cuda"], default=None)
     parser.add_argument("--train-steps", type=int, default=None)
     parser.add_argument("--no-export-onnx", action="store_true")
@@ -266,13 +274,22 @@ def _run_learner_cli(
     train_config: TrainingConfig,
     args: argparse.Namespace,
 ) -> list[dict[str, Any]]:
+    bootstrap_once = getattr(args, "bootstrap_once", False)
+    override_optimizer_lr = getattr(args, "override_optimizer_lr", None)
+    if bootstrap_once:
+        if override_optimizer_lr is not None:
+            raise ValueError("--bootstrap-once cannot be combined with --lr-override")
+        if config.train_checkpoint_mode != "resume":
+            raise ValueError("--bootstrap-once requires train_checkpoint_mode=resume")
     if args.loop:
         return _run_learner_continuous_cli(config, train_config, args)
     summaries = []
+    if bootstrap_once:
+        config = replace(config, train_checkpoint_mode="bootstrap")
     summary = run_learner_v2_once(
         config,
         train_config,
-        resume_optimizer_lr_override=args.override_optimizer_lr,
+        resume_optimizer_lr_override=override_optimizer_lr,
         printer=PipelinePrinter(enabled=not args.json),
     )
     summaries.append(summary.to_dict())
@@ -292,7 +309,8 @@ def _run_learner_continuous_cli(
     export_onnx = export_checkpoint_to_onnx
     summaries: list[dict[str, Any]] = []
     train_budget_samples = 0.0
-    resume_optimizer_lr_override = args.override_optimizer_lr
+    resume_optimizer_lr_override = getattr(args, "override_optimizer_lr", None)
+    bootstrap_once_pending = getattr(args, "bootstrap_once", False)
     cycles = args.max_cycles
     cycle = 0
     train_chunks = 0
@@ -355,8 +373,14 @@ def _run_learner_continuous_cli(
             dataset = TrajectoryReplayDataset(replay)
             candidate_checkpoint = _candidate_checkpoint(config)
             training_latest = _training_latest_checkpoint(config)
+            if bootstrap_once_pending:
+                train_checkpoint_mode = "bootstrap"
+            elif getattr(args, "bootstrap_once", False):
+                train_checkpoint_mode = "resume"
+            else:
+                train_checkpoint_mode = config.train_checkpoint_mode
             kwargs = _train_checkpoint_kwargs(
-                train_checkpoint_mode=config.train_checkpoint_mode,
+                train_checkpoint_mode=train_checkpoint_mode,
                 source_checkpoint=_source_checkpoint(config),
             )
             printer.step(
@@ -368,7 +392,7 @@ def _run_learner_continuous_cli(
             }
             _print_learner_optimizer_state(
                 printer,
-                train_checkpoint_mode=config.train_checkpoint_mode,
+                train_checkpoint_mode=train_checkpoint_mode,
                 resume_path=train_kwargs.get("resume_path"),
                 bootstrap_weights_path=train_kwargs.get("bootstrap_weights_path"),
             )
@@ -397,6 +421,7 @@ def _run_learner_continuous_cli(
                 log_every=max(1, effective_train_config.steps // 10),
                 progress_callback=progress_callback,
             )
+            bootstrap_once_pending = False
             if pending:
                 _persist_imported_replay(
                     config=config,

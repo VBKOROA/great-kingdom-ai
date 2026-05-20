@@ -745,6 +745,85 @@ def test_learner_v2_continuous_consumes_optimizer_lr_override_once(
     assert train_calls == [5e-5, None]
 
 
+def test_learner_v2_continuous_bootstraps_once_then_resumes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    training_latest = tmp_path / "checkpoints" / "training-latest.pt"
+    training_latest.parent.mkdir(parents=True, exist_ok=True)
+    training_latest.write_text("source", encoding="utf-8")
+    run_actor_v2_once(
+        ActorV2Config(
+            work_dir=tmp_path,
+            onnx_model_path=tmp_path / "model.onnx",
+            model_version="ema",
+            games=2,
+            seed_start=0,
+            onnx_device="cpu",
+        ),
+        runner=fake_actor_runner,
+        printer=PipelinePrinter(enabled=False),
+    )
+    train_calls: list[dict[str, Path | None]] = []
+
+    def fake_train(
+        replay: Any,
+        config: TrainingConfig,
+        *,
+        checkpoint_path: str | Path,
+        resume_path: str | Path | None,
+        bootstrap_weights_path: str | Path | None = None,
+        resume_optimizer_lr_override: float | None = None,
+        log_every: int,
+        progress_callback: Any = None,
+    ) -> FakeTrainSummary:
+        del replay, config, resume_optimizer_lr_override, log_every, progress_callback
+        train_calls.append(
+            {
+                "resume_path": None if resume_path is None else Path(resume_path),
+                "bootstrap_weights_path": (
+                    None if bootstrap_weights_path is None else Path(bootstrap_weights_path)
+                ),
+            }
+        )
+        destination = Path(checkpoint_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("candidate", encoding="utf-8")
+        return FakeTrainSummary(destination)
+
+    monkeypatch.setattr(async_v2_cli_module, "train_from_replay", fake_train)
+    monkeypatch.setattr(
+        learner_v2_module,
+        "summarize_checkpoint_optimizer_state",
+        lambda path: {"checkpoint_step": 0},
+    )
+
+    args = argparse.Namespace(
+        loop=True,
+        max_cycles=2,
+        json=True,
+        sleep_seconds=0.0,
+        override_optimizer_lr=None,
+        bootstrap_once=True,
+    )
+    _run_learner_cli(
+        LearnerV2Config(
+            work_dir=tmp_path,
+            replay_capacity=32,
+            min_replay_transitions=1,
+            train_reuse_factor=2.0,
+            export_onnx=False,
+        ),
+        TrainingConfig(batch_size=2, steps=1, device="cpu"),
+        args,
+    )
+
+    assert train_calls == [
+        {"resume_path": None, "bootstrap_weights_path": training_latest},
+        {"resume_path": training_latest, "bootstrap_weights_path": None},
+    ]
+
+
 def test_learner_v2_continuous_prints_resume_optimizer_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
