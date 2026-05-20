@@ -21,7 +21,7 @@
     "playout_cap_randomization": true,
     "playout_cap_full_search_fraction": 0.25,
     "playout_cap_full_simulations": 192,
-    "playout_cap_fast_simulations": 16,
+    "playout_cap_fast_simulations": 32,
     "playout_cap_full_max_considered_actions": 8,
     "playout_cap_fast_max_considered_actions": 4,
     "leaf_batch_size": 2048
