@@ -1,17 +1,20 @@
 # Arena Anchor Playbook
 
 This note records the current train-v3 arena promotion rules and anchor set.
-It reflects the 2026-05-20 evaluation run where `training-latest-20260520-080021.pt`
+It reflects the 2026-05-20 evaluation run where `training-latest-20260520-084040.pt`
 became the best service candidate.
 
 ## Current Best
 
-Use `training-latest-20260520-080021.pt` as `latest-best.pt`.
+Use `training-latest-20260520-084040.pt` as `latest-best.pt`.
 
 Promotion evidence:
 
 | Candidate | Opponent | Runs | Candidate Win Rate | Side Split | Read |
 | --- | --- | ---: | --- | --- | --- |
+| `084040` | previous `latest-best.pt` / `080021` | 2 | 53.5%, 59% | Blue 63/68, Orange 44/50 | Repeated direct replacement signal. |
+| `084040` | `094340` | 1 | 67.25% over 400 games | Blue 117/200, Orange 152/200 | Clear pass against the stable counter-anchor. |
+| `084040` | `115445` | 2 | 48%, 47.5% | Blue 65/68, Orange 31/27 | Still weak as Orange, but better than `080021` against this anchor. |
 | `080021` | previous `latest-best.pt` / `063442` | 1 | 85.5% | Blue 92, Orange 79 | Clear direct replacement signal. |
 | `080021` | `094340` | 1 | 53% | Blue 65, Orange 41 | Passes the stable counter-anchor. |
 | `080021` | `115445` | 2 | 42%, 42.5% | Blue 51/38, Orange 33/47 | Weak but repeated above the 40% floor. Keep `115445` as an anchor. |
@@ -19,9 +22,10 @@ Promotion evidence:
 | `063442` | `115445` | 1 | 76% | Blue 84, Orange 68 | Crushes the latest-best killer / risky anchor. |
 | `063442` | `094340` | 3 | 51%, 54.5%, 54% | Blue 45/45/44, Orange 57/64/64 | Slight overall edge, but Blue weakness must remain tracked. |
 
-The main weakness is the `115445` matchup. It is not severe enough to block
-promotion because both repeated results stayed above 40%, but `115445` must
-stay in the anchor pool.
+The main weakness is the `115445` matchup when `084040` plays Orange. It is not
+severe enough to block promotion because both repeated overall results stayed
+near 48% and were stronger than `080021`, but `115445` must stay in the anchor
+pool.
 
 ## Anchor Set
 
@@ -29,9 +33,9 @@ Keep these checkpoints:
 
 | Anchor | Role | Why It Matters |
 | --- | --- | --- |
-| `latest-best.pt` / `training-latest-20260520-080021.pt` | current best | Best validated service candidate as of 2026-05-20. |
+| `latest-best.pt` / `training-latest-20260520-084040.pt` | current best | Best validated service candidate as of 2026-05-20. |
 | `training-latest-20260519-094340.pt` | stable contender / counter-anchor | Detects the Blue-side weakness in newer models. |
-| `training-latest-20260519-115445.pt` | latest-best killer / risky anchor | Holds `080021` to about 42%. Useful RPS detector. |
+| `training-latest-20260519-115445.pt` | latest-best killer / risky anchor | Still exposes Orange weakness in `084040`. Useful RPS detector. |
 
 Do not keep weak follow-up snapshots as anchors unless they expose a new,
 repeatable failure mode.
@@ -46,6 +50,8 @@ Rejected snapshots:
 | `training-latest-20260520-072504.pt` | 52% vs `063442` overall but Blue 35%, so not promotable. |
 | `training-latest-20260520-073007.pt` | 38.5% vs `063442/latest-best`, Blue 29%. Replay fit improved, but arena regressed. |
 | `training-latest-20260520-075016.pt` | 46% vs `063442/latest-best`, but Orange 18%. Not promotable despite Blue 74%. |
+| `training-latest-20260520-080523.pt` | 39% vs `080021/latest-best`, Orange 28%, despite tiny average KL movement. |
+| `training-latest-20260520-083537.pt` | 43% vs `080021/latest-best`, Orange 32%. Target smoothing worked, but arena remained weak. |
 
 ## Backend Policy
 
@@ -150,6 +156,8 @@ Examples:
 - `065953` was very close to `063442` by KL, but scored only 32% against `063442/latest-best`.
 - `073007` improved target KL and value metrics versus `063442`, but scored only 38.5% with Blue 29%.
 - `075016` reached 46% versus `063442`, but did so with Blue 74 and Orange 18, so the aggregate score hid a severe side collapse.
+- `080523` moved only slightly from `080021` by average KL, but scored 39% with Orange 28.
+- `083537` used smoother policy targets and lower train reuse, but still scored only 43% against `080021`.
 
 Conclusion:
 
@@ -181,7 +189,8 @@ Current stable direction:
 
 ```text
 EMA decay: 0.999
-train_reuse_factor: 4.0
+train_reuse_factor: 2.0
+policy_target_c_scale: 0.025
 learning rate: 0.005 with warmup after optimizer bootstrap
 ```
 
@@ -192,16 +201,20 @@ Observed tuning read:
 - Later snapshots drifted away from `063442`, so learning rate alone was not the clean fix.
 - Lowering learning rate alone did not solve the drift; `073007` and `075016` still had side-specific regressions.
 - `080021` became the new best after resetting optimizer state for the first train chunk with `bootstrap-once`.
-- Prefer optimizer-state reset / bootstrap-once checks before raising actor simulations.
+- `policy_target_c_scale=0.025` made replay targets less sharp without turning them into prior copies.
+- `train_reuse_factor=2.0` reduced learner update volume per imported transition.
+- `084040` became the new best under the smoother target / lower reuse regime.
+- Prefer target/update-size controls before raising actor simulations.
 
 Suggested next experiments:
 
 ```text
 keep EMA decay at 0.999
-keep train_reuse_factor at 4.0
+keep train_reuse_factor at 2.0
+keep policy_target_c_scale at 0.025
 use lr 0.005 with constant warmup unless side collapses return
 use bootstrap-once when intentionally clearing optimizer momentum/scheduler state
-raise actor simulations only after update-size controls are exhausted
+raise actor simulations only after target/update-size controls are exhausted
 ```
 
 When intentionally clearing optimizer momentum once, bootstrap the first
@@ -212,7 +225,7 @@ great-kingdom-learner-v2 \
   --learner-config configs/runpod/learner-v2.json \
   --train-config configs/runpod/train.json \
   --bootstrap-once \
-  --train-reuse-factor 4.0 \
+  --train-reuse-factor 2.0 \
   --loop
 ```
 
@@ -233,7 +246,7 @@ When a candidate looks good:
 For the current run, the next candidate should be judged against:
 
 ```text
-latest-best.pt                         # currently 080021
+latest-best.pt                         # currently 084040
 training-latest-20260519-094340.pt
 training-latest-20260519-115445.pt
 ```

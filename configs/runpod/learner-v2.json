@@ -1,5 +1,5 @@
 {
-  "work_dir": "data/runpod/train-v3",
+  "work_dir": "data/runpod/train-v4",
   "replay_capacity": 256000,
   "min_replay_transitions": 16384,
   "source_checkpoint": null,
@@ -7,11 +7,11 @@
   "training_latest_checkpoint": null,
   "train_checkpoint_mode": "resume",
   "export_onnx": true,
-  "onnx_output_path": "data/runpod/train-v3/checkpoints/onnx/training-latest.onnx",
+  "onnx_output_path": "data/runpod/train-v4/checkpoints/onnx/training-latest.onnx",
   "onnx_device": "cuda",
   "onnx_precision": "fp16",
   "onnx_dummy_batch_size": 2,
   "prune_artifacts": true,
   "prune_keep_imported_shards": 0,
-  "train_reuse_factor": 2.0
+  "train_reuse_factor": 8.0
 }
