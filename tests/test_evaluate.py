@@ -64,6 +64,21 @@ def test_evaluate_parser_accepts_gumbel_max_considered_actions_alias() -> None:
     assert config.gumbel_max_considered_actions == 8
 
 
+def test_evaluate_parser_defaults_to_pytorch_backend() -> None:
+    args = evaluate_module.build_parser().parse_args(
+        [
+            "--candidate",
+            "test.pt",
+            "--best",
+            "test-best.pt",
+            "--report",
+            "arena.json",
+        ]
+    )
+
+    assert args.backend == "pytorch"
+
+
 def test_load_arena_config_randomizes_missing_seed_fields(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

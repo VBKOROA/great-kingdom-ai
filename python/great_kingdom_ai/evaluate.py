@@ -425,7 +425,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--backend",
         choices=["onnx", "pytorch"],
-        default="onnx",
+        default="pytorch",
         help="arena inference backend; ONNX uses the Rust evaluator path",
     )
     parser.add_argument("--onnx-max-batch-size", type=int, default=8192)
