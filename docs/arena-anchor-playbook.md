@@ -1,23 +1,27 @@
 # Arena Anchor Playbook
 
 This note records the current train-v3 arena promotion rules and anchor set.
-It reflects the 2026-05-20 evaluation run where `training-latest-20260520-063442.pt`
+It reflects the 2026-05-20 evaluation run where `training-latest-20260520-080021.pt`
 became the best service candidate.
 
 ## Current Best
 
-Use `training-latest-20260520-063442.pt` as `latest-best.pt`.
+Use `training-latest-20260520-080021.pt` as `latest-best.pt`.
 
 Promotion evidence:
 
 | Candidate | Opponent | Runs | Candidate Win Rate | Side Split | Read |
 | --- | --- | ---: | --- | --- | --- |
+| `080021` | previous `latest-best.pt` / `063442` | 1 | 85.5% | Blue 92, Orange 79 | Clear direct replacement signal. |
+| `080021` | `094340` | 1 | 53% | Blue 65, Orange 41 | Passes the stable counter-anchor. |
+| `080021` | `115445` | 2 | 42%, 42.5% | Blue 51/38, Orange 33/47 | Weak but repeated above the 40% floor. Keep `115445` as an anchor. |
 | `063442` | previous `latest-best.pt` | 2 | 69%, 64% | Blue 75/72, Orange 63/56 | Clear direct replacement signal. |
 | `063442` | `115445` | 1 | 76% | Blue 84, Orange 68 | Crushes the latest-best killer / risky anchor. |
 | `063442` | `094340` | 3 | 51%, 54.5%, 54% | Blue 45/45/44, Orange 57/64/64 | Slight overall edge, but Blue weakness must remain tracked. |
 
-The main weakness is the `094340` matchup when `063442` plays Blue. It is not
-severe enough to block promotion, but `094340` must stay in the anchor pool.
+The main weakness is the `115445` matchup. It is not severe enough to block
+promotion because both repeated results stayed above 40%, but `115445` must
+stay in the anchor pool.
 
 ## Anchor Set
 
@@ -25,9 +29,9 @@ Keep these checkpoints:
 
 | Anchor | Role | Why It Matters |
 | --- | --- | --- |
-| `latest-best.pt` / `training-latest-20260520-063442.pt` | current best | Best validated service candidate as of 2026-05-20. |
+| `latest-best.pt` / `training-latest-20260520-080021.pt` | current best | Best validated service candidate as of 2026-05-20. |
 | `training-latest-20260519-094340.pt` | stable contender / counter-anchor | Detects the Blue-side weakness in newer models. |
-| `training-latest-20260519-115445.pt` | latest-best killer / risky anchor | Beats older `latest-best` strongly, but has hard-counter weakness. Useful RPS detector. |
+| `training-latest-20260519-115445.pt` | latest-best killer / risky anchor | Holds `080021` to about 42%. Useful RPS detector. |
 
 Do not keep weak follow-up snapshots as anchors unless they expose a new,
 repeatable failure mode.
@@ -41,6 +45,7 @@ Rejected snapshots:
 | `training-latest-20260520-065953.pt` | 32% vs `063442/latest-best`; also weak vs `094340` despite beating `115445`. |
 | `training-latest-20260520-072504.pt` | 52% vs `063442` overall but Blue 35%, so not promotable. |
 | `training-latest-20260520-073007.pt` | 38.5% vs `063442/latest-best`, Blue 29%. Replay fit improved, but arena regressed. |
+| `training-latest-20260520-075016.pt` | 46% vs `063442/latest-best`, but Orange 18%. Not promotable despite Blue 74%. |
 
 ## Backend Policy
 
@@ -73,8 +78,8 @@ Promote only if:
 ```text
 candidate beats latest-best clearly, preferably in repeated 200-game runs
 candidate does not lose badly to 094340 or 115445
-worst direct result is not below 40%
-both colors are not broken
+worst repeated direct result is not below 40%
+no anchor exposes a severe side collapse
 ```
 
 Strong promotion signal:
@@ -88,7 +93,7 @@ candidate vs 115445     >= 50%
 Red flags:
 
 ```text
-one side below 40/100
+one side below 40/100, especially if overall is also below 45%
 overall win rate swings from win to loss across repeated 200-game runs
 candidate beats one anchor by 65%+ but loses another by 40% or worse
 replay KL/value improves while arena drops hard
@@ -144,6 +149,7 @@ Examples:
 - `063944` fit the replay better than `115445`, but scored only 27.5% against it.
 - `065953` was very close to `063442` by KL, but scored only 32% against `063442/latest-best`.
 - `073007` improved target KL and value metrics versus `063442`, but scored only 38.5% with Blue 29%.
+- `075016` reached 46% versus `063442`, but did so with Blue 74 and Orange 18, so the aggregate score hid a severe side collapse.
 
 Conclusion:
 
@@ -176,37 +182,42 @@ Current stable direction:
 ```text
 EMA decay: 0.999
 train_reuse_factor: 4.0
-learning rate: lower than the previous 0.01 setting
+learning rate: 0.005 with warmup after optimizer bootstrap
 ```
 
 Observed tuning read:
 
 - `train_reuse_factor=8.0` was too aggressive; it produced replay-fit gains with arena instability.
-- `train_reuse_factor=4.0` produced `063442`, the current best candidate.
-- Later snapshots can still drift away from `063442`, so learning rate should stay conservative.
-- Prefer lowering learning rate before raising actor simulations.
-- `072504` and `073007` suggest that small replay-fit improvements are still producing side-specific arena regressions.
+- `train_reuse_factor=4.0` produced `063442`, the previous best candidate.
+- Later snapshots drifted away from `063442`, so learning rate alone was not the clean fix.
+- Lowering learning rate alone did not solve the drift; `073007` and `075016` still had side-specific regressions.
+- `080021` became the new best after resetting optimizer state for the first train chunk with `bootstrap-once`.
+- Prefer optimizer-state reset / bootstrap-once checks before raising actor simulations.
 
 Suggested next experiments:
 
 ```text
 keep EMA decay at 0.999
-keep train_reuse_factor at 4.0, or lower to 3.0/2.0 if side collapses continue
-try lr around 0.003 if 0.005 still drifts too quickly
+keep train_reuse_factor at 4.0
+use lr 0.005 with constant warmup unless side collapses return
+use bootstrap-once when intentionally clearing optimizer momentum/scheduler state
 raise actor simulations only after update-size controls are exhausted
 ```
 
-When resuming from optimizer state, use the CLI override so the optimizer
-actually receives the intended learning rate:
+When intentionally clearing optimizer momentum once, bootstrap the first
+training call from `training-latest.pt` and resume normally after that:
 
 ```bash
 great-kingdom-learner-v2 \
   --learner-config configs/runpod/learner-v2.json \
   --train-config configs/runpod/train.json \
+  --bootstrap-once \
   --train-reuse-factor 4.0 \
-  --lr-override 0.003 \
   --loop
 ```
+
+When only changing the learning rate while resuming optimizer state, use the
+CLI override so the optimizer actually receives the intended value.
 
 ## Operational Checklist
 
@@ -222,7 +233,7 @@ When a candidate looks good:
 For the current run, the next candidate should be judged against:
 
 ```text
-latest-best.pt                         # currently 063442
+latest-best.pt                         # currently 080021
 training-latest-20260519-094340.pt
 training-latest-20260519-115445.pt
 ```
