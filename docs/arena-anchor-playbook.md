@@ -40,6 +40,7 @@ Rejected snapshots:
 | `training-latest-20260520-063944.pt` | 27.5% vs `115445`, both colors bad. |
 | `training-latest-20260520-065953.pt` | 32% vs `063442/latest-best`; also weak vs `094340` despite beating `115445`. |
 | `training-latest-20260520-072504.pt` | 52% vs `063442` overall but Blue 35%, so not promotable. |
+| `training-latest-20260520-073007.pt` | 38.5% vs `063442/latest-best`, Blue 29%. Replay fit improved, but arena regressed. |
 
 ## Backend Policy
 
@@ -142,6 +143,7 @@ Examples:
 - `061935` fit the replay better than `latest-best`, but scored only 37.5% in arena.
 - `063944` fit the replay better than `115445`, but scored only 27.5% against it.
 - `065953` was very close to `063442` by KL, but scored only 32% against `063442/latest-best`.
+- `073007` improved target KL and value metrics versus `063442`, but scored only 38.5% with Blue 29%.
 
 Conclusion:
 
@@ -183,6 +185,7 @@ Observed tuning read:
 - `train_reuse_factor=4.0` produced `063442`, the current best candidate.
 - Later snapshots can still drift away from `063442`, so learning rate should stay conservative.
 - Prefer lowering learning rate before raising actor simulations.
+- `072504` and `073007` suggest that small replay-fit improvements are still producing side-specific arena regressions.
 
 Suggested next experiments:
 
