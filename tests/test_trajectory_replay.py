@@ -228,6 +228,29 @@ def test_trajectory_replay_capacity_evicts_whole_old_episodes() -> None:
     assert [episode.episode_id for episode in replay.episodes] == [1]
 
 
+def test_trajectory_replay_can_defer_capacity_eviction_until_compaction() -> None:
+    replay = TrajectoryReplayStore.from_episodes(
+        3,
+        (make_episode(0, actions=[1, 2]),),
+    )
+    incoming = TrajectoryReplayStore.from_episodes(
+        3,
+        (make_episode(1, actions=[3, PASS_ACTION]),),
+    )
+
+    replay.extend_stores((incoming,), defer_capacity_eviction=True)
+
+    assert len(replay) == 4
+    assert replay.capacity == 3
+    assert [episode.episode_id for episode in replay.episodes] == [0, 1]
+
+    replay.compact_to_capacity()
+
+    assert len(replay) == 2
+    assert replay.capacity == 3
+    assert [episode.episode_id for episode in replay.episodes] == [1]
+
+
 def test_trajectory_replay_extends_from_store_without_episode_roundtrip() -> None:
     replay = TrajectoryReplayStore.from_episodes(
         8,

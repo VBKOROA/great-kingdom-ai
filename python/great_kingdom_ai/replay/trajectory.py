@@ -238,14 +238,28 @@ class TrajectoryReplayStore:
     def extend_store(self, incoming: TrajectoryReplayStore) -> None:
         self.extend_stores((incoming,))
 
-    def extend_stores(self, incoming_stores: Sequence[TrajectoryReplayStore]) -> None:
+    def extend_stores(
+        self,
+        incoming_stores: Sequence[TrajectoryReplayStore],
+        *,
+        defer_capacity_eviction: bool = False,
+    ) -> None:
         non_empty = tuple(store for store in incoming_stores if len(store) > 0)
         if not non_empty:
             return
-        if any(len(store) > self.capacity for store in non_empty):
+        if not defer_capacity_eviction and any(len(store) > self.capacity for store in non_empty):
             raise ValueError("episode transition count exceeds replay capacity")
         combined = _concat_many_stores(self, non_empty)
-        kept = _evict_to_capacity(combined)
+        kept = combined if defer_capacity_eviction else _evict_to_capacity(combined)
+        self.__dict__.update(kept.__dict__)
+
+    def compact_to_capacity(self, capacity: int | None = None) -> None:
+        target_capacity = self.capacity if capacity is None else int(capacity)
+        if target_capacity <= 0:
+            raise ValueError("capacity must be positive")
+        payload = self.to_payload()
+        payload["capacity"] = np.asarray(target_capacity, dtype=np.int64)
+        kept = _evict_to_capacity(TrajectoryReplayStore.from_payload(payload))
         self.__dict__.update(kept.__dict__)
 
     def save(self, path: str | Path, *, compressed: bool = True) -> NpzSaveStats:

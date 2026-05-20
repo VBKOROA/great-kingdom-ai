@@ -21,23 +21,19 @@ from great_kingdom_ai.async_v2.config import (
 )
 from great_kingdom_ai.async_v2.factory import run_factory_init_v2_once
 from great_kingdom_ai.async_v2.learner import (
-    _append_shard_import_event,
     _continuous_train_steps,
     _drop_async_unused_replay_arrays,
     _format_train_loss_detail,
     _import_shards_into_replay,
     _load_or_create_replay,
+    _persist_imported_replay,
     _print_learner_optimizer_state,
     _prune_learner_artifacts,
-    _save_replay_with_timing,
     _train_checkpoint_kwargs,
     _validate_learner_config,
     run_learner_v2_once,
 )
-from great_kingdom_ai.async_v2.metadata import (
-    _append_game_logs,
-    pending_v2_shards,
-)
+from great_kingdom_ai.async_v2.metadata import pending_v2_shards
 from great_kingdom_ai.async_v2.paths import (
     _candidate_checkpoint,
     _ensure_learner_dirs,
@@ -318,20 +314,16 @@ def _run_learner_continuous_cli(
         printer.metric("reuse factor", config.train_reuse_factor)
         printer.metric("budget samples", int(train_budget_samples))
 
-        imported_events = _import_shards_into_replay(replay, pending, printer=printer)
+        imported_events = _import_shards_into_replay(
+            replay,
+            pending,
+            defer_capacity_eviction=True,
+            printer=printer,
+        )
         imported_transitions = sum(stats.transitions for _, stats, _ in imported_events)
         imported_games = sum(stats.games for _, stats, _ in imported_events)
 
         if pending:
-            _save_replay_with_timing(replay, paths["replay_path"], printer=printer)
-            for shard_id, stats, replay_transitions in imported_events:
-                _append_shard_import_event(
-                    paths["metadata_path"],
-                    shard_id=shard_id,
-                    stats=stats,
-                    replay_transitions=replay_transitions,
-                )
-            _append_game_logs(paths["game_log_path"], pending)
             train_budget_samples += imported_transitions * config.train_reuse_factor
             printer.metric("imported games", imported_games)
             printer.metric("imported rows", imported_transitions)
@@ -405,6 +397,15 @@ def _run_learner_continuous_cli(
                 log_every=max(1, effective_train_config.steps // 10),
                 progress_callback=progress_callback,
             )
+            if pending:
+                _persist_imported_replay(
+                    config=config,
+                    paths=paths,
+                    replay=replay,
+                    pending=pending,
+                    imported_events=imported_events,
+                    printer=printer,
+                )
             resume_optimizer_lr_override = None
             train_budget_samples = max(
                 0.0,
@@ -431,10 +432,6 @@ def _run_learner_continuous_cli(
                 printer.done(f"onnx ready: {onnx_path}")
             else:
                 onnx_path = None
-            if config.prune_artifacts:
-                prune_summary = _prune_learner_artifacts(config=config, printer=printer)
-                pruned_artifacts = prune_summary["items"]
-                pruned_bytes = prune_summary["bytes"]
             trained = True
             train_start_step = int(train_summary.start_step)
             train_end_step = int(train_summary.end_step)
@@ -451,6 +448,20 @@ def _run_learner_continuous_cli(
             )
         else:
             printer.done("waiting for learner work")
+
+        if pending and not trained:
+            _persist_imported_replay(
+                config=config,
+                paths=paths,
+                replay=replay,
+                pending=pending,
+                imported_events=imported_events,
+                printer=printer,
+            )
+        if pending and config.prune_artifacts:
+            prune_summary = _prune_learner_artifacts(config=config, printer=printer)
+            pruned_artifacts = prune_summary["items"]
+            pruned_bytes = prune_summary["bytes"]
 
         cycle_seconds = time.monotonic() - cycle_started_at
         printer.done(f"learner cycle complete in {cycle_seconds:.1f}s")

@@ -87,23 +87,27 @@ def run_learner_v2_once(
             cycle_seconds=cycle_seconds,
         )
     replay = _load_or_create_replay(paths["replay_path"], capacity=config.replay_capacity)
-    imported_events = _import_shards_into_replay(replay, pending, printer=printer)
+    imported_events = _import_shards_into_replay(
+        replay,
+        pending,
+        defer_capacity_eviction=True,
+        printer=printer,
+    )
     imported_transitions = sum(stats.transitions for _, stats, _ in imported_events)
     imported_games = sum(stats.games for _, stats, _ in imported_events)
-    _save_replay_with_timing(replay, paths["replay_path"], printer=printer)
-    for shard_id, stats, replay_transitions in imported_events:
-        _append_shard_import_event(
-            paths["metadata_path"],
-            shard_id=shard_id,
-            stats=stats,
-            replay_transitions=replay_transitions,
-        )
-    _append_game_logs(paths["game_log_path"], pending)
     printer.metric("imported games", imported_games)
     printer.metric("imported rows", imported_transitions)
-    printer.metric("replay transitions", len(replay))
+    printer.metric("train replay transitions", len(replay))
 
     if len(replay) < config.min_replay_transitions:
+        _persist_imported_replay(
+            config=config,
+            paths=paths,
+            replay=replay,
+            pending=pending,
+            imported_events=imported_events,
+            printer=printer,
+        )
         cycle_seconds = time.monotonic() - cycle_started_at
         printer.done(
             f"waiting for replay: {len(replay)}/{config.min_replay_transitions} "
@@ -155,6 +159,14 @@ def run_learner_v2_once(
             target,
             detail=_format_train_loss_detail(loss),
         ),
+    )
+    _persist_imported_replay(
+        config=config,
+        paths=paths,
+        replay=replay,
+        pending=pending,
+        imported_events=imported_events,
+        printer=printer,
     )
     training_latest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(candidate_checkpoint, training_latest)
@@ -277,6 +289,7 @@ def _import_shards_into_replay(
     replay: TrajectoryReplayStore,
     shards: list[V2ShardRecord],
     *,
+    defer_capacity_eviction: bool = False,
     printer: PipelinePrinter,
 ) -> list[tuple[str, ShardImportStats, int]]:
     loaded = [
@@ -290,7 +303,10 @@ def _import_shards_into_replay(
     if not loaded:
         return []
     extend_started_at = time.monotonic()
-    replay.extend_stores([item.replay for item in loaded])
+    replay.extend_stores(
+        [item.replay for item in loaded],
+        defer_capacity_eviction=defer_capacity_eviction,
+    )
     extend_seconds = time.monotonic() - extend_started_at
     total_transitions = sum(len(item.replay) for item in loaded)
     imported_events: list[tuple[str, ShardImportStats, int]] = []
@@ -320,6 +336,30 @@ def _import_shards_into_replay(
         )
         imported_events.append((item.shard_id, stats, len(replay)))
     return imported_events
+
+
+def _persist_imported_replay(
+    *,
+    config: LearnerV2Config,
+    paths: dict[str, Path],
+    replay: TrajectoryReplayStore,
+    pending: list[V2ShardRecord],
+    imported_events: list[tuple[str, ShardImportStats, int]],
+    printer: PipelinePrinter,
+) -> None:
+    if len(replay) > config.replay_capacity or replay.capacity != config.replay_capacity:
+        before = len(replay)
+        replay.compact_to_capacity(config.replay_capacity)
+        printer.metric("compacted replay rows", f"{before}->{len(replay)}")
+    _save_replay_with_timing(replay, paths["replay_path"], printer=printer)
+    for shard_id, stats, _replay_transitions in imported_events:
+        _append_shard_import_event(
+            paths["metadata_path"],
+            shard_id=shard_id,
+            stats=stats,
+            replay_transitions=len(replay),
+        )
+    _append_game_logs(paths["game_log_path"], pending)
 
 
 def _load_shard_replay(

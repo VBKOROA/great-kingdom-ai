@@ -522,6 +522,22 @@ def test_learner_v2_marks_shards_imported_only_after_replay_save(
 
     monkeypatch.setattr(TrajectoryReplayStore, "save", fail_save)
 
+    def fake_train(
+        replay: Any,
+        config: TrainingConfig,
+        *,
+        checkpoint_path: str | Path,
+        resume_path: str | Path | None,
+        bootstrap_weights_path: str | Path | None = None,
+        log_every: int,
+        progress_callback: Any = None,
+    ) -> FakeTrainSummary:
+        del replay, config, resume_path, bootstrap_weights_path, log_every, progress_callback
+        destination = Path(checkpoint_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("candidate", encoding="utf-8")
+        return FakeTrainSummary(destination)
+
     with pytest.raises(RuntimeError, match="save failed"):
         run_learner_v2_once(
             LearnerV2Config(
@@ -531,7 +547,7 @@ def test_learner_v2_marks_shards_imported_only_after_replay_save(
                 export_onnx=False,
             ),
             TrainingConfig(batch_size=2, steps=1, device="cpu"),
-            trainer=lambda *args, **kwargs: FakeTrainSummary(tmp_path / "candidate.pt"),
+            trainer=fake_train,
             printer=PipelinePrinter(enabled=False),
         )
 
@@ -540,6 +556,69 @@ def test_learner_v2_marks_shards_imported_only_after_replay_save(
     pending = pending_v2_shards(tmp_path / "shards" / "metadata.jsonl")
     assert [record.shard_id for record in pending]
     assert not (tmp_path / "replay" / "game_logs.jsonl").exists()
+
+
+def test_learner_v2_trains_on_imported_rows_before_capacity_compaction(
+    tmp_path: Path,
+) -> None:
+    initial_replay = TrajectoryReplayStore.from_episodes(
+        4,
+        (
+            make_episode(10),
+            make_episode(11),
+        ),
+    )
+    replay_path = tmp_path / "replay" / "trajectory-replay.npz"
+    initial_replay.save(replay_path, compressed=False)
+    run_actor_v2_once(
+        ActorV2Config(
+            work_dir=tmp_path,
+            onnx_model_path=tmp_path / "model.onnx",
+            model_version="ema",
+            games=2,
+            seed_start=0,
+            onnx_device="cpu",
+        ),
+        runner=fake_actor_runner,
+        printer=PipelinePrinter(enabled=False),
+    )
+    train_rows: list[int] = []
+
+    def fake_train(
+        replay: Any,
+        config: TrainingConfig,
+        *,
+        checkpoint_path: str | Path,
+        resume_path: str | Path | None,
+        bootstrap_weights_path: str | Path | None = None,
+        log_every: int,
+        progress_callback: Any = None,
+    ) -> FakeTrainSummary:
+        del config, resume_path, bootstrap_weights_path, log_every, progress_callback
+        train_rows.append(len(replay))
+        destination = Path(checkpoint_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("candidate", encoding="utf-8")
+        return FakeTrainSummary(destination)
+
+    summary = run_learner_v2_once(
+        LearnerV2Config(
+            work_dir=tmp_path,
+            replay_capacity=4,
+            min_replay_transitions=1,
+            export_onnx=False,
+        ),
+        TrainingConfig(batch_size=2, steps=1, device="cpu"),
+        trainer=fake_train,
+        printer=PipelinePrinter(enabled=False),
+    )
+
+    assert train_rows == [8]
+    assert summary.replay_transitions == 4
+    replay = TrajectoryReplayStore.load(replay_path)
+    assert len(replay) == 4
+    assert replay.capacity == 4
+    assert replay.episode_seeds.tolist() == [0, 1]
 
 
 def test_learner_v2_passes_one_shot_optimizer_lr_override(tmp_path: Path) -> None:
