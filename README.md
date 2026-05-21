@@ -85,7 +85,7 @@ training-latest.onnx
 
 현재 Runpod 권장 설정:
 
-- work dir: `data/runpod/train-v3`
+- work dir: `data/runpod/train-v4`
 - actor: `64` games/cycle, CUDA ONNX, Gumbel `64` simulations
 - learner: batch `1024`, steps `64`, AMP, priority sampling, CUDA prefetch `4`
 - learner train budget: imported transition당 `16` sample updates
@@ -139,17 +139,17 @@ great-kingdom-learner-v2 \
 비교용 baseline을 먼저 남기려면:
 
 ```bash
-mkdir -p data/runpod/train-v3/checkpoints/snapshots
-cp data/runpod/train-v3/checkpoints/training-latest.pt \
-  data/runpod/train-v3/checkpoints/snapshots/baseline.pt
+mkdir -p data/runpod/train-v4/checkpoints/snapshots
+cp data/runpod/train-v4/checkpoints/training-latest.pt \
+  data/runpod/train-v4/checkpoints/snapshots/baseline.pt
 ```
 
 최근 12개 snapshot만 유지하려면:
 
 ```bash
 ./scripts/save_training_snapshots.sh \
-  data/runpod/train-v3/checkpoints/training-latest.pt \
-  data/runpod/train-v3/checkpoints/snapshots \
+  data/runpod/train-v4/checkpoints/training-latest.pt \
+  data/runpod/train-v4/checkpoints/snapshots \
   600 \
   12
 ```
@@ -228,14 +228,14 @@ async v2 learner는 import 완료된 shard 원본 디렉터리를 학습 성공 
 
 ```bash
 python scripts/prune_runpod_artifacts.py \
-  --work-dir data/runpod/train-v3
+  --work-dir data/runpod/train-v4
 ```
 
 실제 삭제:
 
 ```bash
 python scripts/prune_runpod_artifacts.py \
-  --work-dir data/runpod/train-v3 \
+  --work-dir data/runpod/train-v4 \
   --delete
 ```
 
@@ -260,7 +260,7 @@ python scripts/prune_runpod_artifacts.py \
 
 ```bash
 python scripts/prune_runpod_artifacts.py \
-  --work-dir data/runpod/train-v3 \
+  --work-dir data/runpod/train-v4 \
   --include-build-cache \
   --delete
 ```
@@ -269,7 +269,7 @@ python scripts/prune_runpod_artifacts.py \
 
 ```bash
 python scripts/prune_runpod_artifacts.py \
-  --work-dir data/runpod/train-v3 \
+  --work-dir data/runpod/train-v4 \
   --keep-targets 1 \
   --keep-candidates 1 \
   --keep-onnx 0 \
@@ -286,17 +286,17 @@ baseline ONNX 준비:
 
 ```bash
 great-kingdom-export-onnx \
-  --checkpoint data/runpod/train-v3/checkpoints/snapshots/baseline.pt \
-  --output data/runpod/train-v3/checkpoints/snapshots/baseline.onnx
+  --checkpoint data/runpod/train-v4/checkpoints/snapshots/baseline.pt \
+  --output data/runpod/train-v4/checkpoints/snapshots/baseline.onnx
 ```
 
 학습 중 부담 적은 quick check:
 
 ```bash
 great-kingdom-evaluate \
-  --candidate data/runpod/train-v3/checkpoints/onnx/training-latest.onnx \
-  --best data/runpod/train-v3/checkpoints/snapshots/baseline.onnx \
-  --report data/runpod/train-v3/reports/arena-quick-latest-vs-baseline.json \
+  --candidate data/runpod/train-v4/checkpoints/onnx/training-latest.onnx \
+  --best data/runpod/train-v4/checkpoints/snapshots/baseline.onnx \
+  --report data/runpod/train-v4/reports/arena-quick-latest-vs-baseline.json \
   --config configs/runpod/arena.json \
   --games 20 \
   --batch-size 20 \
@@ -311,9 +311,9 @@ great-kingdom-evaluate \
 
 ```bash
 great-kingdom-evaluate \
-  --candidate data/runpod/train-v3/checkpoints/onnx/training-latest.onnx \
-  --best data/runpod/train-v3/checkpoints/snapshots/baseline.onnx \
-  --report data/runpod/train-v3/reports/arena-40-latest-vs-baseline.json \
+  --candidate data/runpod/train-v4/checkpoints/onnx/training-latest.onnx \
+  --best data/runpod/train-v4/checkpoints/snapshots/baseline.onnx \
+  --report data/runpod/train-v4/reports/arena-40-latest-vs-baseline.json \
   --config configs/runpod/arena.json \
   --games 40 \
   --batch-size 40 \
@@ -328,9 +328,9 @@ great-kingdom-evaluate \
 
 ```bash
 great-kingdom-evaluate \
-  --candidate data/runpod/train-v3/checkpoints/onnx/training-latest.onnx \
-  --best data/runpod/train-v3/checkpoints/snapshots/baseline.onnx \
-  --report data/runpod/train-v3/reports/arena-full-latest-vs-baseline.json \
+  --candidate data/runpod/train-v4/checkpoints/onnx/training-latest.onnx \
+  --best data/runpod/train-v4/checkpoints/snapshots/baseline.onnx \
+  --report data/runpod/train-v4/reports/arena-full-latest-vs-baseline.json \
   --config configs/runpod/arena.json \
   --games 80 \
   --batch-size 80 \
@@ -350,7 +350,7 @@ update pressure를 진단하고 `learning_rate`, `train_reuse_factor`, `ema_deca
 
 ```bash
 great-kingdom-play \
-  --model-checkpoint data/runpod/train-v3/checkpoints/training-latest.pt \
+  --model-checkpoint data/runpod/train-v4/checkpoints/training-latest.pt \
   --human-player blue \
   --device cpu \
   --model-simulations 64
@@ -361,8 +361,8 @@ great-kingdom-play \
 ```bash
 great-kingdom-play \
   --arena-checkpoints \
-    data/runpod/train-v3/checkpoints/snapshots/baseline.pt \
-    data/runpod/train-v3/checkpoints/training-latest.pt \
+    data/runpod/train-v4/checkpoints/snapshots/baseline.pt \
+    data/runpod/train-v4/checkpoints/training-latest.pt \
   --device cpu \
   --model-simulations 64
 ```
@@ -391,9 +391,9 @@ async v2 운영 경로에서는 `great-kingdom-learner-v2`를 사용합니다. �
 
 ```bash
 great-kingdom-train \
-  --replay data/runpod/train-v3/replay/trajectory-replay.npz \
-  --checkpoint data/runpod/train-v3/checkpoints/candidate.pt \
-  --resume data/runpod/train-v3/checkpoints/training-latest.pt \
+  --replay data/runpod/train-v4/replay/trajectory-replay.npz \
+  --checkpoint data/runpod/train-v4/checkpoints/candidate.pt \
+  --resume data/runpod/train-v4/checkpoints/training-latest.pt \
   --config configs/runpod/train.json \
   --device cuda
 ```
@@ -402,7 +402,7 @@ great-kingdom-train \
 
 ```bash
 great-kingdom-single-batch-overfit \
-  --replay data/runpod/train-v3/replay/trajectory-replay.npz \
+  --replay data/runpod/train-v4/replay/trajectory-replay.npz \
   --config configs/runpod/train.json \
   --device cuda \
   --steps 1000 \
@@ -414,8 +414,8 @@ ONNX export:
 
 ```bash
 great-kingdom-export-onnx \
-  --checkpoint data/runpod/train-v3/checkpoints/training-latest.pt \
-  --output data/runpod/train-v3/checkpoints/onnx/training-latest.onnx \
+  --checkpoint data/runpod/train-v4/checkpoints/training-latest.pt \
+  --output data/runpod/train-v4/checkpoints/onnx/training-latest.onnx \
   --check-parity
 ```
 
