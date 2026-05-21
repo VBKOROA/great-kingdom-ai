@@ -149,7 +149,7 @@ cp data/runpod/train-v4/checkpoints/training-latest.pt \
 ```bash
 ./scripts/save_training_snapshots.sh \
   data/runpod/train-v4/checkpoints/training-latest.pt \
-  data/runpod/train-v4/checkpoints/snapshots \
+  data/runpod/train-v4/snapshots \
   300 \
   12
 ```
