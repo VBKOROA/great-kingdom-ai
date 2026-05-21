@@ -280,11 +280,11 @@ KOTH는 후보 선별용이고, latest-best 직접전은 promote 검증용이다
 
 현재 기본 운영:
 
-- `lr=0.005`
+- `lr=0.003` 실험 중
 - `train_reuse_factor=4.0`
 - `policy_target_c_scale=1.0`
 - `priority_max_priority=8.0`
-- `priority_alpha=0.5` 유지
+- `priority_alpha=0.3`으로 하향
 - self-play actor ONNX는 raw weights 사용 (`onnx_prefer_ema=false`)
 - EMA shadow weights는 유지
 
@@ -304,7 +304,9 @@ rolling matrix 판단:
   수행한다.
 - after 모델이 replay target에는 더 가까운데 arena에서 약하면 `learning_rate`를 `0.005`에서
   `0.003` 또는 `0.0025`로 낮추는 것을 우선 검토한다.
-- priority cap 포화가 문제가 된다고 판단되면 `priority_alpha=0.3` 실험을 우선 고려한다.
+- priority cap 포화가 계속 심하면 `priority_alpha=0.3` 유지 결과를 먼저 본다.
+- `priority_alpha=0.3`에서도 anchor robustness가 개선되지 않으면 `priority_enabled=false`
+  branch를 별도 실험 후보로 둔다.
 - learner가 actor보다 앞서는 문제가 명확하면 `train_reuse_factor=2.0`을 검토한다.
 - `priority_max_priority` 상향은 high-error row를 더 강하게 반복 학습시켜 변동성을 키울 수
   있으므로 별도 branch 실험으로만 다룬다.
@@ -350,11 +352,78 @@ anchor matrix 결과:
 - `045409` 이후 최신 후보들이 아직 `045409`를 넘지 못하고 있으므로, 다음 window에서도
   신규 후보가 anchor matrix에서 밀리면 update-pressure 진단을 먼저 수행한다.
 
+## 2026-05-21 LR / Priority Follow-up
+
+`045409` 이후 recent winner들이 계속 anchor matrix에서 `045409`를 넘지 못했다.
+
+추가 recent matrix:
+
+- `052925`: average `56.25%`, worst `41.67%`, Blue `55.0%`, Orange `57.5%`
+- `053427`: average `55.42%`, worst `51.67%`, Blue `65.0%`, Orange `45.83%`
+- `054934`: average `52.08%`, worst `38.33%`
+
+anchor matrix에서는 다시 `045409`가 1등이었다.
+
+- `045409`: average `58.33%`, worst `51.67%`, winning `4/4`, Blue `62.5%`,
+  Orange `54.17%`
+- `052925`: average `47.92%`, worst `35.0%`, winning `1/4`
+
+`045409` vs `052925` update-pressure 진단:
+
+- EMA 기준 target KL delta mean: all `-0.051`, old `-0.052`, recent `-0.046`
+- raw 기준 target KL delta mean: all `-0.041`, old `-0.048`, recent `-0.033`
+- raw 기준 top1 flip rate: 약 `26%`
+- raw 기준 model-to-model KL mean: 약 `0.12-0.13`
+- value 개선은 없거나 매우 작음
+
+판단:
+
+- `052925`는 live replay target에는 `045409`보다 더 가까웠지만, anchor arena에서는 약했다.
+- 이 결과는 value collapse라기보다 sharp policy target을 더 맞추는 방향이 strength 개선으로
+  이어지지 않은 상황에 가깝다.
+- raw actor가 직접 붕괴 원인이라는 가설은 계속 낮은 우선순위다.
+- 먼저 `lr=0.003` 구간을 관찰하고, 동시에 priority 효과 완화를 실험한다.
+
+priority cap 재진단:
+
+- priority `>= 7.0`: `48.53%`
+- priority `>= 7.5`: `25.37%`
+- priority `>= 7.9`: `22.47%`
+- priority `>= 7.99`: `22.43%`
+- mean: `6.85`
+- p50: `6.95`
+- p95: `8.0`
+- max: `8.0`
+
+판단:
+
+- priority cap 포화는 여전히 심하다.
+- replay row 약 22%가 사실상 max priority 근처라 high-priority 구간 구분력이 떨어져 있다.
+- cap을 올리는 것은 high-error row를 더 강하게 밀어 변동성을 키울 수 있으므로 우선하지 않는다.
+- `priority_alpha`를 `0.5`에서 `0.3`으로 낮춰 priority sampling 효과를 완화했다.
+- `priority_alpha=0.3`의 성공 기준은 recent matrix 최고 평균이 아니라 anchor matrix에서
+  `045409`에 근접하거나 넘는지, worst win rate와 side balance가 개선되는지이다.
+
+LR comparison matrix:
+
+- `055436`: average `53.0%`, worst `45.0%`, Blue `62.0%`, Orange `44.0%`
+- `061445`: average `51.0%`, worst `42.5%`, Blue `51.0%`, Orange `51.0%`
+- `060943`: average `50.5%`, worst `47.5%`, Blue `58.0%`, Orange `43.0%`
+- `061948`: average `50.0%`, worst `47.5%`, Blue `53.0%`, Orange `47.0%`
+
+해석:
+
+- `0.003` 구간은 강한 peak를 바로 만들지는 못했지만, 일부 후보는 side balance가 나아졌다.
+- 다만 anchor matrix에서는 여전히 `045409`가 average `63.67%`로 압도적이었다.
+- 따라서 현재까지는 `045409`가 유지 champion이고, `priority_alpha=0.3` 이후 snapshot을 추가
+  관찰한다.
+
 ## 현재 가장 중요한 관찰
 
 `045409`는 anchor matrix에서 average `59.17%`, worst `55.0%`, Blue/Orange 모두 `50%`
 이상을 기록했다. 따라서 raw actor 전환 후에도 train-v4는 robust peak 후보를 만들고 있다.
 
 남은 문제는 `045409` 이후 최신 snapshot들이 그 peak를 계속 넘지 못하고 있다는 점이다. 이것은
-지금 단계에서는 raw actor 실패보다 peak 이후 drift/oscillation과 snapshot selection 문제로 보는
-것이 더 타당하다. 반복되면 설정 변경보다 먼저 update-pressure 진단을 수행한다.
+지금 단계에서는 raw actor 실패보다 sharp policy target, update pressure, priority sampling 포화,
+그리고 snapshot selection 문제로 보는 것이 더 타당하다. 현재는 `lr=0.003`과
+`priority_alpha=0.3` 조합의 후속 snapshot을 관찰한다.
