@@ -418,12 +418,63 @@ LR comparison matrix:
 - 따라서 현재까지는 `045409`가 유지 champion이고, `priority_alpha=0.3` 이후 snapshot을 추가
   관찰한다.
 
+## 2026-05-21 Priority 0.3 후속 Matrix / Direct Confirm
+
+`priority_alpha=0.3` 적용 후 최신 3개가 포함된 recent matrix:
+
+- `062952`: average `57.0%`, worst `30.0%`, Blue `64.0%`, Orange `50.0%`
+- `063454`: average `54.5%`, worst `37.5%`, Blue `49.0%`, Orange `60.0%`
+- `062450`: average `52.0%`, worst `30.0%`
+
+판단:
+
+- recent matrix에서는 `062952`가 가장 높았지만 worst `30%`로 hard-counter 위험이 컸다.
+- `priority_alpha=0.3` 후 일부 후보의 side balance는 나아졌지만, recent matrix만으로 robust
+  champion을 고르기는 어려웠다.
+
+anchor matrix:
+
+- `062952`: average `55.0%`, worst `46.0%`, Blue `59.0%`, Orange `51.0%`
+- `071513`: average `54.5%`, worst `36.0%`, Blue `64.0%`, Orange `45.0%`
+- `045409`: average `50.5%`, worst `20.0%`, Blue `53.0%`, Orange `48.0%`
+- `055436`: average `47.5%`
+- `052925`: average `42.5%`
+
+이 matrix에서는 `062952`가 1등이고 `071513`이 2등이었다. 하지만 직접전 confirm에서 상성
+차이가 크게 드러났다.
+
+직접전:
+
+- `062952` vs `045409`, `200 games`: `062952` win rate `40.5%`
+  - Blue `47/100 = 47%`
+  - Orange `34/100 = 34%`
+  - 결론: `062952`는 `045409`를 넘지 못함
+- `071513` vs `045409`, `400 games`: `071513` win rate `72.5%`
+  - Blue `154/200 = 77%`
+  - Orange `136/200 = 68%`
+  - 결론: `071513`은 `045409`를 명확히 hard-counter
+- `071513` vs `062952`, `400 games`: `071513` win rate `44.0%`
+  - Blue `72/200 = 36%`
+  - Orange `104/200 = 52%`
+  - 결론: `071513`은 `062952`에게 밀림
+
+판단:
+
+- anchor pool 안에 단순한 1등이 아니라 상성 순환이 있다.
+- `071513`은 `045409`를 크게 이기지만, `062952`에게는 진다.
+- `062952`는 anchor matrix aggregate는 좋았지만 `045409` 직접전에서 크게 졌다.
+- 따라서 promote 후보를 matrix winner 하나로 고르면 위험하다.
+- 현재는 `071513`, `062952`, `045409`를 모두 anchor pool에 유지하고, current best 직접전은
+  별도로 확인한다.
+- `priority_alpha=0.3`은 anchor pool을 갱신할 만한 후보를 만들었지만, 아직 단일 robust
+  champion을 만들었다고 보기는 어렵다.
+
 ## 현재 가장 중요한 관찰
 
-`045409`는 anchor matrix에서 average `59.17%`, worst `55.0%`, Blue/Orange 모두 `50%`
-이상을 기록했다. 따라서 raw actor 전환 후에도 train-v4는 robust peak 후보를 만들고 있다.
+`priority_alpha=0.3` 적용 후 `071513`이 `045409`를 `400 games`에서 `72.5%`로 크게 이겼지만,
+같은 `071513`은 `062952`에게 `44.0%`로 졌다. 따라서 현재 train-v4의 핵심 문제는 단일 latest
+강화 실패라기보다 anchor pool 내부 상성 순환과 robust champion 선별 문제에 가깝다.
 
-남은 문제는 `045409` 이후 최신 snapshot들이 그 peak를 계속 넘지 못하고 있다는 점이다. 이것은
-지금 단계에서는 raw actor 실패보다 sharp policy target, update pressure, priority sampling 포화,
-그리고 snapshot selection 문제로 보는 것이 더 타당하다. 현재는 `lr=0.003`과
-`priority_alpha=0.3` 조합의 후속 snapshot을 관찰한다.
+raw actor 실패 가설은 여전히 우선순위가 낮다. 현재는 `lr=0.003`, `priority_alpha=0.3`,
+anchor top4 유지, 직접전 confirm을 결합해서 상성형 후보를 걸러야 한다. promotion은 current
+best/latest-best 직접전에서 total과 side split을 모두 통과한 후보만 허용한다.
