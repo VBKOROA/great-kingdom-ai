@@ -150,7 +150,7 @@ cp data/runpod/train-v4/checkpoints/training-latest.pt \
 ./scripts/save_training_snapshots.sh \
   data/runpod/train-v4/checkpoints/training-latest.pt \
   data/runpod/train-v4/checkpoints/snapshots \
-  600 \
+  300 \
   12
 ```
 
