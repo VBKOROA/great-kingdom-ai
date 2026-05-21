@@ -21,6 +21,7 @@ arena/KOTH/replay 진단 결과와 현재 운영 판단만 기록한다.
 - `priority_max_priority`: `8.0`
 - `recent_sample_fraction`: `0.0`
 - `recent_sample_window`: `102400`
+- self-play actor ONNX export: raw weights 사용 (`onnx_prefer_ema=false`)
 
 중요한 점:
 
@@ -30,6 +31,8 @@ arena/KOTH/replay 진단 결과와 현재 운영 판단만 기록한다.
 - 현재 `recent_sample_fraction=0.0`이므로 최근 window를 강제로 더 뽑지 않는다.
 - priority sampling은 켜져 있지만 `priority_target_age_weight=0.0`이므로 age/recent 기준
   가중은 없다.
+- `ema_decay=0.999`는 checkpoint 안의 shadow weights를 유지한다는 뜻이고, actor가 쓰는
+  `training-latest.onnx`는 기본적으로 raw training weights에서 export한다.
 
 ## Actor / Learner 데이터 흐름 요약
 
@@ -208,6 +211,40 @@ Priority cap 포화:
 - priority 실험을 한다면 cap 상향보다 `priority_alpha=0.3`처럼 priority 효과를 완화하는 쪽이
   더 안전한 후보이다.
 
+## 2026-05-21 Self-play EMA Actor 비활성화
+
+train-v4 운영에서 self-play actor가 쓰는 ONNX를 EMA weights가 아니라 raw training weights로
+export하도록 바꿨다.
+
+변경 내용:
+
+- `configs/runpod/learner-v2.json`: `onnx_prefer_ema=false`
+- async v2 learner/factory ONNX export 기본값: `prefer_ema=false`
+- EMA model은 checkpoint 내부 shadow weights로 계속 유지
+- actor가 읽는 `checkpoints/onnx/training-latest.onnx`만 raw 최신 정책을 반영
+
+판단:
+
+- 현재 구조는 9x9 Gumbel 계열 self-play이고, 저장 샘플은 전체 포지션이 아니라
+  `192 simulations / top-k 8` full-search 구간에 집중된다.
+- 이 구조에서는 actor prior가 최신 raw policy를 얼마나 빨리 반영하느냐가 중요하다.
+- replay buffer 자체가 이미 과거 self-play sample을 포함하므로, actor까지 EMA를 쓰면
+  effective policy age가 더 늙는다.
+- 특히 top-k 후보군이 좁기 때문에 raw model이 새로 배운 좋은 수나 refutation이 EMA prior에
+  늦게 반영되면, search가 애초에 그 후보를 검증하지 못할 수 있다.
+- 따라서 현재 기본값은 self-play actor raw, EMA는 checkpoint smoothing/eval/export 후보로
+  남기는 쪽이 더 타당하다.
+
+내 반응:
+
+- 이 변경은 현재 train-v4 구조에서는 합리적이다.
+- EMA self-play가 Gumbel search를 직접 망가뜨린다기보다, Gumbel search가 의존하는 최신
+  policy prior 기반 후보 선별을 늦추는 비용이 더 커 보인다.
+- 이미 replay와 priority sampling, full-search 저장 구간이 안정화 역할을 하고 있으므로 actor
+  쪽까지 EMA로 늦추는 것은 지나치게 보수적인 기본값일 수 있다.
+- 다만 raw actor 전환 후 value loss 장기 폭등, policy entropy 붕괴, 평균 게임 길이 급변,
+  self-play 품질 붕괴가 보이면 EMA actor를 다시 비교 후보로 둔다.
+
 ## 현재 결론
 
 현재까지의 결론:
@@ -218,6 +255,10 @@ Priority cap 포화:
 - `reuse=8`에서도 강한 후보는 나왔지만 snapshot drift가 컸다.
 - `reuse=4`는 model-to-model drift를 줄였고, `131615`처럼 latest-best를 확실히 이기는
   후보도 만들었다.
+- self-play actor는 raw latest ONNX를 쓰는 기본값이 더 타당하다.
+- EMA는 계속 유지하되, actor 기본 policy가 아니라 smoothing/eval/export 후보로 본다.
+- raw actor 전환 후 `045409`가 anchor matrix 1등을 기록했으므로, raw actor가 즉시
+  self-play 품질을 붕괴시켰다는 가설은 현재 우선순위가 낮다.
 - 최신 snapshot이 항상 1등이 아니어도 설정 실패로 보지 않는다.
 - 현재 운영은 latest snapshot promote가 아니라 KOTH/rolling matrix로 후보를 고른 뒤
   latest-best 직접전으로 검증하는 방식이 맞다.
@@ -244,6 +285,8 @@ KOTH는 후보 선별용이고, latest-best 직접전은 promote 검증용이다
 - `policy_target_c_scale=1.0`
 - `priority_max_priority=8.0`
 - `priority_alpha=0.5` 유지
+- self-play actor ONNX는 raw weights 사용 (`onnx_prefer_ema=false`)
+- EMA shadow weights는 유지
 
 rolling matrix 판단:
 
@@ -251,19 +294,67 @@ rolling matrix 판단:
 - 최근 window의 평균 strength와 peak strength를 같이 본다.
 - peak가 나오는데 최신 유지가 안 되는 것은 snapshot selection 문제일 수 있다.
 - 모든 후보가 약해지고 peak도 사라지면 설정 변경을 검토한다.
+- recent matrix는 최신 후보 선별용이고, anchor matrix는 robust 후보 유지용이다.
+- anchor pool은 상위 4개를 유지한다.
+- recent matrix 1등이 anchor matrix에서 기존 anchor를 못 넘으면 promote 후보로 보지 않는다.
 
 설정 변경 후보:
 
-- snapshot 변동성이 다시 커지면 `reuse` 추가 하향을 검토할 수 있다.
+- 다음 recent winner도 anchor matrix에서 `045409`를 넘지 못하면 먼저 update-pressure 진단을
+  수행한다.
+- after 모델이 replay target에는 더 가까운데 arena에서 약하면 `learning_rate`를 `0.005`에서
+  `0.003` 또는 `0.0025`로 낮추는 것을 우선 검토한다.
 - priority cap 포화가 문제가 된다고 판단되면 `priority_alpha=0.3` 실험을 우선 고려한다.
+- learner가 actor보다 앞서는 문제가 명확하면 `train_reuse_factor=2.0`을 검토한다.
 - `priority_max_priority` 상향은 high-error row를 더 강하게 반복 학습시켜 변동성을 키울 수
   있으므로 별도 branch 실험으로만 다룬다.
 
+## 2026-05-21 Rolling / Anchor Matrix 업데이트
+
+최근 5개 snapshot matrix에서 두 번의 peak가 관측됐다.
+
+첫 recent matrix:
+
+- `045409`: average `53.75%`, worst `38.33%`, Blue `60.0%`, Orange `47.5%`
+- `043839`: average `53.33%`, worst `40.0%`, Blue `45.0%`, Orange `61.67%`
+
+두 번째 recent matrix:
+
+- `050413`: average `57.5%`, worst `50.0%`, Blue `53.33%`, Orange `61.67%`
+- `052423`: average `50.83%`, worst `43.33%`, Blue `36.67%`, Orange `65.0%`
+- `051920`: average `44.17%`, non-losing `0/4`
+
+판단:
+
+- recent matrix만 보면 `050413`이 가장 좋아 보였다.
+- 하지만 latest가 단조롭게 좋아지는 형태는 아니며, `050413` 이후 snapshot들은 다시 흔들렸다.
+- 이 패턴은 학습 전체 붕괴라기보다 peak 이후 drift/oscillation으로 보는 것이 더 타당하다.
+
+anchor matrix 결과:
+
+- `045409`: average `59.17%`, worst `55.0%`, winning `4/4`, Blue `55.83%`,
+  Orange `62.5%`
+- `050413`: average `50.42%`, worst `45.0%`, winning `1/4`, Blue `58.33%`,
+  Orange `42.5%`
+- `131615`: average `50.42%`, worst `40.0%`, winning `2/4`, Blue `58.33%`,
+  Orange `42.5%`
+- `124601`: average `47.5%`, worst `31.67%`
+- `120543`: average `42.5%`, worst `33.33%`
+
+판단:
+
+- `045409`가 현재 anchor pool의 확실한 1등이다.
+- `050413`은 recent peers 상대로는 강했지만 anchor pool에서는 robust winner가 아니었다.
+- 현재 anchor top4 유지 기준이면 `120543`을 제거하고 `050413`을 편입할 수 있다.
+- promote/direct confirm 후보는 현재 `045409` 하나로 본다.
+- `045409` 이후 최신 후보들이 아직 `045409`를 넘지 못하고 있으므로, 다음 window에서도
+  신규 후보가 anchor matrix에서 밀리면 update-pressure 진단을 먼저 수행한다.
+
 ## 현재 가장 중요한 관찰
 
-`131615`는 latest-best 직접전에서 `72%`를 기록했고, Blue/Orange 모두 `50%`를 크게 넘었다.
-따라서 현재 train-v4는 `lr=0.005`, `reuse=4`, `policy_target_c_scale=1.0` 조합에서
-실제 strength 개선 후보를 만들고 있다.
+`045409`는 anchor matrix에서 average `59.17%`, worst `55.0%`, Blue/Orange 모두 `50%`
+이상을 기록했다. 따라서 raw actor 전환 후에도 train-v4는 robust peak 후보를 만들고 있다.
 
-남은 문제는 최신 snapshot이 항상 최고가 아니라는 점이다. 이것은 지금 단계에서는 설정 실패보다
-snapshot selection / promotion policy 문제로 보는 것이 더 타당하다.
+남은 문제는 `045409` 이후 최신 snapshot들이 그 peak를 계속 넘지 못하고 있다는 점이다. 이것은
+지금 단계에서는 raw actor 실패보다 peak 이후 drift/oscillation과 snapshot selection 문제로 보는
+것이 더 타당하다. 반복되면 설정 변경보다 먼저 update-pressure 진단을 수행한다.
