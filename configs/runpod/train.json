@@ -2,7 +2,7 @@
   "batch_size": 256,
   "steps": 512,
   "optimizer": "sgd",
-  "learning_rate": 0.0125,
+  "learning_rate": 0.003,
   "momentum": 0.9,
   "nesterov": false,
   "weight_decay": 0.0001,
