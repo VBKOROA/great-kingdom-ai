@@ -21,7 +21,7 @@
   "recent_sample_fraction": 0.0,
   "recent_sample_window": 102400,
   "priority_enabled": true,
-  "priority_alpha": 0.5,
+  "priority_alpha": 0.3,
   "priority_beta": 0.3,
   "priority_value_error_weight": 0.5,
   "priority_policy_kl_weight": 1.0,
