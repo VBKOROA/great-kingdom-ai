@@ -12,11 +12,11 @@ arena/KOTH/replay 진단 결과와 현재 운영 판단만 기록한다.
 - `work_dir`: `data/runpod/train-v4`
 - `policy_target_c_scale`: `1.0`
 - `gumbel_c_scale`: `1.0`
-- `learning_rate`: 처음 `0.0125`, 이후 `0.005`로 하향
-- `train_reuse_factor`: 처음 `8.0`, 이후 `4.0` 실험
+- `learning_rate`: 처음 `0.0125`, 이후 `0.005`, 현재 `0.003`
+- `train_reuse_factor`: 처음 `8.0`, 현재 `4.0`
 - `ema_decay`: `0.999`
 - `priority_enabled`: `true`
-- `priority_alpha`: `0.5`
+- `priority_alpha`: 처음 `0.5`, 현재 `0.3`
 - `priority_beta`: `0.3`
 - `priority_max_priority`: `8.0`
 - `recent_sample_fraction`: `0.0`
@@ -478,3 +478,135 @@ anchor matrix:
 raw actor 실패 가설은 여전히 우선순위가 낮다. 현재는 `lr=0.003`, `priority_alpha=0.3`,
 anchor top4 유지, 직접전 confirm을 결합해서 상성형 후보를 걸러야 한다. promotion은 current
 best/latest-best 직접전에서 total과 side split을 모두 통과한 후보만 허용한다.
+
+## 2026-05-21 074025 관측
+
+`lr=0.003`, `reuse=4`, `priority_alpha=0.3` 구간에서 `074025`가 최근 snapshot과 anchor pool
+양쪽에서 가장 안정적인 후보로 나왔다.
+
+최신 5개 snapshot matrix:
+
+- `074025`: average `56.0%`, best `68.0%`, worst `48.0%`, Blue `58.0%`,
+  Orange `54.0%`, winning `3/4`, non-losing `3/4`
+- `072016`: average `52.0%`, worst `48.0%`, Blue `47.0%`, Orange `57.0%`
+- `073522`: average `50.5%`, worst `44.0%`, Blue `49.0%`, Orange `52.0%`
+- `073020`: average `49.0%`, worst `42.0%`, Blue `56.0%`, Orange `42.0%`
+- `072518`: average `42.5%`, worst `32.0%`
+
+anchor 포함 matrix:
+
+- `074025`: average `57.0%`, best `72.0%`, worst `50.0%`, Blue `59.0%`,
+  Orange `55.0%`, winning `3/4`, non-losing `4/4`
+- `062952`: average `53.0%`, best `62.0%`, worst `42.0%`, Blue `46.0%`,
+  Orange `60.0%`
+- `071513`: average `51.0%`, best `58.0%`, worst `42.0%`, Blue `50.0%`,
+  Orange `52.0%`
+- `045409`: average `48.5%`, best `64.0%`, worst `28.0%`
+- `055436`: average `40.5%`, worst `36.0%`
+
+판단:
+
+- `074025`는 최신 snapshot 내부에서만 좋은 후보가 아니라 anchor pool까지 포함해도 1등이다.
+- 특히 anchor matrix의 worst `50.0%`, non-losing `4/4`가 중요하다. 이전 후보들은 direct
+  confirm은 강해도 KOTH worst가 `30-40%`대로 무너지는 경우가 있었다.
+- side split도 Blue `59.0%`, Orange `55.0%`로, 최근 문제였던 심한 side skew가 아니다.
+- 따라서 현재 기준 robust champion 후보는 `074025`다.
+
+`072518 -> 074025` update-pressure 진단은 EMA 기준으로 수행했다. Arena/KOTH를 EMA로 보는
+이유는 실서비스 export 후보가 EMA weights이기 때문이다. self-play actor는 raw ONNX를 쓰지만,
+champion 선별은 서비스 기준인 EMA strength를 우선한다.
+
+EMA update-pressure 요약:
+
+- model-to-model KL mean: all `0.0100`, old `0.0101`, recent `0.0100`
+- top1 flip rate: all `9.61%`, old `9.35%`, recent `9.11%`
+- value prediction delta abs mean: all `0.0285`, old `0.0283`, recent `0.0274`
+- target KL delta mean: all `-0.0120`, old `-0.0160`, recent `-0.0105`
+- value MAE delta: all `-0.0045`, old `-0.0051`, recent 거의 변화 없음
+- target policy entropy mean: 약 `0.11`
+- target policy max mean: 약 `0.957`, p50는 거의 `1.0`
+
+해석:
+
+- `074025`까지의 변화는 과격하지 않다. 이전 `lr=0.0125` 구간의 model KL `~0.42`,
+  top1 flip `~28-29%`와 비교하면 update pressure는 크게 낮아졌다.
+- 따라서 지금 관측은 "LR이 아직 높아서 snapshot이 튄다"가 아니라, 낮아진 update pressure
+  안에서 드디어 anchor에도 버티는 후보가 나온 상황에 가깝다.
+- target은 여전히 매우 sharp하고 target KL mean은 `~1.3`으로 높다. 모델이 target을 완전히
+  맞춘 상태는 아니지만, `074025`는 target KL을 소폭 낮추면서 arena strength도 같이 좋아졌다.
+- priority sampling을 현재 문제의 1순위 원인으로 보기는 어렵다. `priority_alpha=0.3` 이후
+  side balance와 worst win rate가 개선된 후보가 나왔고, replay recent overweight도 없다.
+
+운영 결론:
+
+- `learning_rate=0.003` 유지.
+- `train_reuse_factor=4.0` 유지.
+- `priority_alpha=0.3` 유지.
+- `priority_max_priority=8.0` 유지. cap 포화는 남아 있지만, 지금 cap 상향은 high-error row를
+  더 세게 밀어 변동성을 키울 수 있으므로 우선하지 않는다.
+- `onnx_prefer_ema=false` 유지. actor는 raw로 최신 학습을 빠르게 반영하고, service/eval
+  champion은 EMA 기준으로 고른다.
+- 다음 단계는 설정 변경이 아니라 `074025`를 새 anchor/current-best 후보로 두고 후속 snapshot이
+  `074025` 상대로도 average/worst/side split을 유지하는지 확인하는 것이다.
+
+## 2026-05-21 074025 Latest-best Direct 실패
+
+`074025`는 anchor 포함 matrix에서는 robust champion처럼 보였지만, 실제 current
+`latest-best.pt` 직접전에서 크게 졌다.
+
+직접전:
+
+- `074025` vs `latest-best.pt`, `400 games`
+- `074025` total: `158/400 = 39.5%`
+- Blue: `53/200 = 26.5%`
+- Orange: `105/200 = 52.5%`
+- promoted: `false`
+
+판단:
+
+- 이 결과는 단순 노이즈로 보기 어렵다.
+- total도 낮지만, 핵심은 Blue `26.5%`다. `074025`는 Orange에서는 거의 비겼지만 Blue에서
+  완전히 무너졌다.
+- 기존 anchor matrix의 Blue `59.0%`, Orange `55.0%`와 정반대이므로, 기존 anchor pool이
+  current `latest-best`의 hard-counter 성격을 충분히 대표하지 못했다.
+- 따라서 `074025`는 robust champion 후보에서 보류 후보로 내린다.
+- 이 결과만으로 `lr=0.003`, `priority_alpha=0.3`, `reuse=4` 설정이 실패했다고 보기는
+  어렵다. update-pressure 자체는 작았고, 문제는 선별/eval gate가 current best 상성을 놓친
+  쪽에 더 가깝다.
+
+## 2026-05-21 Latest-best 포함 Anchor Matrix
+
+`latest-best.pt`를 anchor pool에 포함하자 ranking이 크게 바뀌었다.
+
+- `071513`: average `58.5%`, best `74.0%`, worst `42.0%`, Blue `61.0%`,
+  Orange `56.0%`, winning `3/4`, non-losing `3/4`
+- `045409`: average `49.5%`, best `64.0%`, worst `26.0%`, Blue `56.0%`,
+  Orange `43.0%`
+- `062952`: average `48.0%`, best `58.0%`, worst `40.0%`, Blue `41.0%`,
+  Orange `55.0%`
+- `latest-best`: average `47.5%`, best `64.0%`, worst `36.0%`, Blue `42.0%`,
+  Orange `53.0%`
+- `074025`: average `46.5%`, best `56.0%`, worst `36.0%`, Blue `42.0%`,
+  Orange `51.0%`
+
+해석:
+
+- `latest-best`를 넣자 `074025`는 1등에서 하위권으로 내려갔다.
+- 이는 설정값 하나가 갑자기 나빠졌다기보다, anchor pool 구성과 승격 gate가 current best
+  상성을 충분히 검증하지 못했다는 신호다.
+- 현재 matrix 기준 다음 후보는 `071513`이다. 다만 `071513`은 이전 직접전에서 `062952`에게
+  `44.0%`로 밀린 기록이 있으므로, 단순 matrix winner로 바로 promote하면 안 된다.
+- current `latest-best`는 앞으로 anchor pool에 항상 포함해야 한다.
+
+현재 운영 판단:
+
+- `074025` promote 금지.
+- `latest-best.pt`를 anchor pool에 고정 포함.
+- 다음 직접전 confirm 후보는 `071513`.
+- promotion gate는 current `latest-best` 직접전 통과를 필수로 한다.
+- direct confirm에서는 total뿐 아니라 side split 하한을 같이 본다. 예: total `>= 55%`,
+  Blue/Orange 각각 최소 `48%` 이상.
+- anchor matrix는 후보 발굴 용도이고, promotion 최종 결정은 latest-best direct confirm으로
+  한다.
+- 지금 단계에서 LR이나 priority를 추가로 바꾸기보다, latest-best 포함 anchor matrix와 direct
+  confirm을 결합해 상성형 후보를 걸러내는 쪽이 우선이다.
