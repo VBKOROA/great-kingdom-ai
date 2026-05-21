@@ -45,6 +45,13 @@ def test_select_pt_checkpoints_can_search_recursively(tmp_path: Path) -> None:
     ]
 
 
+def test_auto_games_total_is_mutually_exclusive_with_games(tmp_path: Path) -> None:
+    parser = module.build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args([str(tmp_path), "--games", "20", "--auto-games-total", "100"])
+
+
 def test_select_pt_checkpoints_requires_existing_directory(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match="checkpoint directory"):
         module.select_pt_checkpoints(tmp_path / "missing", glob="*.pt", recursive=False)

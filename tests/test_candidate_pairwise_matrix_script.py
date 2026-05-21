@@ -45,6 +45,53 @@ def test_select_candidate_checkpoints_can_limit_to_latest_candidates(tmp_path: P
     ]
 
 
+def test_auto_games_for_pair_count_uses_total_matrix_budget() -> None:
+    assert module.auto_games_for_pair_count(
+        total_games=120,
+        pair_count=6,
+        paired_seeds=False,
+    ) == 20
+    assert module.auto_games_for_pair_count(
+        total_games=121,
+        pair_count=6,
+        paired_seeds=False,
+    ) == 21
+
+
+def test_auto_games_for_pair_count_keeps_paired_seed_games_even() -> None:
+    assert module.auto_games_for_pair_count(
+        total_games=121,
+        pair_count=6,
+        paired_seeds=True,
+    ) == 22
+    assert module.auto_games_for_pair_count(
+        total_games=1,
+        pair_count=6,
+        paired_seeds=True,
+    ) == 2
+
+
+def test_apply_auto_games_total_overrides_config_games() -> None:
+    config = module.ArenaConfig(games=60, paired_seeds=True)
+
+    adjusted = module.apply_auto_games_total(
+        config,
+        auto_games_total=100,
+        pair_count=6,
+    )
+
+    assert adjusted.games == 18
+    assert adjusted.paired_seeds is True
+    assert config.games == 60
+
+
+def test_auto_games_total_is_mutually_exclusive_with_games() -> None:
+    parser = module.build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--games", "20", "--auto-games-total", "100"])
+
+
 def test_match_from_summary_derives_baseline_side_results(tmp_path: Path) -> None:
     candidate = tmp_path / "candidate-000002.pt"
     baseline = tmp_path / "candidate-000001.pt"

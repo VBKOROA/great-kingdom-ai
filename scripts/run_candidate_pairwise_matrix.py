@@ -104,7 +104,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="keep only the last N selected candidates after interval filtering",
     )
     parser.add_argument("--device", choices=["cpu", "cuda"], default=None)
-    parser.add_argument("--games", type=int, default=None)
+    games_group = parser.add_mutually_exclusive_group()
+    games_group.add_argument("--games", type=int, default=None)
+    games_group.add_argument(
+        "--auto-games-total",
+        type=int,
+        default=None,
+        help=(
+            "total game budget for the whole matrix; pair games become "
+            "ceil(auto-games-total / pair_count)"
+        ),
+    )
     parser.add_argument("--seed-start", type=int, default=None)
     parser.add_argument("--gumbel-simulations", type=int, default=None)
     parser.add_argument("--gumbel-max-considered-actions", type=int, default=None)
@@ -145,12 +155,20 @@ def main() -> NoReturn:
     if len(candidates) < 2:
         raise SystemExit("at least two candidate checkpoints are required")
 
+    pair_count = _pair_count(len(candidates))
+    arena_config = apply_auto_games_total(
+        arena_config,
+        auto_games_total=args.auto_games_total,
+        pair_count=pair_count,
+    )
+
     print(
         json.dumps(
             {
                 "event": "candidate_pairwise_start",
                 "candidate_count": len(candidates),
-                "pair_count": len(candidates) * (len(candidates) - 1) // 2,
+                "pair_count": pair_count,
+                "auto_games_total": args.auto_games_total,
                 "candidates": [str(path) for path in candidates],
                 "arena_config": asdict(arena_config),
                 "output_dir": str(output_dir),
@@ -188,6 +206,7 @@ def main() -> NoReturn:
         "event": "candidate_pairwise_summary",
         "candidate_count": len(candidates),
         "pair_count": len(matches),
+        "auto_games_total": args.auto_games_total,
         "candidates": [str(path) for path in candidates],
         "matches": [match.to_dict() for match in matches],
         **summary,
@@ -440,6 +459,42 @@ def _load_effective_arena_config(
     }
     data.update({key: value for key, value in overrides.items() if value is not None})
     return ArenaConfig(**data)
+
+
+def apply_auto_games_total(
+    config: ArenaConfig,
+    *,
+    auto_games_total: int | None,
+    pair_count: int,
+) -> ArenaConfig:
+    if auto_games_total is None:
+        return config
+    games = auto_games_for_pair_count(
+        total_games=auto_games_total,
+        pair_count=pair_count,
+        paired_seeds=config.paired_seeds,
+    )
+    return ArenaConfig(**{**asdict(config), "games": games})
+
+
+def auto_games_for_pair_count(
+    *,
+    total_games: int,
+    pair_count: int,
+    paired_seeds: bool,
+) -> int:
+    if total_games <= 0:
+        raise ValueError("auto-games-total must be positive")
+    if pair_count <= 0:
+        raise ValueError("pair_count must be positive")
+    games = (total_games + pair_count - 1) // pair_count
+    if paired_seeds and games % 2 != 0:
+        games += 1
+    return games
+
+
+def _pair_count(item_count: int) -> int:
+    return item_count * (item_count - 1) // 2
 
 
 def _validated_candidates(paths: list[Path]) -> list[Path]:

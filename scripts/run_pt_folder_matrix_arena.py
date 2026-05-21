@@ -12,8 +12,10 @@ from run_candidate_pairwise_matrix import (
     DEFAULT_ARENA_CONFIG,
     PairwiseMatchResult,
     _load_effective_arena_config,
+    _pair_count,
     _run_or_load_pairwise_match,
     _write_json,
+    apply_auto_games_total,
     summarize_pairwise,
 )
 
@@ -46,7 +48,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="keep only the last N checkpoints after sorting",
     )
     parser.add_argument("--device", choices=["cpu", "cuda"], default=None)
-    parser.add_argument("--games", type=int, default=None)
+    games_group = parser.add_mutually_exclusive_group()
+    games_group.add_argument("--games", type=int, default=None)
+    games_group.add_argument(
+        "--auto-games-total",
+        type=int,
+        default=None,
+        help=(
+            "total game budget for the whole matrix; pair games become "
+            "ceil(auto-games-total / pair_count)"
+        ),
+    )
     parser.add_argument("--seed-start", type=int, default=None)
     parser.add_argument("--gumbel-simulations", type=int, default=None)
     parser.add_argument("--gumbel-max-considered-actions", type=int, default=None)
@@ -78,6 +90,12 @@ def main() -> NoReturn:
         gumbel_simulations=args.gumbel_simulations,
         gumbel_max_considered_actions=args.gumbel_max_considered_actions,
     )
+    pair_count = _pair_count(len(checkpoints))
+    arena_config = apply_auto_games_total(
+        arena_config,
+        auto_games_total=args.auto_games_total,
+        pair_count=pair_count,
+    )
 
     print(
         json.dumps(
@@ -85,7 +103,8 @@ def main() -> NoReturn:
                 "event": "pt_folder_matrix_start",
                 "checkpoint_dir": str(args.checkpoint_dir),
                 "checkpoint_count": len(checkpoints),
-                "pair_count": len(checkpoints) * (len(checkpoints) - 1) // 2,
+                "pair_count": pair_count,
+                "auto_games_total": args.auto_games_total,
                 "checkpoints": [str(path) for path in checkpoints],
                 "arena_config": asdict(arena_config),
                 "output_dir": str(output_dir),
@@ -124,6 +143,7 @@ def main() -> NoReturn:
         "checkpoint_dir": str(args.checkpoint_dir),
         "checkpoint_count": len(checkpoints),
         "pair_count": len(matches),
+        "auto_games_total": args.auto_games_total,
         "checkpoints": [str(path) for path in checkpoints],
         "matches": [match.to_dict() for match in matches],
         **summary,
