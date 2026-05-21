@@ -11,6 +11,7 @@
   "onnx_device": "cuda",
   "onnx_precision": "fp16",
   "onnx_dummy_batch_size": 2,
+  "onnx_prefer_ema": false,
   "prune_artifacts": true,
   "prune_keep_imported_shards": 0,
   "train_reuse_factor": 4.0

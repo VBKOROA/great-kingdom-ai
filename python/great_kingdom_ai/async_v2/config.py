@@ -40,6 +40,7 @@ class LearnerV2Config:
     onnx_device: str = "cuda"
     onnx_precision: str = "fp16"
     onnx_dummy_batch_size: int = 2
+    onnx_prefer_ema: bool = False
     prune_artifacts: bool = False
     prune_keep_imported_shards: int = 0
     train_reuse_factor: float = 16.0
@@ -53,6 +54,7 @@ class FactoryInitV2Config:
     onnx_device: str = "cpu"
     onnx_precision: str = "fp32"
     onnx_dummy_batch_size: int = 2
+    onnx_prefer_ema: bool = False
 
 @dataclass(frozen=True)
 class ActorV2Summary:

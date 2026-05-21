@@ -95,6 +95,7 @@ def build_learner_v2_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-export-onnx", action="store_true")
     parser.add_argument("--onnx-device", choices=["cpu", "cuda"], default=None)
     parser.add_argument("--onnx-precision", choices=["fp32", "fp16"], default=None)
+    parser.add_argument("--onnx-prefer-ema", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--prune-artifacts", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--prune-keep-imported-shards", type=int, default=None)
     parser.add_argument("--train-reuse-factor", type=float, default=None)
@@ -142,6 +143,7 @@ def build_factory_init_v2_parser() -> argparse.ArgumentParser:
     parser.add_argument("--onnx-device", choices=["cpu", "cuda"], default=None)
     parser.add_argument("--onnx-precision", choices=["fp32", "fp16"], default=None)
     parser.add_argument("--onnx-dummy-batch-size", type=int, default=None)
+    parser.add_argument("--onnx-prefer-ema", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--json", action="store_true")
     return parser
@@ -167,6 +169,11 @@ def factory_init_v2_main() -> NoReturn:
             args.onnx_dummy_batch_size
             if args.onnx_dummy_batch_size is not None
             else FactoryInitV2Config.onnx_dummy_batch_size
+        ),
+        onnx_prefer_ema=(
+            args.onnx_prefer_ema
+            if args.onnx_prefer_ema is not None
+            else FactoryInitV2Config.onnx_prefer_ema
         ),
     )
     summary = run_factory_init_v2_once(
@@ -217,6 +224,7 @@ def learner_v2_main() -> NoReturn:
         "train_checkpoint_mode": args.train_checkpoint_mode,
         "onnx_device": args.onnx_device,
         "onnx_precision": args.onnx_precision,
+        "onnx_prefer_ema": args.onnx_prefer_ema,
         "prune_artifacts": args.prune_artifacts,
         "prune_keep_imported_shards": args.prune_keep_imported_shards,
         "train_reuse_factor": args.train_reuse_factor,
@@ -331,6 +339,7 @@ def _run_learner_continuous_cli(
         printer.metric("max train steps", train_config.steps)
         printer.metric("reuse factor", config.train_reuse_factor)
         printer.metric("budget samples", int(train_budget_samples))
+        printer.metric("onnx weights", "ema" if config.onnx_prefer_ema else "raw")
 
         imported_events = _import_shards_into_replay(
             replay,
@@ -451,7 +460,7 @@ def _run_learner_continuous_cli(
                     device=config.onnx_device,
                     precision=config.onnx_precision,
                     dummy_batch_size=config.onnx_dummy_batch_size,
-                    prefer_ema=True,
+                    prefer_ema=config.onnx_prefer_ema,
                 )
                 temporary_onnx_path.replace(onnx_path)
                 printer.done(f"onnx ready: {onnx_path}")

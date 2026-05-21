@@ -44,6 +44,7 @@ def run_factory_init_v2_once(
     printer.metric("train device", train_config.device)
     printer.metric("onnx device", config.onnx_device)
     printer.metric("onnx precision", config.onnx_precision)
+    printer.metric("onnx weights", "ema" if config.onnx_prefer_ema else "raw")
 
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     onnx_path.parent.mkdir(parents=True, exist_ok=True)
@@ -58,7 +59,7 @@ def run_factory_init_v2_once(
         device=config.onnx_device,
         precision=config.onnx_precision,
         dummy_batch_size=config.onnx_dummy_batch_size,
-        prefer_ema=True,
+        prefer_ema=config.onnx_prefer_ema,
     )
     temporary_onnx_path.replace(onnx_path)
     printer.done(f"factory async v2 artifacts ready in {printer.elapsed()}")

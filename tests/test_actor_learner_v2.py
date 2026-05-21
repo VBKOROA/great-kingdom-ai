@@ -169,7 +169,7 @@ def test_factory_init_v2_writes_initial_checkpoint_and_onnx(tmp_path: Path) -> N
                 "device": "cpu",
                 "precision": "fp32",
                 "dummy_batch_size": 2,
-                "prefer_ema": True,
+                "prefer_ema": False,
             },
         },
     ]
@@ -401,6 +401,7 @@ def test_learner_v2_imports_pending_shards_trains_and_exports(tmp_path: Path) ->
     assert export_calls[0]["output_path"] == (
         tmp_path / "checkpoints" / "onnx" / "training-latest.onnx.tmp"
     )
+    assert export_calls[0]["kwargs"]["prefer_ema"] is False
     assert (tmp_path / "checkpoints" / "onnx" / "training-latest.onnx").read_text(
         encoding="utf-8"
     ) == "onnx"
