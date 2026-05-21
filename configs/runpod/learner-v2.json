@@ -14,5 +14,5 @@
   "onnx_prefer_ema": false,
   "prune_artifacts": true,
   "prune_keep_imported_shards": 0,
-  "train_reuse_factor": 32.0
+  "train_reuse_factor": 16.0
 }
