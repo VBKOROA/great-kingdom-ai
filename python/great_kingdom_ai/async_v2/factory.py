@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from great_kingdom_ai.async_v2.config import FactoryInitV2Config, FactoryInitV2Summary
-from great_kingdom_ai.async_v2.paths import _factory_checkpoint_path, _factory_onnx_output_path
+from great_kingdom_ai.async_v2.paths import (
+    _factory_checkpoint_path,
+    _factory_ema_onnx_output_path,
+    _factory_onnx_output_path,
+)
 from great_kingdom_ai.onnx_export import export_checkpoint_to_onnx
 from great_kingdom_ai.pipeline_printer import PipelinePrinter
 from great_kingdom_ai.training import TrainingConfig, create_train_state, save_checkpoint
@@ -30,7 +34,13 @@ def run_factory_init_v2_once(
     export_onnx = onnx_exporter if onnx_exporter is not None else export_checkpoint_to_onnx
     checkpoint_path = _factory_checkpoint_path(config)
     onnx_path = _factory_onnx_output_path(config)
-    existing_outputs = [path for path in (checkpoint_path, onnx_path) if path.exists()]
+    ema_onnx_path = _factory_ema_onnx_output_path(config)
+    checked_outputs = (
+        (checkpoint_path, onnx_path, ema_onnx_path)
+        if config.export_ema_onnx
+        else (checkpoint_path, onnx_path)
+    )
+    existing_outputs = [path for path in checked_outputs if path.exists()]
     if existing_outputs and not config.overwrite:
         existing = ", ".join(str(path) for path in existing_outputs)
         raise FileExistsError(f"factory init output already exists: {existing}")
@@ -40,18 +50,20 @@ def run_factory_init_v2_once(
     printer.metric("work dir", config.work_dir)
     printer.metric("checkpoint", checkpoint_path)
     printer.metric("onnx", onnx_path)
+    if config.export_ema_onnx:
+        printer.metric("ema onnx", ema_onnx_path)
     printer.metric("model preset", train_config.model_preset)
     printer.metric("train device", train_config.device)
     printer.metric("onnx device", config.onnx_device)
     printer.metric("onnx precision", config.onnx_precision)
-    printer.metric("onnx weights", "ema" if config.onnx_prefer_ema else "raw")
+    printer.metric("onnx weights", "raw")
 
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     onnx_path.parent.mkdir(parents=True, exist_ok=True)
     printer.step(f"creating factory checkpoint -> {checkpoint_path}")
     state = make_state(train_config)
     saved_checkpoint = Path(save(state, checkpoint_path))
-    printer.step(f"exporting factory ONNX -> {onnx_path}")
+    printer.step(f"exporting raw factory ONNX -> {onnx_path}")
     temporary_onnx_path = onnx_path.with_suffix(f"{onnx_path.suffix}.tmp")
     export_onnx(
         saved_checkpoint,
@@ -59,9 +71,22 @@ def run_factory_init_v2_once(
         device=config.onnx_device,
         precision=config.onnx_precision,
         dummy_batch_size=config.onnx_dummy_batch_size,
-        prefer_ema=config.onnx_prefer_ema,
+        prefer_ema=False,
     )
     temporary_onnx_path.replace(onnx_path)
+    if config.export_ema_onnx:
+        ema_onnx_path.parent.mkdir(parents=True, exist_ok=True)
+        printer.step(f"exporting ema factory ONNX -> {ema_onnx_path}")
+        temporary_ema_onnx_path = ema_onnx_path.with_suffix(f"{ema_onnx_path.suffix}.tmp")
+        export_onnx(
+            saved_checkpoint,
+            temporary_ema_onnx_path,
+            device=config.onnx_device,
+            precision=config.onnx_precision,
+            dummy_batch_size=config.onnx_dummy_batch_size,
+            prefer_ema=True,
+        )
+        temporary_ema_onnx_path.replace(ema_onnx_path)
     printer.done(f"factory async v2 artifacts ready in {printer.elapsed()}")
     return FactoryInitV2Summary(
         checkpoint_path=saved_checkpoint,

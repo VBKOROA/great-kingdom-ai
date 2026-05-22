@@ -1,4 +1,4 @@
-use pyo3::{exceptions::PyValueError, prelude::*};
+use pyo3::{exceptions::PyRuntimeError, exceptions::PyValueError, prelude::*};
 use rayon::prelude::*;
 use std::time::Instant;
 
@@ -9,14 +9,14 @@ use super::{
     result::GumbelResult,
     root::{RootSearchState, empty_result, start_root_search},
     search::{
-        GumbelSearch, GumbelSelectTrace, PendingGumbelSimulation, backup_path, reserve_path,
-        unreserve_path,
+        GumbelEvalBatch, GumbelSearch, GumbelSelectTrace, PendingGumbelSimulation, backup_path,
+        reserve_path, unreserve_path,
     },
 };
 use crate::{
     eval_request::EvalRequest,
     game::{ACTION_SPACE, Action, GameState},
-    onnx::OnnxEvaluator,
+    onnx::{NetworkOutput, OnnxEvaluator},
 };
 
 type SearchActiveWithRootLogits = (Vec<Option<GumbelResult>>, Vec<Vec<f32>>);
@@ -270,6 +270,61 @@ impl GumbelSelfPlayBatch {
             &mut adapter,
             leaf_batch_size,
             &root_values,
+        )?;
+        Ok((results, root_policy_logits))
+    }
+
+    #[pyo3(signature = (raw_evaluator, ema_evaluator, raw_players, leaf_batch_size = 16))]
+    pub fn search_active_with_onnx_raw_ema_evaluators_and_root_logits(
+        &mut self,
+        mut raw_evaluator: PyRefMut<'_, OnnxEvaluator>,
+        mut ema_evaluator: PyRefMut<'_, OnnxEvaluator>,
+        raw_players: Vec<u8>,
+        leaf_batch_size: usize,
+    ) -> PyResult<SearchActiveWithRootLogits> {
+        if leaf_batch_size == 0 {
+            return Err(PyValueError::new_err("leaf_batch_size must be positive"));
+        }
+        if raw_players.len() != self.states.len() {
+            return Err(PyValueError::new_err(format!(
+                "expected {} raw player slots, got {}",
+                self.states.len(),
+                raw_players.len()
+            )));
+        }
+        let active_indexes = self.active_indexes();
+        let active_states = active_indexes
+            .iter()
+            .map(|index| self.states[*index].clone())
+            .collect::<Vec<_>>();
+        let root_eval = evaluate_raw_ema_rows(
+            &mut raw_evaluator,
+            &mut ema_evaluator,
+            active_states,
+            active_indexes.clone(),
+            &raw_players,
+            active_indexes.len(),
+            0,
+        )?;
+        root_eval.validate_len(active_indexes.len())?;
+        let root_policy_logits = root_eval
+            .policies
+            .iter()
+            .map(|row| Vec::from(*row))
+            .collect::<Vec<_>>();
+        let root_rows = root_eval
+            .policies
+            .into_iter()
+            .map(Vec::from)
+            .collect::<Vec<_>>();
+        let mut adapter =
+            OnnxRawEmaGumbelEvaluator::new(&mut raw_evaluator, &mut ema_evaluator, raw_players);
+        let results = self.search_active_with_evaluator(
+            root_rows,
+            true,
+            &mut adapter,
+            leaf_batch_size,
+            &root_eval.values,
         )?;
         Ok((results, root_policy_logits))
     }
@@ -701,7 +756,13 @@ impl GumbelSelfPlayBatch {
                 .iter()
                 .map(|leaf| leaf.state.clone())
                 .collect::<Vec<_>>();
-            let request = if evaluator.needs_legal_masks() {
+            let request_game_indexes = pending
+                .iter()
+                .map(|leaf| leaf.game_index)
+                .collect::<Vec<_>>();
+            let request = if evaluator.needs_game_indexes() {
+                EvalRequest::new_with_game_indexes(request_states, request_game_indexes)
+            } else if evaluator.needs_legal_masks() {
                 EvalRequest::new_with_precomputed_bytes(request_states)
             } else {
                 EvalRequest::new_with_precomputed_features(request_states)
@@ -808,6 +869,187 @@ struct PendingGameEvaluation {
     state: GameState,
     policy_row: [f32; ACTION_SPACE],
     value: f32,
+}
+
+struct OnnxRawEmaGumbelEvaluator<'a> {
+    raw: &'a mut OnnxEvaluator,
+    ema: &'a mut OnnxEvaluator,
+    raw_players: Vec<u8>,
+    wave: u64,
+    active_games: usize,
+}
+
+impl<'a> OnnxRawEmaGumbelEvaluator<'a> {
+    fn new(raw: &'a mut OnnxEvaluator, ema: &'a mut OnnxEvaluator, raw_players: Vec<u8>) -> Self {
+        Self {
+            raw,
+            ema,
+            raw_players,
+            wave: 0,
+            active_games: 0,
+        }
+    }
+}
+
+impl GumbelEvaluator for OnnxRawEmaGumbelEvaluator<'_> {
+    fn needs_legal_masks(&self) -> bool {
+        false
+    }
+
+    fn needs_game_indexes(&self) -> bool {
+        true
+    }
+
+    fn set_batch_profile_context(&mut self, wave: u64, active_games: usize, _leaves: usize) {
+        self.wave = wave;
+        self.active_games = active_games;
+    }
+
+    fn evaluate(&mut self, request: EvalRequest) -> PyResult<GumbelEvalBatch> {
+        let game_indexes = request.game_indexes();
+        evaluate_raw_ema_rows(
+            self.raw,
+            self.ema,
+            request.states(),
+            game_indexes,
+            &self.raw_players,
+            self.active_games,
+            self.wave,
+        )
+    }
+}
+
+fn evaluate_raw_ema_rows(
+    raw_evaluator: &mut OnnxEvaluator,
+    ema_evaluator: &mut OnnxEvaluator,
+    states: Vec<GameState>,
+    game_indexes: Vec<usize>,
+    raw_players: &[u8],
+    active_games: usize,
+    wave: u64,
+) -> PyResult<GumbelEvalBatch> {
+    if states.len() != game_indexes.len() {
+        return Err(PyValueError::new_err(
+            "raw/ema ONNX state and game index counts must match",
+        ));
+    }
+
+    let mut raw_rows = Vec::new();
+    let mut raw_states = Vec::new();
+    let mut ema_rows = Vec::new();
+    let mut ema_states = Vec::new();
+    for (row, (state, game_index)) in states.into_iter().zip(game_indexes.into_iter()).enumerate() {
+        let Some(raw_player) = raw_players.get(game_index).copied() else {
+            return Err(PyValueError::new_err(format!(
+                "raw/ema ONNX game index out of range: {game_index}"
+            )));
+        };
+        match state.current_player() {
+            player if player == raw_player => {
+                raw_rows.push(row);
+                raw_states.push(state);
+            }
+            1 | 2 => {
+                ema_rows.push(row);
+                ema_states.push(state);
+            }
+            player => {
+                return Err(PyValueError::new_err(format!(
+                    "invalid self-play current player: {player}"
+                )));
+            }
+        }
+    }
+
+    let mut policies = vec![None; raw_rows.len() + ema_rows.len()];
+    let mut values = vec![None; policies.len()];
+    fill_raw_ema_onnx_rows(
+        raw_evaluator,
+        raw_states,
+        raw_rows,
+        &mut policies,
+        &mut values,
+        active_games,
+        wave,
+    )?;
+    fill_raw_ema_onnx_rows(
+        ema_evaluator,
+        ema_states,
+        ema_rows,
+        &mut policies,
+        &mut values,
+        active_games,
+        wave,
+    )?;
+    Ok(GumbelEvalBatch::new(
+        policies
+            .into_iter()
+            .map(|row| {
+                row.ok_or_else(|| {
+                    PyRuntimeError::new_err("raw/ema ONNX evaluation missed a policy row")
+                })
+            })
+            .collect::<PyResult<Vec<_>>>()?,
+        values
+            .into_iter()
+            .map(|value| {
+                value.ok_or_else(|| {
+                    PyRuntimeError::new_err("raw/ema ONNX evaluation missed a value row")
+                })
+            })
+            .collect::<PyResult<Vec<_>>>()?,
+    ))
+}
+
+fn fill_raw_ema_onnx_rows(
+    evaluator: &mut OnnxEvaluator,
+    states: Vec<GameState>,
+    rows: Vec<usize>,
+    policies: &mut [Option<[f32; ACTION_SPACE]>],
+    values: &mut [Option<f32>],
+    active_games: usize,
+    wave: u64,
+) -> PyResult<()> {
+    if states.is_empty() {
+        return Ok(());
+    }
+    if wave == 0 {
+        evaluator.set_gumbel_root_profile_context(active_games);
+    } else {
+        evaluator.set_gumbel_leaf_profile_context(wave, active_games, rows.len());
+    }
+    let output = evaluator
+        .evaluate_request(&EvalRequest::new_with_precomputed_features(states))
+        .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+    assign_raw_ema_onnx_output(output, rows, policies, values)
+}
+
+fn assign_raw_ema_onnx_output(
+    output: NetworkOutput,
+    rows: Vec<usize>,
+    policies: &mut [Option<[f32; ACTION_SPACE]>],
+    values: &mut [Option<f32>],
+) -> PyResult<()> {
+    if output.policy_logits.len() != rows.len() || output.values.len() != rows.len() {
+        return Err(PyRuntimeError::new_err(
+            "raw/ema ONNX output row count mismatch",
+        ));
+    }
+    for (row, (policy, value)) in rows.into_iter().zip(
+        output
+            .policy_logits
+            .into_iter()
+            .zip(output.values.into_iter()),
+    ) {
+        if row >= policies.len() || row >= values.len() {
+            return Err(PyRuntimeError::new_err(format!(
+                "raw/ema ONNX output row out of range: {row}"
+            )));
+        }
+        policies[row] = Some(policy);
+        values[row] = Some(value);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

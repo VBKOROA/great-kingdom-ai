@@ -16,6 +16,8 @@ if TYPE_CHECKING:
 class ActorV2Config:
     work_dir: Path = Path("data/runpod/train-v3")
     onnx_model_path: Path = Path("data/runpod/train-v3/checkpoints/onnx/training-latest.onnx")
+    ema_onnx_model_path: Path | None = None
+    ema_opponent_fraction: float = 0.0
     model_version: str = "latest"
     model_iteration: int | None = None
     shard_id: str | None = None
@@ -37,6 +39,8 @@ class LearnerV2Config:
     train_checkpoint_mode: str = "resume"
     export_onnx: bool = True
     onnx_output_path: Path | None = None
+    ema_onnx_output_path: Path | None = None
+    export_ema_onnx: bool = True
     onnx_device: str = "cuda"
     onnx_precision: str = "fp16"
     onnx_dummy_batch_size: int = 2
@@ -50,6 +54,8 @@ class FactoryInitV2Config:
     work_dir: Path = Path("data/runpod/train-v3")
     checkpoint_path: Path | None = None
     onnx_output_path: Path | None = None
+    ema_onnx_output_path: Path | None = None
+    export_ema_onnx: bool = True
     overwrite: bool = False
     onnx_device: str = "cpu"
     onnx_precision: str = "fp32"
@@ -123,8 +129,8 @@ class FactoryInitV2Summary:
 
 def load_actor_v2_config(path: str | Path) -> ActorV2Config:
     data = _load_json_object(path, "actor v2 config")
-    for key in ("work_dir", "onnx_model_path"):
-        if key in data:
+    for key in ("work_dir", "onnx_model_path", "ema_onnx_model_path"):
+        if data.get(key) is not None:
             data[key] = Path(data[key])
     self_play_data = data.pop("self_play", None)
     if isinstance(self_play_data, dict):
@@ -139,6 +145,7 @@ def load_learner_v2_config(path: str | Path) -> LearnerV2Config:
         "candidate_checkpoint",
         "training_latest_checkpoint",
         "onnx_output_path",
+        "ema_onnx_output_path",
     ):
         if data.get(key) is not None:
             data[key] = Path(data[key])

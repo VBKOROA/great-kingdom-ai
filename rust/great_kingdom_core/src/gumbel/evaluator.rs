@@ -12,6 +12,10 @@ pub(crate) trait GumbelEvaluator {
         true
     }
 
+    fn needs_game_indexes(&self) -> bool {
+        false
+    }
+
     fn set_batch_profile_context(&mut self, _wave: u64, _active_games: usize, _leaves: usize) {}
 
     fn evaluate(&mut self, request: EvalRequest) -> PyResult<GumbelEvalBatch>;

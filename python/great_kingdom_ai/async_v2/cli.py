@@ -36,6 +36,7 @@ from great_kingdom_ai.async_v2.learner import (
 from great_kingdom_ai.async_v2.metadata import pending_v2_shards
 from great_kingdom_ai.async_v2.paths import (
     _candidate_checkpoint,
+    _ema_onnx_output_path,
     _ensure_learner_dirs,
     _onnx_output_path,
     _paths,
@@ -57,6 +58,8 @@ def build_actor_v2_parser() -> argparse.ArgumentParser:
     parser.add_argument("--actor-config", type=Path, default=None)
     parser.add_argument("--work-dir", type=Path, default=None)
     parser.add_argument("--onnx-model", type=Path, default=None)
+    parser.add_argument("--ema-onnx-model", type=Path, default=None)
+    parser.add_argument("--ema-opponent-fraction", type=float, default=None)
     parser.add_argument("--model-version", default=None)
     parser.add_argument("--model-iteration", type=int, default=None)
     parser.add_argument("--games", type=int, default=None)
@@ -125,6 +128,8 @@ def build_factory_init_v2_parser() -> argparse.ArgumentParser:
     parser.add_argument("--work-dir", type=Path, default=None)
     parser.add_argument("--checkpoint", type=Path, default=None)
     parser.add_argument("--onnx-output", type=Path, default=None)
+    parser.add_argument("--ema-onnx-output", type=Path, default=None)
+    parser.add_argument("--no-export-ema-onnx", action="store_true")
     parser.add_argument("--device", choices=["cpu", "cuda"], default=None)
     parser.add_argument(
         "--model-preset",
@@ -162,6 +167,8 @@ def factory_init_v2_main() -> NoReturn:
         work_dir=args.work_dir or FactoryInitV2Config.work_dir,
         checkpoint_path=args.checkpoint,
         onnx_output_path=args.onnx_output,
+        ema_onnx_output_path=args.ema_onnx_output,
+        export_ema_onnx=not args.no_export_ema_onnx,
         overwrite=args.overwrite,
         onnx_device=args.onnx_device or FactoryInitV2Config.onnx_device,
         onnx_precision=args.onnx_precision or FactoryInitV2Config.onnx_precision,
@@ -191,6 +198,8 @@ def actor_v2_main() -> NoReturn:
     for key, value in {
         "work_dir": args.work_dir,
         "onnx_model_path": args.onnx_model,
+        "ema_onnx_model_path": args.ema_onnx_model,
+        "ema_opponent_fraction": args.ema_opponent_fraction,
         "model_version": args.model_version,
         "model_iteration": args.model_iteration,
         "games": args.games,
@@ -256,6 +265,8 @@ def _run_actor_cli(config: ActorV2Config, args: argparse.Namespace) -> list[dict
         shard_config = ActorV2Config(
             work_dir=config.work_dir,
             onnx_model_path=config.onnx_model_path,
+            ema_onnx_model_path=config.ema_onnx_model_path,
+            ema_opponent_fraction=config.ema_opponent_fraction,
             model_version=config.model_version,
             model_iteration=config.model_iteration,
             shard_id=config.shard_id if not args.loop else None,
@@ -339,7 +350,7 @@ def _run_learner_continuous_cli(
         printer.metric("max train steps", train_config.steps)
         printer.metric("reuse factor", config.train_reuse_factor)
         printer.metric("budget samples", int(train_budget_samples))
-        printer.metric("onnx weights", "ema" if config.onnx_prefer_ema else "raw")
+        printer.metric("onnx weights", "raw + ema" if config.export_ema_onnx else "raw")
 
         imported_events = _import_shards_into_replay(
             replay,
@@ -453,17 +464,33 @@ def _run_learner_continuous_cli(
             onnx_path = _onnx_output_path(config)
             if config.export_onnx:
                 temporary_onnx_path = onnx_path.with_suffix(f"{onnx_path.suffix}.tmp")
-                printer.step(f"exporting learner checkpoint -> {onnx_path}")
+                printer.step(f"exporting raw learner checkpoint -> {onnx_path}")
                 export_onnx(
                     training_latest,
                     temporary_onnx_path,
                     device=config.onnx_device,
                     precision=config.onnx_precision,
                     dummy_batch_size=config.onnx_dummy_batch_size,
-                    prefer_ema=config.onnx_prefer_ema,
+                    prefer_ema=False,
                 )
                 temporary_onnx_path.replace(onnx_path)
                 printer.done(f"onnx ready: {onnx_path}")
+                if config.export_ema_onnx:
+                    ema_onnx_path = _ema_onnx_output_path(config)
+                    temporary_ema_onnx_path = ema_onnx_path.with_suffix(
+                        f"{ema_onnx_path.suffix}.tmp"
+                    )
+                    printer.step(f"exporting ema learner checkpoint -> {ema_onnx_path}")
+                    export_onnx(
+                        training_latest,
+                        temporary_ema_onnx_path,
+                        device=config.onnx_device,
+                        precision=config.onnx_precision,
+                        dummy_batch_size=config.onnx_dummy_batch_size,
+                        prefer_ema=True,
+                    )
+                    temporary_ema_onnx_path.replace(ema_onnx_path)
+                    printer.done(f"ema onnx ready: {ema_onnx_path}")
             else:
                 onnx_path = None
             trained = True

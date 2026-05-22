@@ -1,6 +1,8 @@
 {
   "work_dir": "data/runpod/train-v5",
   "onnx_model_path": "data/runpod/train-v5/checkpoints/onnx/training-latest.onnx",
+  "ema_onnx_model_path": "data/runpod/train-v5/checkpoints/onnx/training-latest-ema.onnx",
+  "ema_opponent_fraction": 0.2,
   "model_version": "training-latest",
   "games": 64,
   "seed_start": 0,

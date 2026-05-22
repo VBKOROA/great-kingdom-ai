@@ -160,6 +160,8 @@ def test_factory_init_v2_writes_initial_checkpoint_and_onnx(tmp_path: Path) -> N
     assert summary.to_dict()["model_preset"] == "small"
     assert summary.checkpoint_path.read_text(encoding="utf-8") == "checkpoint"
     assert summary.onnx_output_path.read_text(encoding="utf-8") == "onnx"
+    ema_onnx_output_path = tmp_path / "checkpoints" / "onnx" / "training-latest-ema.onnx"
+    assert ema_onnx_output_path.read_text(encoding="utf-8") == "onnx"
     assert calls == [
         {"model_preset": "small", "device": "cpu"},
         {
@@ -170,6 +172,16 @@ def test_factory_init_v2_writes_initial_checkpoint_and_onnx(tmp_path: Path) -> N
                 "precision": "fp32",
                 "dummy_batch_size": 2,
                 "prefer_ema": False,
+            },
+        },
+        {
+            "checkpoint_path": summary.checkpoint_path,
+            "output_path": ema_onnx_output_path.with_suffix(".onnx.tmp"),
+            "kwargs": {
+                "device": "cpu",
+                "precision": "fp32",
+                "dummy_batch_size": 2,
+                "prefer_ema": True,
             },
         },
     ]

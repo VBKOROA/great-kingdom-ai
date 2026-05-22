@@ -50,6 +50,9 @@ def run_actor_v2_once(
     printer.title("Actor V2")
     printer.metric("work dir", config.work_dir)
     printer.metric("onnx model", config.onnx_model_path)
+    if config.ema_opponent_fraction > 0.0:
+        printer.metric("ema onnx model", config.ema_onnx_model_path)
+        printer.metric("ema opponent fraction", config.ema_opponent_fraction)
     printer.metric("model version", config.model_version)
     if config.model_iteration is not None:
         printer.metric("model iteration", config.model_iteration)
@@ -64,6 +67,8 @@ def run_actor_v2_once(
     summary = run_self_play(
         RustOnnxSelfPlayConfig(
             onnx_model_path=config.onnx_model_path,
+            ema_onnx_model_path=config.ema_onnx_model_path,
+            ema_opponent_fraction=config.ema_opponent_fraction,
             output_dir=shard_dir,
             games=config.games,
             seed_start=config.seed_start,
@@ -219,3 +224,7 @@ def _validate_actor_config(config: ActorV2Config) -> None:
         raise ValueError("onnx_max_batch_size must be positive")
     if config.rust_self_play_batch_size <= 0:
         raise ValueError("rust_self_play_batch_size must be positive")
+    if not 0.0 <= config.ema_opponent_fraction <= 1.0:
+        raise ValueError("ema_opponent_fraction must be in [0, 1]")
+    if config.ema_opponent_fraction > 0.0 and config.ema_onnx_model_path is None:
+        raise ValueError("ema_onnx_model_path is required when ema_opponent_fraction > 0")

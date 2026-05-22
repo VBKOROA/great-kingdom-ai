@@ -8,10 +8,12 @@
   "train_checkpoint_mode": "resume",
   "export_onnx": true,
   "onnx_output_path": "data/runpod/train-v5/checkpoints/onnx/training-latest.onnx",
+  "ema_onnx_output_path": "data/runpod/train-v5/checkpoints/onnx/training-latest-ema.onnx",
+  "export_ema_onnx": true,
   "onnx_device": "cuda",
   "onnx_precision": "fp16",
   "onnx_dummy_batch_size": 2,
-  "onnx_prefer_ema": true,
+  "onnx_prefer_ema": false,
   "prune_artifacts": true,
   "prune_keep_imported_shards": 2,
   "train_reuse_factor": 14.0

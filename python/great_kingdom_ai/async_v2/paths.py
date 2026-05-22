@@ -19,6 +19,7 @@ def _paths(work_dir: Path) -> dict[str, Path]:
         "training_latest_checkpoint": work_dir / "checkpoints" / "training-latest.pt",
         "best_checkpoint": work_dir / "checkpoints" / "best.pt",
         "onnx_output_path": work_dir / "checkpoints" / "onnx" / "training-latest.onnx",
+        "ema_onnx_output_path": work_dir / "checkpoints" / "onnx" / "training-latest-ema.onnx",
     }
 
 def _ensure_learner_dirs(paths: dict[str, Path]) -> None:
@@ -46,8 +47,14 @@ def _source_checkpoint(config: LearnerV2Config) -> Path:
 def _onnx_output_path(config: LearnerV2Config) -> Path:
     return config.onnx_output_path or _paths(config.work_dir)["onnx_output_path"]
 
+def _ema_onnx_output_path(config: LearnerV2Config) -> Path:
+    return config.ema_onnx_output_path or _paths(config.work_dir)["ema_onnx_output_path"]
+
 def _factory_checkpoint_path(config: FactoryInitV2Config) -> Path:
     return config.checkpoint_path or _paths(config.work_dir)["training_latest_checkpoint"]
 
 def _factory_onnx_output_path(config: FactoryInitV2Config) -> Path:
     return config.onnx_output_path or _paths(config.work_dir)["onnx_output_path"]
+
+def _factory_ema_onnx_output_path(config: FactoryInitV2Config) -> Path:
+    return config.ema_onnx_output_path or _paths(config.work_dir)["ema_onnx_output_path"]

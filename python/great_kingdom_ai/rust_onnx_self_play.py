@@ -24,6 +24,8 @@ from great_kingdom_ai.self_play_data import value_target_for_player
 class RustOnnxSelfPlayConfig:
     onnx_model_path: Path
     output_dir: Path
+    ema_onnx_model_path: Path | None = None
+    ema_opponent_fraction: float = 0.0
     games: int = 2
     seed_start: int = 0
     model_version: int = 0
@@ -56,16 +58,35 @@ class RustSelfPlayRunSummary:
 
 
 def run_rust_onnx_self_play(config: RustOnnxSelfPlayConfig) -> RustSelfPlayRunSummary:
+    if not 0.0 <= config.ema_opponent_fraction <= 1.0:
+        raise ValueError("ema_opponent_fraction must be in [0, 1]")
+    if config.ema_opponent_fraction > 0.0 and config.ema_onnx_model_path is None:
+        raise ValueError("ema_onnx_model_path is required when ema_opponent_fraction > 0")
     core = _import_core()
     evaluator = core.OnnxEvaluator(
         str(config.onnx_model_path),
         device=config.onnx_device,
         max_batch_size=config.onnx_max_batch_size,
     )
+    ema_evaluator = (
+        None
+        if config.ema_onnx_model_path is None or config.ema_opponent_fraction <= 0.0
+        else core.OnnxEvaluator(
+            str(config.ema_onnx_model_path),
+            device=config.onnx_device,
+            max_batch_size=config.onnx_max_batch_size,
+        )
+    )
     logs: list[GameLog] = []
     samples: list[ReplaySample] = []
     episodes: list[TrajectoryEpisode] = []
-    remaining = config.games
+    mixed_games = (
+        0
+        if ema_evaluator is None
+        else min(config.games, round(config.games * config.ema_opponent_fraction))
+    )
+    raw_games = config.games - mixed_games
+    remaining = raw_games
     seed = config.seed_start
     while remaining > 0:
         batch_size = min(config.rust_self_play_batch_size, remaining)
@@ -75,6 +96,23 @@ def run_rust_onnx_self_play(config: RustOnnxSelfPlayConfig) -> RustSelfPlayRunSu
             evaluator=evaluator,
             seed_start=seed,
             game_count=batch_size,
+            ema_evaluator=None,
+        )
+        logs.extend(batch_logs)
+        samples.extend(batch_samples)
+        episodes.extend(batch_episodes)
+        seed += batch_size
+        remaining -= batch_size
+    remaining = mixed_games
+    while remaining > 0:
+        batch_size = min(config.rust_self_play_batch_size, remaining)
+        batch_logs, batch_samples, batch_episodes = _run_one_batch(
+            config,
+            core=core,
+            evaluator=evaluator,
+            seed_start=seed,
+            game_count=batch_size,
+            ema_evaluator=ema_evaluator,
         )
         logs.extend(batch_logs)
         samples.extend(batch_samples)
@@ -101,6 +139,7 @@ def _run_one_batch(
     evaluator: Any,
     seed_start: int,
     game_count: int,
+    ema_evaluator: Any | None = None,
 ) -> tuple[list[GameLog], list[ReplaySample], list[TrajectoryEpisode]]:
     batch = core.GumbelSelfPlayBatch(
         game_count=game_count,
@@ -115,6 +154,7 @@ def _run_one_batch(
         policy_target_c_scale=config.self_play.policy_target_c_scale,
     )
     seeds = list(range(seed_start, seed_start + game_count))
+    raw_players = _raw_players_for_seeds(seeds)
     rngs = [random.Random(seed) for seed in seeds]
     moves: list[list[MoveLog]] = [[] for _ in seeds]
     pending: list[list[tuple[int, np.ndarray, np.ndarray, np.ndarray | None]]] = [
@@ -165,6 +205,8 @@ def _run_one_batch(
         results, root_policy_logits_rows = _search_active_with_root_policy_logits(
             batch,
             evaluator=evaluator,
+            ema_evaluator=ema_evaluator,
+            raw_players=raw_players,
             request=request,
             leaf_batch_size=config.self_play.leaf_batch_size,
         )
@@ -288,9 +330,26 @@ def _search_active_with_root_policy_logits(
     batch: Any,
     *,
     evaluator: Any,
+    ema_evaluator: Any | None,
+    raw_players: list[int],
     request: Any,
     leaf_batch_size: int,
 ) -> tuple[list[Any | None], list[list[float]]]:
+    if ema_evaluator is not None:
+        if not hasattr(batch, "search_active_with_onnx_raw_ema_evaluators_and_root_logits"):
+            raise RuntimeError(
+                "great_kingdom_core.GumbelSelfPlayBatch does not support raw/EMA ONNX self-play. "
+                "Rebuild the Rust extension."
+            )
+        results, root_policy_logits = (
+            batch.search_active_with_onnx_raw_ema_evaluators_and_root_logits(
+                evaluator,
+                ema_evaluator,
+                raw_players,
+                leaf_batch_size=leaf_batch_size,
+            )
+        )
+        return list(results), [list(row) for row in root_policy_logits]
     if hasattr(batch, "search_active_with_onnx_evaluator_and_root_logits"):
         results, root_policy_logits = batch.search_active_with_onnx_evaluator_and_root_logits(
             evaluator,
@@ -307,6 +366,10 @@ def _search_active_with_root_policy_logits(
         leaf_batch_size=leaf_batch_size,
     )
     return list(results), rows
+
+
+def _raw_players_for_seeds(seeds: list[int]) -> list[int]:
+    return [1 if seed % 2 == 0 else 2 for seed in seeds]
 
 
 def _flat_features_for_replay(feature_planes: list[float]) -> np.ndarray:

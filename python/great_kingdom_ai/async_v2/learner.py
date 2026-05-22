@@ -23,6 +23,7 @@ from great_kingdom_ai.async_v2.metadata import (
 )
 from great_kingdom_ai.async_v2.paths import (
     _candidate_checkpoint,
+    _ema_onnx_output_path,
     _ensure_learner_dirs,
     _onnx_output_path,
     _paths,
@@ -68,7 +69,7 @@ def run_learner_v2_once(
     printer.metric("recent window", train_config.recent_sample_window)
     printer.metric("recent fraction", train_config.recent_sample_fraction)
     printer.metric("ema decay", train_config.ema_decay)
-    printer.metric("onnx weights", "ema" if config.onnx_prefer_ema else "raw")
+    printer.metric("onnx weights", "raw + ema" if config.export_ema_onnx else "raw")
     if not pending:
         cycle_seconds = time.monotonic() - cycle_started_at
         printer.done(f"waiting for shards: pending=0, cycle={cycle_seconds:.1f}s")
@@ -175,7 +176,7 @@ def run_learner_v2_once(
     onnx_path: Path | None = _onnx_output_path(config)
     if config.export_onnx:
         assert onnx_path is not None
-        printer.step(f"exporting learner checkpoint -> {onnx_path}")
+        printer.step(f"exporting raw learner checkpoint -> {onnx_path}")
         temporary_onnx_path = onnx_path.with_suffix(f"{onnx_path.suffix}.tmp")
         export_onnx(
             training_latest,
@@ -183,10 +184,24 @@ def run_learner_v2_once(
             device=config.onnx_device,
             precision=config.onnx_precision,
             dummy_batch_size=config.onnx_dummy_batch_size,
-            prefer_ema=config.onnx_prefer_ema,
+            prefer_ema=False,
         )
         temporary_onnx_path.replace(onnx_path)
         printer.done(f"onnx ready: {onnx_path}")
+        if config.export_ema_onnx:
+            ema_onnx_path = _ema_onnx_output_path(config)
+            printer.step(f"exporting ema learner checkpoint -> {ema_onnx_path}")
+            temporary_ema_onnx_path = ema_onnx_path.with_suffix(f"{ema_onnx_path.suffix}.tmp")
+            export_onnx(
+                training_latest,
+                temporary_ema_onnx_path,
+                device=config.onnx_device,
+                precision=config.onnx_precision,
+                dummy_batch_size=config.onnx_dummy_batch_size,
+                prefer_ema=True,
+            )
+            temporary_ema_onnx_path.replace(ema_onnx_path)
+            printer.done(f"ema onnx ready: {ema_onnx_path}")
     else:
         onnx_path = None
 

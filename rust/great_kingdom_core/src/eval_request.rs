@@ -164,6 +164,10 @@ impl EvalRequest {
         )
     }
 
+    pub(crate) fn states(self) -> Vec<GameState> {
+        self.states
+    }
+
     #[must_use]
     pub(crate) fn new_with_precomputed_bytes(states: Vec<GameState>) -> Self {
         Self::new_with_options(states, None, true)
