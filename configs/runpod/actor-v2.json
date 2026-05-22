@@ -24,10 +24,10 @@
     "sampling_temperature": 1.0,
     "playout_cap_randomization": true,
     "playout_cap_full_search_fraction": 0.5,
-    "playout_cap_full_simulations": 96,
+    "playout_cap_full_simulations": 64,
     "playout_cap_fast_simulations": 16,
     "playout_cap_full_max_considered_actions": 8,
     "playout_cap_fast_max_considered_actions": 4,
-    "leaf_batch_size": 512
+    "leaf_batch_size": 2048
   }
 }
