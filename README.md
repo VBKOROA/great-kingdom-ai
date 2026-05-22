@@ -83,15 +83,6 @@ training-latest.onnx
 - `checkpoints/candidate.pt`: learner가 방금 만든 candidate 사본
 - `checkpoints/best.pt`: 초기 fallback/복구용 anchor
 
-현재 Runpod 권장 설정:
-
-- work dir: `data/runpod/train-v4`
-- actor: `64` games/cycle, CUDA ONNX, Gumbel `64` simulations
-- learner: batch `1024`, steps `64`, AMP, priority sampling, CUDA prefetch `4`
-- learner train budget: imported transition당 `16` sample updates
-- replay capacity: `512000` transitions
-- learner pruning: import 완료된 shard 원본 디렉터리 자동 삭제
-
 ### 실행 순서
 
 먼저 Runpod 환경을 준비합니다.
