@@ -79,8 +79,13 @@ def test_strong_preset_uses_spatial_value_head_and_policy_context() -> None:
     assert strong.config.policy_kernel_size == 3
     assert strong.config.spatial_value_head is True
     assert any(
+        isinstance(module, torch.nn.Conv2d)
+        and module.out_channels == strong.config.value_spatial_channels
+        for module in strong.value_head
+    )
+    assert any(
         isinstance(module, torch.nn.Linear)
-        and module.in_features == strong.config.channels * BOARD_SIZE * BOARD_SIZE
+        and module.in_features == strong.config.value_spatial_channels * BOARD_SIZE * BOARD_SIZE
         for module in strong.value_head
     )
     assert not any(isinstance(module, torch.nn.AdaptiveAvgPool2d) for module in strong.value_head)
@@ -102,13 +107,19 @@ def test_large_plus_preset_adds_context_heads_without_extra_backbone_depth() -> 
         p.numel() for p in large_plus.parameters()
     ) < sum(p.numel() for p in strong.parameters())
     assert any(
+        isinstance(module, torch.nn.Conv2d)
+        and module.out_channels == large_plus.config.value_spatial_channels
+        for module in large_plus.value_head
+    )
+    assert any(
         isinstance(module, torch.nn.Linear)
-        and module.in_features == large_plus.config.channels * BOARD_SIZE * BOARD_SIZE
+        and module.in_features == large_plus.config.value_spatial_channels * BOARD_SIZE * BOARD_SIZE
         for module in large_plus.value_head
     )
     assert not any(
         isinstance(module, torch.nn.AdaptiveAvgPool2d) for module in large_plus.value_head
     )
+
 
 
 def test_large_policy_preset_adds_policy_context_without_spatial_value_head() -> None:

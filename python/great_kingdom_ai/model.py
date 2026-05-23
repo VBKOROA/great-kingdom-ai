@@ -21,6 +21,8 @@ class ModelConfig:
     policy_channels: int = 2
     policy_kernel_size: int = 1
     spatial_value_head: bool = False
+    value_spatial_channels: int = 2
+
 
 
 MODEL_PRESETS: dict[str, ModelConfig] = {
@@ -106,12 +108,16 @@ class PolicyValueNetwork(nn.Module):
         )
         if config.spatial_value_head:
             self.value_head = nn.Sequential(
+                nn.Conv2d(config.channels, config.value_spatial_channels, kernel_size=1, bias=False),
+                nn.BatchNorm2d(config.value_spatial_channels),
+                nn.ReLU(inplace=True),
                 nn.Flatten(),
-                nn.Linear(config.channels * BOARD_SIZE * BOARD_SIZE, config.value_hidden),
+                nn.Linear(config.value_spatial_channels * BOARD_SIZE * BOARD_SIZE, config.value_hidden),
                 nn.ReLU(inplace=True),
                 nn.Linear(config.value_hidden, 1),
                 nn.Tanh(),
             )
+
         else:
             self.value_head = nn.Sequential(
                 nn.AdaptiveAvgPool2d(1),
