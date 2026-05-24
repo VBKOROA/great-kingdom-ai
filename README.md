@@ -96,7 +96,7 @@ source .venv/bin/activate
 ```bash
 source .venv/bin/activate
 GKA_ONNX_BATCH_BUCKETING=1 \
-RAYON_NUM_THREADS=4
+RAYON_NUM_THREADS=4 \
 great-kingdom-actor-v2 \
   --actor-config configs/runpod/actor-v2.json \
   --loop 
