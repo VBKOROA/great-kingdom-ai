@@ -91,10 +91,12 @@ training-latest.onnx
 source .venv/bin/activate
 ```
 
-터미널 1: actor
+터미널 1~4: actor
 
 ```bash
 source .venv/bin/activate
+GKA_ONNX_BATCH_BUCKETING=1 \
+RAYON_NUM_THREADS=4
 great-kingdom-actor-v2 \
   --actor-config configs/runpod/actor-v2.json \
   --loop 
