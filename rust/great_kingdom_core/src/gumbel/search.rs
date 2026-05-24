@@ -673,44 +673,36 @@ fn select_inner_action_index(node: &GumbelNode, c_visit: f32, c_scale: f32) -> O
         return None;
     }
 
-    debug_assert!(node.edges.len() <= ACTION_SPACE);
-    let mut max_log_prior = f32::NEG_INFINITY;
-    let mut total_visits = 0_u32;
-    let mut max_visit_count = 0_u32;
-    for edge in &node.edges {
-        max_log_prior = max_log_prior.max(edge.log_prior);
-        total_visits += edge.visit_count;
-        max_visit_count = max_visit_count.max(edge.visit_count);
-    }
-
-    let mut exp_priors = [0.0; ACTION_SPACE];
-    let mut sum_exp_prior = 0.0;
-    for (index, edge) in node.edges.iter().enumerate() {
-        let exp_prior = (edge.log_prior - max_log_prior).exp();
-        exp_priors[index] = exp_prior;
-        sum_exp_prior += exp_prior;
-    }
+    let max_log_prior = node
+        .edges
+        .iter()
+        .map(|edge| edge.log_prior)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let sum_exp_prior = node
+        .edges
+        .iter()
+        .map(|edge| (edge.log_prior - max_log_prior).exp())
+        .sum::<f32>();
+    let total_visits = node.edges.iter().map(|edge| edge.visit_count).sum::<u32>();
+    let max_visit_count = node
+        .edges
+        .iter()
+        .map(|edge| edge.visit_count)
+        .max()
+        .unwrap_or(0) as f32;
 
     let mut visited_prior_sum = 0.0;
     let mut visited_weighted_q = 0.0;
-    let mut visited_q_min = f32::INFINITY;
-    let mut visited_q_max = f32::NEG_INFINITY;
-    let mut has_unvisited = false;
     if total_visits > 0 {
-        for (index, edge) in node.edges.iter().enumerate() {
+        for edge in &node.edges {
             if edge.visit_count == 0 {
-                has_unvisited = true;
                 continue;
             }
-            let completed_q = edge.value_sum / edge.visit_count as f32;
-            let prior_prob = (exp_priors[index] / sum_exp_prior).max(INNER_PRIOR_PROB_EPSILON);
+            let prior_prob = ((edge.log_prior - max_log_prior).exp() / sum_exp_prior)
+                .max(INNER_PRIOR_PROB_EPSILON);
             visited_prior_sum += prior_prob;
-            visited_weighted_q += prior_prob * completed_q;
-            visited_q_min = visited_q_min.min(completed_q);
-            visited_q_max = visited_q_max.max(completed_q);
+            visited_weighted_q += prior_prob * edge.value_sum / edge.visit_count as f32;
         }
-    } else {
-        has_unvisited = true;
     }
 
     let mixed_value = if total_visits == 0 || visited_prior_sum <= 0.0 {
@@ -719,41 +711,56 @@ fn select_inner_action_index(node: &GumbelNode, c_visit: f32, c_scale: f32) -> O
         let weighted_q = visited_weighted_q / visited_prior_sum;
         (node.node_value + total_visits as f32 * weighted_q) / (total_visits as f32 + 1.0)
     };
-    let mut q_min = visited_q_min;
-    let mut q_max = visited_q_max;
-    if has_unvisited {
-        q_min = q_min.min(mixed_value);
-        q_max = q_max.max(mixed_value);
+
+    let mut q_min = f32::INFINITY;
+    let mut q_max = f32::NEG_INFINITY;
+    for edge in &node.edges {
+        let completed_q = if edge.visit_count > 0 {
+            edge.value_sum / edge.visit_count as f32
+        } else {
+            mixed_value
+        };
+        q_min = q_min.min(completed_q);
+        q_max = q_max.max(completed_q);
     }
     let q_range = (q_max - q_min).max(INNER_Q_RANGE_EPSILON);
-    let visit_scale = (c_visit + max_visit_count as f32) * c_scale;
+    let visit_scale = (c_visit + max_visit_count) * c_scale;
 
-    let mut improved_logits = [0.0; ACTION_SPACE];
     let mut max_logit = f32::NEG_INFINITY;
-    for (index, edge) in node.edges.iter().enumerate() {
+    for edge in &node.edges {
         let completed_q = if edge.visit_count > 0 {
             edge.value_sum / edge.visit_count as f32
         } else {
             mixed_value
         };
         let q_bonus = visit_scale * ((completed_q - q_min) / q_range);
-        let logit = edge.log_prior + q_bonus;
-        improved_logits[index] = logit;
-        max_logit = max_logit.max(logit);
+        max_logit = max_logit.max(edge.log_prior + q_bonus);
     }
 
-    let mut exp_logits = [0.0; ACTION_SPACE];
-    let mut sum_exp_logit = 0.0;
-    for index in 0..node.edges.len() {
-        let exp_logit = (improved_logits[index] - max_logit).exp();
-        exp_logits[index] = exp_logit;
-        sum_exp_logit += exp_logit;
-    }
+    let sum_exp_logit = node
+        .edges
+        .iter()
+        .map(|edge| {
+            let completed_q = if edge.visit_count > 0 {
+                edge.value_sum / edge.visit_count as f32
+            } else {
+                mixed_value
+            };
+            let q_bonus = visit_scale * ((completed_q - q_min) / q_range);
+            (edge.log_prior + q_bonus - max_logit).exp()
+        })
+        .sum::<f32>();
 
     let total_visits_f32 = total_visits as f32;
     let mut best: Option<(usize, f32)> = None;
-    for (index, edge) in node.edges.iter().enumerate() {
-        let probability = exp_logits[index] / sum_exp_logit;
+    for edge in &node.edges {
+        let completed_q = if edge.visit_count > 0 {
+            edge.value_sum / edge.visit_count as f32
+        } else {
+            mixed_value
+        };
+        let q_bonus = visit_scale * ((completed_q - q_min) / q_range);
+        let probability = (edge.log_prior + q_bonus - max_logit).exp() / sum_exp_logit;
         let score = probability - edge.visit_count as f32 / (1.0 + total_visits_f32);
         let action = edge.action.to_index();
         let replace = best.is_none_or(|(best_action, best_score)| {
