@@ -168,13 +168,7 @@ def _run_one_batch(
         active_indexes = [int(index) for index in batch.active_game_indexes()]
         if not active_indexes:
             break
-        request = batch.active_eval_request()
-        feature_rows = request.feature_planes()
         players = [int(player) for player in batch.current_players()]
-        features_by_game = {
-            game_index: _flat_features_for_replay(feature_row)
-            for game_index, feature_row in zip(active_indexes, feature_rows, strict=True)
-        }
         use_full_by_game: dict[int, bool] = {}
         simulation_budgets: list[int | None] = [None] * game_count
         for game_index in active_indexes:
@@ -202,22 +196,18 @@ def _run_one_batch(
                 ]
             )
 
-        results, root_policy_logits_rows = _search_active_with_root_policy_logits(
+        full_indexes = [
+            game_index for game_index in active_indexes if use_full_by_game[game_index]
+        ]
+        features_by_game = _feature_rows_by_game(batch, full_indexes)
+        results, root_policy_logits_by_game = _search_active_with_root_policy_logits(
             batch,
             evaluator=evaluator,
             ema_evaluator=ema_evaluator,
             raw_players=raw_players,
-            request=request,
+            root_logit_game_indexes=full_indexes,
             leaf_batch_size=config.self_play.leaf_batch_size,
         )
-        root_policy_logits_by_game = {
-            game_index: np.asarray(row, dtype=np.float32)
-            for game_index, row in zip(
-                active_indexes,
-                root_policy_logits_rows,
-                strict=True,
-            )
-        }
         actions: list[int | None] = [None] * game_count
         for game_index in active_indexes:
             result = results[game_index]
@@ -332,10 +322,27 @@ def _search_active_with_root_policy_logits(
     evaluator: Any,
     ema_evaluator: Any | None,
     raw_players: list[int],
-    request: Any,
+    root_logit_game_indexes: list[int],
     leaf_batch_size: int,
-) -> tuple[list[Any | None], list[list[float]]]:
+) -> tuple[list[Any | None], dict[int, np.ndarray]]:
     if ema_evaluator is not None:
+        if hasattr(
+            batch,
+            "search_active_with_onnx_raw_ema_evaluators_and_selected_root_logits",
+        ):
+            results, root_policy_logits = (
+                batch.search_active_with_onnx_raw_ema_evaluators_and_selected_root_logits(
+                    evaluator,
+                    ema_evaluator,
+                    raw_players,
+                    root_logit_game_indexes,
+                    leaf_batch_size=leaf_batch_size,
+                )
+            )
+            return list(results), _root_policy_logits_by_game(
+                root_logit_game_indexes,
+                root_policy_logits,
+            )
         if not hasattr(batch, "search_active_with_onnx_raw_ema_evaluators_and_root_logits"):
             raise RuntimeError(
                 "great_kingdom_core.GumbelSelfPlayBatch does not support raw/EMA ONNX self-play. "
@@ -349,14 +356,35 @@ def _search_active_with_root_policy_logits(
                 leaf_batch_size=leaf_batch_size,
             )
         )
-        return list(results), [list(row) for row in root_policy_logits]
+        return list(results), _root_policy_logits_by_game(
+            [int(index) for index in batch.active_game_indexes()],
+            root_policy_logits,
+            selected_game_indexes=root_logit_game_indexes,
+        )
+    if hasattr(batch, "search_active_with_onnx_evaluator_and_selected_root_logits"):
+        results, root_policy_logits = (
+            batch.search_active_with_onnx_evaluator_and_selected_root_logits(
+                evaluator,
+                root_logit_game_indexes,
+                leaf_batch_size=leaf_batch_size,
+            )
+        )
+        return list(results), _root_policy_logits_by_game(
+            root_logit_game_indexes,
+            root_policy_logits,
+        )
     if hasattr(batch, "search_active_with_onnx_evaluator_and_root_logits"):
         results, root_policy_logits = batch.search_active_with_onnx_evaluator_and_root_logits(
             evaluator,
             leaf_batch_size=leaf_batch_size,
         )
-        return list(results), [list(row) for row in root_policy_logits]
+        return list(results), _root_policy_logits_by_game(
+            [int(index) for index in batch.active_game_indexes()],
+            root_policy_logits,
+            selected_game_indexes=root_logit_game_indexes,
+        )
 
+    request = batch.active_eval_request()
     root_policy_logits, _root_values = evaluator.evaluate(request)
     rows = [list(row) for row in root_policy_logits]
     if any(len(row) != ACTION_SPACE for row in rows):
@@ -365,7 +393,53 @@ def _search_active_with_root_policy_logits(
         evaluator,
         leaf_batch_size=leaf_batch_size,
     )
-    return list(results), rows
+    return list(results), _root_policy_logits_by_game(
+        [int(index) for index in batch.active_game_indexes()],
+        rows,
+        selected_game_indexes=root_logit_game_indexes,
+    )
+
+
+def _feature_rows_by_game(batch: Any, game_indexes: list[int]) -> dict[int, np.ndarray]:
+    if not game_indexes:
+        return {}
+    if hasattr(batch, "feature_rows_for_game_indexes"):
+        feature_rows = batch.feature_rows_for_game_indexes(game_indexes)
+        if len(feature_rows) != len(game_indexes):
+            raise ValueError(
+                f"expected {len(game_indexes)} replay feature rows, got {len(feature_rows)}"
+            )
+        return {
+            game_index: _flat_features_for_replay(feature_row)
+            for game_index, feature_row in zip(game_indexes, feature_rows, strict=True)
+        }
+
+    active_indexes = [int(index) for index in batch.active_game_indexes()]
+    request = batch.active_eval_request()
+    feature_rows = request.feature_planes()
+    if len(feature_rows) != len(active_indexes):
+        raise ValueError(
+            f"expected {len(active_indexes)} active feature rows, got {len(feature_rows)}"
+        )
+    active_features = {
+        game_index: _flat_features_for_replay(feature_row)
+        for game_index, feature_row in zip(active_indexes, feature_rows, strict=True)
+    }
+    return {game_index: active_features[game_index] for game_index in game_indexes}
+
+
+def _root_policy_logits_by_game(
+    game_indexes: list[int],
+    rows: Any,
+    *,
+    selected_game_indexes: list[int] | None = None,
+) -> dict[int, np.ndarray]:
+    selected = set(game_indexes if selected_game_indexes is None else selected_game_indexes)
+    by_game: dict[int, np.ndarray] = {}
+    for game_index, row in zip(game_indexes, rows, strict=True):
+        if game_index in selected:
+            by_game[game_index] = np.asarray(row, dtype=np.float32)
+    return by_game
 
 
 def _raw_players_for_seeds(seeds: list[int]) -> list[int]:

@@ -142,6 +142,10 @@ def test_gumbel_self_play_batch_constructor_and_active_request() -> None:
     assert request.len() == 2
     assert list(request.game_indexes()) == []
     assert list(batch.current_players()) == [1, 1]
+    if hasattr(batch, "feature_rows_for_game_indexes"):
+        rows = batch.feature_rows_for_game_indexes([1, 0])
+        assert len(rows) == 2
+        assert len(rows[0]) == core.FEATURE_CHANNELS * core.BOARD_CELLS
 
     if not hasattr(batch, "set_max_considered_actions"):
         pytest.skip("installed great_kingdom_core does not expose set_max_considered_actions")

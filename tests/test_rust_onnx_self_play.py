@@ -37,21 +37,37 @@ class FakeOnnxEvaluator:
 
 
 class FakeRustSelfPlayBatch:
+    last_instance = None
+
     def __init__(self, game_count: int, **_kwargs: object) -> None:
+        type(self).last_instance = self
         self._game_count = game_count
         self._turn = 0
         self._terminal = [False] * game_count
+        self.active_eval_request_calls = 0
+        self.feature_row_requests: list[list[int]] = []
+        self.root_logit_requests: list[list[int]] = []
 
     def active_game_indexes(self) -> list[int]:
         return [index for index, terminal in enumerate(self._terminal) if not terminal]
 
     def active_eval_request(self) -> FakeEvalRequest:
+        self.active_eval_request_calls += 1
         features = []
         for _index in self.active_game_indexes():
             row = [0.0] * (FEATURE_CHANNELS * 9 * 9)
             row[0] = float(self._turn + 1)
             features.append(row)
         return FakeEvalRequest(features)
+
+    def feature_rows_for_game_indexes(self, indexes: list[int]) -> list[list[float]]:
+        self.feature_row_requests.append(list(indexes))
+        features = []
+        for _index in indexes:
+            row = [0.0] * (FEATURE_CHANNELS * 9 * 9)
+            row[0] = float(self._turn + 1)
+            features.append(row)
+        return features
 
     def current_players(self) -> list[int]:
         return [1] * self._game_count
@@ -73,6 +89,34 @@ class FakeRustSelfPlayBatch:
         for index in self.active_game_indexes():
             results[index] = FakeGumbelResult()
         return results
+
+    def search_active_with_onnx_evaluator_and_root_logits(
+        self,
+        _evaluator: FakeOnnxEvaluator,
+        *,
+        leaf_batch_size: int,
+    ) -> tuple[list[FakeGumbelResult | None], list[list[float]]]:
+        results = self.search_active_with_onnx_evaluator(
+            _evaluator,
+            leaf_batch_size=leaf_batch_size,
+        )
+        logits = [[0.0] * ACTION_SPACE for _index in self.active_game_indexes()]
+        return results, logits
+
+    def search_active_with_onnx_evaluator_and_selected_root_logits(
+        self,
+        _evaluator: FakeOnnxEvaluator,
+        root_logit_game_indexes: list[int],
+        *,
+        leaf_batch_size: int,
+    ) -> tuple[list[FakeGumbelResult | None], list[list[float]]]:
+        self.root_logit_requests.append(list(root_logit_game_indexes))
+        results = self.search_active_with_onnx_evaluator(
+            _evaluator,
+            leaf_batch_size=leaf_batch_size,
+        )
+        logits = [[0.0] * ACTION_SPACE for _index in root_logit_game_indexes]
+        return results, logits
 
     def apply_actions(self, actions: list[int | None]) -> list[int | None]:
         assert actions == [PASS_ACTION]
@@ -135,6 +179,11 @@ def test_rust_onnx_trajectory_keeps_only_full_playout_cap_turns(
     assert len(episodes[0].transitions) == 1
     assert episodes[0].transitions[0].timestep == 0
     assert episodes[0].transitions[0].features[0, 0, 0] == np.float32(2.0)
+    batch = FakeRustSelfPlayBatch.last_instance
+    assert batch is not None
+    assert batch.active_eval_request_calls == 0
+    assert batch.feature_row_requests == [[0]]
+    assert batch.root_logit_requests == [[], [0], []]
 
     store = TrajectoryReplayStore.from_episodes(8, episodes)
     assert len(store) == 1

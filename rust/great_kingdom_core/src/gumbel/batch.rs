@@ -156,6 +156,20 @@ impl GumbelSelfPlayBatch {
         )
     }
 
+    pub fn feature_rows_for_game_indexes(
+        &self,
+        game_indexes: Vec<usize>,
+    ) -> PyResult<Vec<Vec<f32>>> {
+        let mut rows = Vec::with_capacity(game_indexes.len());
+        for game_index in game_indexes {
+            let state = self.states.get(game_index).ok_or_else(|| {
+                PyValueError::new_err(format!("game index out of range: {game_index}"))
+            })?;
+            rows.push(state.feature_planes());
+        }
+        Ok(rows)
+    }
+
     #[must_use]
     pub fn current_players(&self) -> Vec<u8> {
         self.states.iter().map(GameState::current_player).collect()
@@ -274,6 +288,44 @@ impl GumbelSelfPlayBatch {
         Ok((results, root_policy_logits))
     }
 
+    #[pyo3(signature = (evaluator, root_logit_game_indexes, leaf_batch_size = 16))]
+    pub fn search_active_with_onnx_evaluator_and_selected_root_logits(
+        &mut self,
+        mut evaluator: PyRefMut<'_, OnnxEvaluator>,
+        root_logit_game_indexes: Vec<usize>,
+        leaf_batch_size: usize,
+    ) -> PyResult<SearchActiveWithRootLogits> {
+        if leaf_batch_size == 0 {
+            return Err(PyValueError::new_err("leaf_batch_size must be positive"));
+        }
+        let active_indexes = self.active_indexes();
+        let active_request = self.active_eval_request_features();
+        evaluator.set_gumbel_root_profile_context(active_request.len());
+        let root_output = evaluator
+            .evaluate_request(&active_request)
+            .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let root_policy_logits = selected_root_policy_logits(
+            &active_indexes,
+            &root_output.policy_logits,
+            &root_logit_game_indexes,
+        )?;
+        let root_values = root_output.values;
+        let policy_logits: Vec<Vec<f32>> = root_output
+            .policy_logits
+            .into_iter()
+            .map(Vec::from)
+            .collect();
+        let mut adapter = OnnxGumbelEvaluator::new(&mut evaluator);
+        let results = self.search_active_with_evaluator(
+            policy_logits,
+            true,
+            &mut adapter,
+            leaf_batch_size,
+            &root_values,
+        )?;
+        Ok((results, root_policy_logits))
+    }
+
     #[pyo3(signature = (raw_evaluator, ema_evaluator, raw_players, leaf_batch_size = 16))]
     pub fn search_active_with_onnx_raw_ema_evaluators_and_root_logits(
         &mut self,
@@ -312,6 +364,68 @@ impl GumbelSelfPlayBatch {
             .iter()
             .map(|row| Vec::from(*row))
             .collect::<Vec<_>>();
+        let root_rows = root_eval
+            .policies
+            .into_iter()
+            .map(Vec::from)
+            .collect::<Vec<_>>();
+        let mut adapter =
+            OnnxRawEmaGumbelEvaluator::new(&mut raw_evaluator, &mut ema_evaluator, raw_players);
+        let results = self.search_active_with_evaluator(
+            root_rows,
+            true,
+            &mut adapter,
+            leaf_batch_size,
+            &root_eval.values,
+        )?;
+        Ok((results, root_policy_logits))
+    }
+
+    #[pyo3(signature = (
+        raw_evaluator,
+        ema_evaluator,
+        raw_players,
+        root_logit_game_indexes,
+        leaf_batch_size = 16
+    ))]
+    pub fn search_active_with_onnx_raw_ema_evaluators_and_selected_root_logits(
+        &mut self,
+        mut raw_evaluator: PyRefMut<'_, OnnxEvaluator>,
+        mut ema_evaluator: PyRefMut<'_, OnnxEvaluator>,
+        raw_players: Vec<u8>,
+        root_logit_game_indexes: Vec<usize>,
+        leaf_batch_size: usize,
+    ) -> PyResult<SearchActiveWithRootLogits> {
+        if leaf_batch_size == 0 {
+            return Err(PyValueError::new_err("leaf_batch_size must be positive"));
+        }
+        if raw_players.len() != self.states.len() {
+            return Err(PyValueError::new_err(format!(
+                "expected {} raw player slots, got {}",
+                self.states.len(),
+                raw_players.len()
+            )));
+        }
+        let active_indexes = self.active_indexes();
+        let active_states = active_indexes
+            .iter()
+            .map(|index| self.states[*index].clone())
+            .collect::<Vec<_>>();
+        let root_eval = evaluate_raw_ema_rows(
+            &mut raw_evaluator,
+            &mut ema_evaluator,
+            active_states,
+            active_indexes.clone(),
+            &raw_players,
+            active_indexes.len(),
+            0,
+        )?;
+        root_eval.validate_len(active_indexes.len())?;
+        let root_policy_logits = selected_root_policy_logits(
+            &active_indexes,
+            &root_eval.policies,
+            &root_logit_game_indexes,
+        )?;
         let root_rows = root_eval
             .policies
             .into_iter()
@@ -850,6 +964,32 @@ impl GumbelSelfPlayBatch {
     }
 }
 
+fn selected_root_policy_logits(
+    active_indexes: &[usize],
+    policy_logits: &[[f32; ACTION_SPACE]],
+    selected_game_indexes: &[usize],
+) -> PyResult<Vec<Vec<f32>>> {
+    if policy_logits.len() != active_indexes.len() {
+        return Err(PyRuntimeError::new_err(
+            "root policy logits row count does not match active games",
+        ));
+    }
+    selected_game_indexes
+        .iter()
+        .map(|selected_index| {
+            let active_offset = active_indexes
+                .iter()
+                .position(|active_index| active_index == selected_index)
+                .ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "root logit game index is not active: {selected_index}"
+                    ))
+                })?;
+            Ok(Vec::from(policy_logits[active_offset]))
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug)]
 struct PendingBatchLeaf {
     game_index: usize,
@@ -1093,6 +1233,23 @@ mod tests {
                 .map(|result| result.visit_counts.iter().sum::<u32>())
                 .collect::<Vec<_>>(),
             vec![4, 4],
+        );
+    }
+
+    #[test]
+    fn selected_root_policy_logits_returns_only_requested_active_rows() {
+        let mut policies = vec![[0.0; ACTION_SPACE]; 2];
+        policies[0][1] = 3.0;
+        policies[1][2] = 7.0;
+
+        let selected = super::selected_root_policy_logits(&[4, 9], &policies, &[9])
+            .expect("active game index should be selectable");
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0][2], 7.0);
+        assert!(
+            super::selected_root_policy_logits(&[4, 9], &policies, &[3]).is_err(),
+            "inactive game indexes should be rejected"
         );
     }
 

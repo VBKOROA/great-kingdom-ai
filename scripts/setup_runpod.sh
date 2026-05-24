@@ -226,6 +226,9 @@ check_runpod_torch
 echo "Configuring CUDA library path for Rust ONNX Runtime"
 configure_cuda_library_path
 
+export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native"
+echo "Rust build flags: $RUSTFLAGS"
+
 echo "Building Python extension with maturin features: $RUNPOD_RUST_FEATURES"
 cd "$RUST_CRATE_DIR"
 python -m maturin develop --release --features "$RUNPOD_RUST_FEATURES"
