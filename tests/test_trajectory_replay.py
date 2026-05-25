@@ -197,7 +197,7 @@ def test_trajectory_replay_payload_loader_reads_arrays_once_per_key() -> None:
 
     assert sum(len(episode.transitions) for episode in episodes) == 4
     assert data.counts["policy_targets"] == 2
-    assert data.counts["legal_masks"] == 2
+    assert data.counts["legal_masks"] == 1
     assert data.counts["timesteps"] == 2
 
 

@@ -618,7 +618,12 @@ def _run_learner_continuous_cli(
                         "seed": train_config.seed + train_chunks,
                     }
                 )
-                dataset = TrajectoryReplayDataset(replay)
+                dataset = TrajectoryReplayDataset(
+                    replay,
+                    bootstrap_td_steps=effective_train_config.bootstrap_td_steps,
+                    gamma=effective_train_config.gamma,
+                    value_bootstrap_source=effective_train_config.value_bootstrap_source,
+                )
                 candidate_checkpoint = _candidate_checkpoint(config)
                 training_latest = _training_latest_checkpoint(config)
                 if bootstrap_once_pending:

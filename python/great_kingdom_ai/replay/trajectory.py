@@ -39,8 +39,8 @@ class TrajectoryReplayStore:
     timesteps: np.ndarray
     players: np.ndarray
     actions: np.ndarray
-    features: np.ndarray
-    legal_masks: np.ndarray
+    features: np.ndarray | None
+    legal_masks: np.ndarray | None
     policy_targets: np.ndarray
     winners: np.ndarray
     terminals: np.ndarray
@@ -49,6 +49,11 @@ class TrajectoryReplayStore:
     created_iterations: np.ndarray
     sample_weights: np.ndarray
     sampling_priorities: np.ndarray
+    turn_offsets: np.ndarray
+    turn_players: np.ndarray
+    turn_actions: np.ndarray
+    turn_root_values: np.ndarray
+    turn_full_search: np.ndarray
     search_config_hash_table: np.ndarray
     search_config_hash_ids: np.ndarray
     root_policy_logits: np.ndarray | None = None
@@ -80,9 +85,16 @@ class TrajectoryReplayStore:
         capacity = int(data["capacity"])
         if capacity <= 0:
             raise ValueError("capacity must be positive")
-        features = np.asarray(data["features"], dtype=np.float32)
-        transition_count = features.shape[0]
+        if "features" in data:
+            features = np.asarray(data["features"], dtype=np.float32)
+            transition_count = features.shape[0]
+        else:
+            features = None
+            transition_count = int(np.asarray(data["timesteps"]).shape[0])
         _validate_payload_lengths(data, transition_count)
+        turn_offsets, turn_players, turn_actions, turn_root_values, turn_full_search = (
+            _load_turn_timeline(data)
+        )
         root_policy_logits, root_policy_logits_present = _load_optional_array(
             data,
             key="root_policy_logits",
@@ -106,7 +118,11 @@ class TrajectoryReplayStore:
             players=np.asarray(data["players"], dtype=np.int64),
             actions=np.asarray(data["actions"], dtype=np.int64),
             features=features,
-            legal_masks=np.asarray(data["legal_masks"], dtype=np.bool_),
+            legal_masks=(
+                np.asarray(data["legal_masks"], dtype=np.bool_)
+                if "legal_masks" in data
+                else None
+            ),
             policy_targets=np.asarray(data["policy_targets"], dtype=np.float32),
             winners=np.asarray(data["winners"], dtype=np.int64),
             terminals=np.asarray(data["terminals"], dtype=np.bool_),
@@ -115,6 +131,11 @@ class TrajectoryReplayStore:
             created_iterations=np.asarray(data["created_iterations"], dtype=np.int64),
             sample_weights=np.asarray(data["sample_weights"], dtype=np.float32),
             sampling_priorities=_load_sampling_priorities(data, transition_count),
+            turn_offsets=turn_offsets,
+            turn_players=turn_players,
+            turn_actions=turn_actions,
+            turn_root_values=turn_root_values,
+            turn_full_search=turn_full_search,
             search_config_hash_table=table,
             search_config_hash_ids=ids,
             root_policy_logits=root_policy_logits if root_policy_logits_present.any() else None,
@@ -136,12 +157,12 @@ class TrajectoryReplayStore:
         return tuple(_episodes_from_store(self))
 
     def __len__(self) -> int:
-        return int(self.features.shape[0])
+        return int(self.timesteps.shape[0])
 
     def validate(self) -> None:
-        if self.features.shape != (len(self), *FEATURE_SHAPE):
+        if self.features is not None and self.features.shape != (len(self), *FEATURE_SHAPE):
             raise ValueError("trajectory replay features shape mismatch")
-        if self.legal_masks.shape != (len(self), ACTION_SPACE):
+        if self.legal_masks is not None and self.legal_masks.shape != (len(self), ACTION_SPACE):
             raise ValueError("trajectory replay legal_masks shape mismatch")
         if self.policy_targets.shape != (len(self), ACTION_SPACE):
             raise ValueError("trajectory replay policy_targets shape mismatch")
@@ -149,10 +170,23 @@ class TrajectoryReplayStore:
             raise ValueError("trajectory replay territory_scores shape mismatch")
         if self.episode_offsets.shape != (self.episode_count + 1,):
             raise ValueError("trajectory replay episode_offsets length mismatch")
+        if self.turn_offsets.shape != (self.episode_count + 1,):
+            raise ValueError("trajectory replay turn_offsets length mismatch")
         if self.episode_offsets.size == 0 or int(self.episode_offsets[0]) != 0:
             raise ValueError("trajectory replay episode_offsets must start at zero")
+        if self.turn_offsets.size == 0 or int(self.turn_offsets[0]) != 0:
+            raise ValueError("trajectory replay turn_offsets must start at zero")
         if int(self.episode_offsets[-1]) != len(self):
             raise ValueError("trajectory replay episode_offsets must end at transition count")
+        turn_count = int(self.turn_offsets[-1])
+        for array in (
+            self.turn_players,
+            self.turn_actions,
+            self.turn_root_values,
+            self.turn_full_search,
+        ):
+            if array.shape != (turn_count,):
+                raise ValueError("trajectory replay per-turn array length mismatch")
         per_transition = (
             self.timesteps,
             self.players,
@@ -292,8 +326,6 @@ class TrajectoryReplayStore:
             "timesteps": self.timesteps,
             "players": self.players,
             "actions": self.actions,
-            "features": self.features,
-            "legal_masks": self.legal_masks,
             "policy_targets": self.policy_targets,
             "winners": self.winners,
             "terminals": self.terminals,
@@ -302,9 +334,18 @@ class TrajectoryReplayStore:
             "created_iterations": self.created_iterations,
             "sample_weights": self.sample_weights,
             "sampling_priorities": self.sampling_priorities,
+            "turn_offsets": self.turn_offsets,
+            "turn_players": self.turn_players,
+            "turn_actions": self.turn_actions,
+            "turn_root_values": self.turn_root_values,
+            "turn_full_search": self.turn_full_search,
             "search_config_hash_table": self.search_config_hash_table,
             "search_config_hash_ids": self.search_config_hash_ids,
         }
+        if self.features is not None:
+            payload["features"] = self.features
+        if self.legal_masks is not None:
+            payload["legal_masks"] = self.legal_masks
         if self.root_policy_logits is not None and self.root_policy_logits_present is not None:
             payload["root_policy_logits"] = self.root_policy_logits
             payload["root_policy_logits_present"] = self.root_policy_logits_present
@@ -442,12 +483,16 @@ def _validated_episode(episode: TrajectoryEpisode) -> TrajectoryEpisode:
         winner=int(episode.winner),
         end_reason=int(episode.end_reason),
         territory_scores=(int(episode.territory_scores[0]), int(episode.territory_scores[1])),
+        turn_players=episode.turn_players,
+        turn_actions=episode.turn_actions,
+        turn_root_values=episode.turn_root_values,
+        turn_full_search=episode.turn_full_search,
     )
 
 
 def _validated_transition(transition: TrajectoryTransition) -> TrajectoryTransition:
-    features = np.asarray(transition.features, dtype=np.float32)
-    legal_mask = np.asarray(transition.legal_mask, dtype=np.bool_)
+    features = _optional_features(transition.features, "features")
+    legal_mask = _optional_bool_vector(transition.legal_mask, label="legal_mask")
     policy = np.asarray(transition.policy_target, dtype=np.float32)
     root_policy_logits = _optional_vector(
         transition.root_policy_logits,
@@ -466,11 +511,7 @@ def _validated_transition(transition: TrajectoryTransition) -> TrajectoryTransit
         raise ValueError("player must be 1 or 2")
     if transition.action < 0 or transition.action >= ACTION_SPACE:
         raise ValueError(f"action must be in [0, {ACTION_SPACE})")
-    if features.shape != FEATURE_SHAPE:
-        raise ValueError(f"expected feature shape {FEATURE_SHAPE}, got {features.shape}")
-    if legal_mask.shape != (ACTION_SPACE,):
-        raise ValueError(f"expected legal_mask shape {(ACTION_SPACE,)}, got {legal_mask.shape}")
-    if not legal_mask[transition.action]:
+    if legal_mask is not None and not legal_mask[transition.action]:
         raise ValueError("transition action must be legal")
     if policy.shape != (ACTION_SPACE,):
         raise ValueError(f"expected policy_target shape {(ACTION_SPACE,)}, got {policy.shape}")
@@ -494,8 +535,8 @@ def _validated_transition(transition: TrajectoryTransition) -> TrajectoryTransit
         episode_id=int(transition.episode_id),
         timestep=int(transition.timestep),
         player=int(transition.player),
-        features=features.copy(),
-        legal_mask=legal_mask.copy(),
+        features=None if features is None else features.copy(),
+        legal_mask=None if legal_mask is None else legal_mask.copy(),
         action=int(transition.action),
         policy_target=policy.copy(),
         root_policy_logits=(
@@ -537,6 +578,15 @@ def _optional_features(value: np.ndarray | None, label: str) -> np.ndarray | Non
     return array
 
 
+def _optional_bool_vector(value: np.ndarray | None, *, label: str) -> np.ndarray | None:
+    if value is None:
+        return None
+    array = np.asarray(value, dtype=np.bool_)
+    if array.shape != (ACTION_SPACE,):
+        raise ValueError(f"expected {label} shape {(ACTION_SPACE,)}, got {array.shape}")
+    return array
+
+
 def _episodes_to_payload(
     capacity: int,
     episodes: Sequence[TrajectoryEpisode],
@@ -547,8 +597,19 @@ def _episodes_to_payload(
         for transition in episode.transitions
     ]
     offsets = [0]
+    turn_offsets = [0]
+    turn_player_rows: list[np.ndarray] = []
+    turn_action_rows: list[np.ndarray] = []
+    turn_root_value_rows: list[np.ndarray] = []
+    turn_full_search_rows: list[np.ndarray] = []
     for episode in episodes:
         offsets.append(offsets[-1] + len(episode.transitions))
+        timeline = _episode_turn_timeline(episode)
+        turn_offsets.append(turn_offsets[-1] + int(timeline[0].shape[0]))
+        turn_player_rows.append(timeline[0])
+        turn_action_rows.append(timeline[1])
+        turn_root_value_rows.append(timeline[2])
+        turn_full_search_rows.append(timeline[3])
 
     payload: dict[str, np.ndarray] = {
         "capacity": np.asarray(capacity, dtype=np.int64),
@@ -570,16 +631,6 @@ def _episodes_to_payload(
         ),
         "players": np.asarray([transition.player for transition in transitions], dtype=np.int64),
         "actions": np.asarray([transition.action for transition in transitions], dtype=np.int64),
-        "features": _stack_or_empty(
-            [transition.features for transition in transitions],
-            shape=FEATURE_SHAPE,
-            dtype=np.float32,
-        ),
-        "legal_masks": _stack_or_empty(
-            [transition.legal_mask for transition in transitions],
-            shape=(ACTION_SPACE,),
-            dtype=np.bool_,
-        ),
         "policy_targets": _stack_or_empty(
             [transition.policy_target for transition in transitions],
             shape=(ACTION_SPACE,),
@@ -613,7 +664,26 @@ def _episodes_to_payload(
             dtype=np.float32,
         ),
         "sampling_priorities": np.ones((len(transitions),), dtype=np.float32),
+        "turn_offsets": np.asarray(turn_offsets, dtype=np.int64),
+        "turn_players": _concat_1d_or_empty(turn_player_rows, dtype=np.int64),
+        "turn_actions": _concat_1d_or_empty(turn_action_rows, dtype=np.int64),
+        "turn_root_values": _concat_1d_or_empty(turn_root_value_rows, dtype=np.float32),
+        "turn_full_search": _concat_1d_or_empty(turn_full_search_rows, dtype=np.bool_),
     }
+    _add_required_optional_stack(
+        payload,
+        "features",
+        [transition.features for transition in transitions],
+        FEATURE_SHAPE,
+        np.float32,
+    )
+    _add_required_optional_stack(
+        payload,
+        "legal_masks",
+        [transition.legal_mask for transition in transitions],
+        (ACTION_SPACE,),
+        np.bool_,
+    )
     _add_search_config_hashes(
         payload,
         [transition.search_config_hash for transition in transitions],
@@ -625,6 +695,58 @@ def _episodes_to_payload(
         transition.next_features for transition in transitions
     ], FEATURE_SHAPE)
     return payload
+
+
+def _episode_turn_timeline(
+    episode: TrajectoryEpisode,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    if (
+        episode.turn_players is None
+        and episode.turn_actions is None
+        and episode.turn_root_values is None
+        and episode.turn_full_search is None
+    ):
+        return (
+            np.asarray([transition.player for transition in episode.transitions], dtype=np.int64),
+            np.asarray([transition.action for transition in episode.transitions], dtype=np.int64),
+            np.asarray(
+                [
+                    np.nan if transition.root_value is None else transition.root_value
+                    for transition in episode.transitions
+                ],
+                dtype=np.float32,
+            ),
+            np.ones((len(episode.transitions),), dtype=np.bool_),
+        )
+    if (
+        episode.turn_players is None
+        or episode.turn_actions is None
+        or episode.turn_root_values is None
+        or episode.turn_full_search is None
+    ):
+        raise ValueError("episode turn timeline fields must be provided together")
+    players = np.asarray(episode.turn_players, dtype=np.int64)
+    actions = np.asarray(episode.turn_actions, dtype=np.int64)
+    root_values = np.asarray(episode.turn_root_values, dtype=np.float32)
+    full_search = np.asarray(episode.turn_full_search, dtype=np.bool_)
+    if not (
+        players.shape == actions.shape == root_values.shape == full_search.shape
+    ):
+        raise ValueError("episode turn timeline fields must have the same shape")
+    if players.ndim != 1:
+        raise ValueError("episode turn timeline fields must be rank 1")
+    if np.any((players != 1) & (players != 2)):
+        raise ValueError("episode turn players must be 1 or 2")
+    if np.any(actions < 0) or np.any(actions >= ACTION_SPACE):
+        raise ValueError(f"episode turn actions must be in [0, {ACTION_SPACE})")
+    if np.any(np.isfinite(root_values) & ((root_values < -1.0) | (root_values > 1.0))):
+        raise ValueError("episode turn root values must be finite in [-1, 1] or NaN")
+    return (
+        players.copy(),
+        actions.copy(),
+        root_values.copy(),
+        full_search.copy(),
+    )
 
 
 def _episodes_from_payload(data: Any) -> list[TrajectoryEpisode]:
@@ -662,8 +784,8 @@ def _episode_from_store(
                 episode_id=int(store.episode_ids[episode_index]),
                 timestep=int(store.timesteps[row]),
                 player=int(store.players[row]),
-                features=store.features[row],
-                legal_mask=store.legal_masks[row],
+                features=None if store.features is None else store.features[row],
+                legal_mask=None if store.legal_masks is None else store.legal_masks[row],
                 action=int(store.actions[row]),
                 policy_target=store.policy_targets[row],
                 root_policy_logits=(
@@ -690,6 +812,8 @@ def _episode_from_store(
             )
         )
     territory_score_row = store.territory_scores[episode_index]
+    turn_start = int(store.turn_offsets[episode_index])
+    turn_end = int(store.turn_offsets[episode_index + 1])
     return TrajectoryEpisode(
         episode_id=int(store.episode_ids[episode_index]),
         seed=int(store.episode_seeds[episode_index]),
@@ -697,6 +821,10 @@ def _episode_from_store(
         winner=int(store.episode_winners[episode_index]),
         end_reason=int(store.episode_end_reasons[episode_index]),
         territory_scores=(int(territory_score_row[0]), int(territory_score_row[1])),
+        turn_players=store.turn_players[turn_start:turn_end].copy(),
+        turn_actions=store.turn_actions[turn_start:turn_end].copy(),
+        turn_root_values=store.turn_root_values[turn_start:turn_end].copy(),
+        turn_full_search=store.turn_full_search[turn_start:turn_end].copy(),
     )
 
 
@@ -723,11 +851,10 @@ def _concat_many_stores(
         ),
         "territory_scores": np.concatenate([store.territory_scores for store in stores]),
         "episode_offsets": _concat_many_offsets([store.episode_offsets for store in stores]),
+        "turn_offsets": _concat_many_offsets([store.turn_offsets for store in stores]),
         "timesteps": np.concatenate([store.timesteps for store in stores]),
         "players": np.concatenate([store.players for store in stores]),
         "actions": np.concatenate([store.actions for store in stores]),
-        "features": np.concatenate([store.features for store in stores]),
-        "legal_masks": np.concatenate([store.legal_masks for store in stores]),
         "policy_targets": np.concatenate([store.policy_targets for store in stores]),
         "winners": np.concatenate([store.winners for store in stores]),
         "terminals": np.concatenate([store.terminals for store in stores]),
@@ -746,7 +873,13 @@ def _concat_many_stores(
                 ],
             ]
         ),
+        "turn_players": np.concatenate([store.turn_players for store in stores]),
+        "turn_actions": np.concatenate([store.turn_actions for store in stores]),
+        "turn_root_values": np.concatenate([store.turn_root_values for store in stores]),
+        "turn_full_search": np.concatenate([store.turn_full_search for store in stores]),
     }
+    _add_optional_required_concat_many(payload, stores, "features", FEATURE_SHAPE, np.float32)
+    _add_optional_required_concat_many(payload, stores, "legal_masks", (ACTION_SPACE,), np.bool_)
     _add_search_config_hashes(
         payload,
         [
@@ -818,6 +951,29 @@ def _add_optional_concat_many(
     payload[f"{key}_present"] = present
 
 
+def _add_optional_required_concat_many(
+    payload: dict[str, np.ndarray],
+    stores: Sequence[TrajectoryReplayStore],
+    key: str,
+    shape: tuple[int, ...],
+    dtype: Any,
+) -> None:
+    if not any(getattr(store, key) is not None for store in stores):
+        return
+    if not all(len(store) == 0 or getattr(store, key) is not None for store in stores):
+        return
+    total_rows = sum(len(store) for store in stores)
+    values = np.zeros((total_rows, *shape), dtype=dtype)
+    offset = 0
+    for store in stores:
+        store_rows = len(store)
+        store_values = getattr(store, key)
+        if store_values is not None:
+            values[offset : offset + store_rows] = store_values
+        offset += store_rows
+    payload[key] = values
+
+
 def _evict_to_capacity(store: TrajectoryReplayStore) -> TrajectoryReplayStore:
     if len(store) <= store.capacity:
         return store
@@ -830,6 +986,7 @@ def _evict_to_capacity(store: TrajectoryReplayStore) -> TrajectoryReplayStore:
     if drop_episodes == 0:
         return store
     transition_start = int(store.episode_offsets[drop_episodes])
+    turn_start = int(store.turn_offsets[drop_episodes])
     payload = store.to_payload()
     for key in (
         "episode_ids",
@@ -840,6 +997,7 @@ def _evict_to_capacity(store: TrajectoryReplayStore) -> TrajectoryReplayStore:
     ):
         payload[key] = payload[key][drop_episodes:]
     payload["episode_offsets"] = payload["episode_offsets"][drop_episodes:] - transition_start
+    payload["turn_offsets"] = payload["turn_offsets"][drop_episodes:] - turn_start
     for key in (
         "timesteps",
         "players",
@@ -862,6 +1020,8 @@ def _evict_to_capacity(store: TrajectoryReplayStore) -> TrajectoryReplayStore:
     ):
         if key in payload:
             payload[key] = payload[key][transition_start:]
+    for key in ("turn_players", "turn_actions", "turn_root_values", "turn_full_search"):
+        payload[key] = payload[key][turn_start:]
     return TrajectoryReplayStore.from_payload(payload)
 
 
@@ -896,6 +1056,35 @@ def _load_sampling_priorities(data: Any, transition_count: int) -> np.ndarray:
     if priorities.shape != (transition_count,):
         raise ValueError("trajectory replay sampling_priorities length mismatch")
     return priorities
+
+
+def _load_turn_timeline(
+    data: Any,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    if "turn_offsets" not in data:
+        players = np.asarray(data["players"], dtype=np.int64)
+        actions = np.asarray(data["actions"], dtype=np.int64)
+        root_values = np.asarray(data["root_values"], dtype=np.float32)
+        full_search = np.ones((players.shape[0],), dtype=np.bool_)
+        return (
+            np.asarray(data["episode_offsets"], dtype=np.int64),
+            players,
+            actions,
+            root_values,
+            full_search,
+        )
+    offsets = np.asarray(data["turn_offsets"], dtype=np.int64)
+    players = np.asarray(data["turn_players"], dtype=np.int64)
+    actions = np.asarray(data["turn_actions"], dtype=np.int64)
+    root_values = np.asarray(data["turn_root_values"], dtype=np.float32)
+    full_search = np.asarray(data["turn_full_search"], dtype=np.bool_)
+    if offsets.size == 0 or int(offsets[0]) != 0 or int(offsets[-1]) != players.shape[0]:
+        raise ValueError("trajectory replay turn_offsets are inconsistent")
+    if not (
+        players.shape == actions.shape == root_values.shape == full_search.shape
+    ):
+        raise ValueError("trajectory replay per-turn array length mismatch")
+    return offsets, players, actions, root_values, full_search
 
 
 def _load_search_config_hash_encoding(
@@ -938,6 +1127,31 @@ def _stack_or_empty(
     if not arrays:
         return np.empty((0, *shape), dtype=dtype)
     return np.stack(arrays, axis=0).astype(dtype)
+
+
+def _concat_1d_or_empty(arrays: Sequence[np.ndarray], *, dtype: Any) -> np.ndarray:
+    if not arrays:
+        return np.empty((0,), dtype=dtype)
+    return np.concatenate(arrays).astype(dtype, copy=False)
+
+
+def _add_required_optional_stack(
+    payload: dict[str, np.ndarray],
+    key: str,
+    arrays: Sequence[np.ndarray | None],
+    shape: tuple[int, ...],
+    dtype: Any,
+) -> None:
+    present = [array is not None for array in arrays]
+    if not any(present):
+        return
+    if not all(present):
+        raise ValueError(f"trajectory {key} must be present for all transitions or none")
+    payload[key] = _stack_or_empty(
+        [array for array in arrays if array is not None],
+        shape=shape,
+        dtype=dtype,
+    )
 
 
 def _add_optional_2d(
@@ -999,7 +1213,6 @@ def _validate_payload_lengths(data: Any, transition_count: int) -> None:
         "timesteps",
         "players",
         "actions",
-        "legal_masks",
         "policy_targets",
         "winners",
         "terminals",

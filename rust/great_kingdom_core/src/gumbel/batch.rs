@@ -595,7 +595,7 @@ impl GumbelSelfPlayBatch {
                             "cannot apply action at game {game_index}, offset {action_offset}: game is terminal"
                         ));
                     }
-                    state.apply(action).map_err(|err| {
+                    state.apply_trusted_search_action(action).map_err(|err| {
                         format!(
                             "invalid action at game {game_index}, offset {action_offset}: {err:?}"
                         )

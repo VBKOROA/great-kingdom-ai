@@ -32,8 +32,8 @@ class TrajectoryTransition:
     episode_id: int
     timestep: int
     player: int
-    features: np.ndarray
-    legal_mask: np.ndarray
+    features: np.ndarray | None
+    legal_mask: np.ndarray | None
     action: int
     policy_target: np.ndarray
     root_policy_logits: np.ndarray | None = None
@@ -55,3 +55,7 @@ class TrajectoryEpisode:
     winner: int
     end_reason: int
     territory_scores: tuple[int, int]
+    turn_players: np.ndarray | None = None
+    turn_actions: np.ndarray | None = None
+    turn_root_values: np.ndarray | None = None
+    turn_full_search: np.ndarray | None = None

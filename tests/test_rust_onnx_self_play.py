@@ -4,6 +4,7 @@ from pathlib import Path
 
 import great_kingdom_ai.rust_onnx_self_play as rust_self_play_module
 import numpy as np
+import pytest
 from great_kingdom_ai.features import ACTION_SPACE, FEATURE_CHANNELS, PASS_ACTION
 from great_kingdom_ai.replay import TrajectoryReplayStore
 from great_kingdom_ai.rust_onnx_self_play import RustOnnxSelfPlayConfig
@@ -18,6 +19,9 @@ class FakeGumbelResult:
         policy = [0.0] * ACTION_SPACE
         policy[PASS_ACTION] = 1.0
         return policy
+
+    def root_value(self) -> float:
+        return 0.25
 
 
 class FakeEvalRequest:
@@ -177,8 +181,14 @@ def test_rust_onnx_trajectory_keeps_only_full_playout_cap_turns(
     assert len(samples) == 1
     assert len(episodes) == 1
     assert len(episodes[0].transitions) == 1
-    assert episodes[0].transitions[0].timestep == 0
-    assert episodes[0].transitions[0].features[0, 0, 0] == np.float32(2.0)
+    assert episodes[0].transitions[0].timestep == 1
+    assert episodes[0].transitions[0].features is None
+    assert episodes[0].transitions[0].legal_mask is None
+    assert episodes[0].transitions[0].root_value == np.float32(0.25)
+    assert episodes[0].turn_full_search is not None
+    assert episodes[0].turn_full_search.tolist() == [False, True, False]
+    assert episodes[0].turn_root_values is not None
+    assert episodes[0].turn_root_values.tolist() == pytest.approx([0.25, 0.25, 0.25])
     batch = FakeRustSelfPlayBatch.last_instance
     assert batch is not None
     assert batch.active_eval_request_calls == 0
@@ -187,3 +197,5 @@ def test_rust_onnx_trajectory_keeps_only_full_playout_cap_turns(
 
     store = TrajectoryReplayStore.from_episodes(8, episodes)
     assert len(store) == 1
+    assert store.features is None
+    assert store.legal_masks is None

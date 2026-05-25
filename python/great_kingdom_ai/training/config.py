@@ -34,6 +34,9 @@ class TrainingConfig:
     amp: bool = False
     recent_sample_fraction: float = 0.0
     recent_sample_window: int = 0
+    bootstrap_td_steps: int = 0
+    gamma: float = 1.0
+    value_bootstrap_source: str = "terminal"
     priority_enabled: bool = False
     priority_alpha: float = 0.6
     priority_beta: float = 0.4

@@ -288,7 +288,12 @@ impl GumbelSearch {
             selected_action: improved.selected_action,
             policy_target: improved.policy_target,
             visit_counts: self.nodes[root_index].visit_counts(),
-            root_value: root_search_value(&self.nodes[root_index]),
+            root_value: root_search_value(
+                &self.nodes[root_index],
+                legal_actions,
+                log_priors,
+                &improved.policy_target,
+            ),
         }
     }
 
@@ -419,7 +424,12 @@ impl GumbelSearch {
             selected_action: improved.selected_action,
             policy_target: improved.policy_target,
             visit_counts: self.nodes[root_index].visit_counts(),
-            root_value: root_search_value(&self.nodes[root_index]),
+            root_value: root_search_value(
+                &self.nodes[root_index],
+                legal_actions,
+                log_priors,
+                &improved.policy_target,
+            ),
         })
     }
 

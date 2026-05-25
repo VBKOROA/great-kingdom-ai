@@ -13,7 +13,6 @@ from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.replay import (
     TrajectoryEpisode,
     TrajectoryTransition,
-    legal_mask_from_features,
 )
 from great_kingdom_ai.replay.sample import ReplaySample
 from great_kingdom_ai.self_play import GameLog, MoveLog, SelfPlayConfig
@@ -163,6 +162,7 @@ def _run_one_batch(
     trajectory_rows: list[list[tuple[int, int, np.ndarray, int, np.ndarray, np.ndarray | None]]] = [
         [] for _ in seeds
     ]
+    turn_rows: list[list[tuple[int, int, int, float, bool]]] = [[] for _ in seeds]
 
     for turn in range(config.self_play.max_turns):
         active_indexes = [int(index) for index in batch.active_game_indexes()]
@@ -215,6 +215,16 @@ def _run_one_batch(
                 continue
             policy = np.asarray(result.policy_target(), dtype=np.float32)
             action = int(result.selected_action())
+            root_value = _root_value_from_result(result)
+            turn_rows[game_index].append(
+                (
+                    turn,
+                    players[game_index],
+                    action,
+                    root_value,
+                    use_full_by_game[game_index],
+                )
+            )
             if use_full_by_game[game_index]:
                 pending[game_index].append(
                     (
@@ -286,17 +296,17 @@ def _run_one_batch(
             transitions.append(
                 TrajectoryTransition(
                     episode_id=seed,
-                    timestep=index,
+                    timestep=_turn,
                     player=player,
-                    features=features,
-                    legal_mask=legal_mask_from_features(features),
+                    features=None,
+                    legal_mask=None,
                     action=action,
                     policy_target=policy,
                     root_policy_logits=root_policy_logits,
-                    root_value=None,
-                    next_features=next_features,
+                    root_value=_root_value_for_turn(turn_rows[game_index], _turn),
+                    next_features=None,
                     winner=int(winner),
-                    terminal=index == len(rows) - 1,
+                    terminal=_turn == turn_rows[game_index][-1][0],
                     model_version=config.model_version,
                     search_config_hash="",
                     created_iteration=config.created_iteration,
@@ -311,6 +321,22 @@ def _run_one_batch(
                     winner=int(winner),
                     end_reason=int(end_reason),
                     territory_scores=territory_scores[game_index],
+                    turn_players=np.asarray(
+                        [row[1] for row in turn_rows[game_index]],
+                        dtype=np.int64,
+                    ),
+                    turn_actions=np.asarray(
+                        [row[2] for row in turn_rows[game_index]],
+                        dtype=np.int64,
+                    ),
+                    turn_root_values=np.asarray(
+                        [row[3] for row in turn_rows[game_index]],
+                        dtype=np.float32,
+                    ),
+                    turn_full_search=np.asarray(
+                        [row[4] for row in turn_rows[game_index]],
+                        dtype=np.bool_,
+                    ),
                 )
             )
     return logs, samples, episodes
@@ -398,6 +424,26 @@ def _search_active_with_root_policy_logits(
         rows,
         selected_game_indexes=root_logit_game_indexes,
     )
+
+
+def _root_value_from_result(result: Any) -> float:
+    root_value = getattr(result, "root_value", None)
+    if root_value is None:
+        raise RuntimeError("Gumbel result does not expose root_value; rebuild great_kingdom_core")
+    value = float(root_value())
+    if not np.isfinite(value) or value < -1.0 or value > 1.0:
+        raise ValueError("Gumbel root_value must be finite and in [-1, 1]")
+    return value
+
+
+def _root_value_for_turn(
+    rows: list[tuple[int, int, int, float, bool]],
+    turn: int,
+) -> float:
+    for row_turn, _player, _action, root_value, _full in rows:
+        if row_turn == turn:
+            return root_value
+    raise ValueError(f"missing root value for turn {turn}")
 
 
 def _feature_rows_by_game(batch: Any, game_indexes: list[int]) -> dict[int, np.ndarray]:

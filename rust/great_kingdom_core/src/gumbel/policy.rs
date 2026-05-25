@@ -6,7 +6,7 @@ use crate::game::ACTION_SPACE;
 
 use super::{
     node::GumbelNode,
-    selection::{completed_q_values, mixed_value, prior_probabilities, transformed_completed_q},
+    selection::{completed_q_values, prior_probabilities, transformed_completed_q},
 };
 
 pub(crate) const PRIOR_EPSILON: f32 = 1.0e-8;
@@ -205,14 +205,30 @@ pub(crate) fn root_policy_target_logits(
 }
 
 #[must_use]
-pub(crate) fn root_search_value(root: &GumbelNode) -> f32 {
-    let edge_stats = root
-        .edges
+pub(crate) fn root_search_value(
+    root: &GumbelNode,
+    legal_actions: &[usize],
+    log_priors: &[f32; ACTION_SPACE],
+    policy_target: &[f32; ACTION_SPACE],
+) -> f32 {
+    let edge_stats = legal_actions
         .iter()
-        .map(|edge| edge.inner_stats())
+        .map(|action| {
+            root.edge_index_for_action(*action).map_or_else(
+                || super::selection::InnerEdgeStats::new(*action, log_priors[*action], 0, 0.0),
+                |edge_index| root.edges[edge_index].inner_stats(),
+            )
+        })
         .collect::<Vec<_>>();
     let prior_probs = prior_probabilities(&edge_stats);
-    mixed_value(&edge_stats, &prior_probs, root.node_value)
+    let completed_q = completed_q_values(&edge_stats, &prior_probs, root.node_value);
+    let value = legal_actions
+        .iter()
+        .zip(completed_q)
+        .map(|(action, q)| policy_target[*action] * q)
+        .sum::<f32>();
+
+    value.clamp(-1.0, 1.0)
 }
 
 fn validate_policy_len(row: &[f32], name: &str) -> PyResult<()> {
@@ -238,7 +254,7 @@ fn validate_legal_values(legal_actions: &[usize], row: &[f32], name: &str) -> Py
 mod tests {
     use super::{
         log_priors_from_logits, log_priors_from_priors, root_improved_policy_target,
-        root_selected_action,
+        root_search_value, root_selected_action,
     };
     use crate::{
         game::{ACTION_SPACE, CENTER_INDEX, GameState},
@@ -394,6 +410,64 @@ mod tests {
         root.edges[1].visit_count = 2;
 
         assert_eq!(root_selected_action(&root, 1.0, 1.0), Some(1));
+    }
+
+    #[test]
+    fn root_search_value_uses_improved_policy_completed_q_expectation() {
+        let candidates = [
+            RootCandidate {
+                action: 0,
+                log_prior: 0.5_f32.ln(),
+                gumbel: 0.0,
+                score: 0.5_f32.ln(),
+            },
+            RootCandidate {
+                action: 1,
+                log_prior: 0.5_f32.ln(),
+                gumbel: 0.0,
+                score: 0.5_f32.ln(),
+            },
+        ];
+        let mut root = GumbelNode::root_from_candidates(&GameState::new(), &candidates, 1.0);
+        root.edges[0].visit_count = 3;
+        root.edges[0].value_sum = -3.0;
+        root.edges[1].visit_count = 1;
+        root.edges[1].value_sum = 1.0;
+        let legal = [0, 1];
+        let mut log_priors = [f32::NEG_INFINITY; ACTION_SPACE];
+        log_priors[0] = 0.5_f32.ln();
+        log_priors[1] = 0.5_f32.ln();
+        let mut policy_target = [0.0; ACTION_SPACE];
+        policy_target[0] = 0.25;
+        policy_target[1] = 0.75;
+
+        assert_close(
+            root_search_value(&root, &legal, &log_priors, &policy_target),
+            0.5,
+        );
+    }
+
+    #[test]
+    fn root_search_value_uses_mixed_value_for_unvisited_completed_q() {
+        let candidates = [RootCandidate {
+            action: 0,
+            log_prior: 0.5_f32.ln(),
+            gumbel: 0.0,
+            score: 0.5_f32.ln(),
+        }];
+        let root = GumbelNode::root_from_candidates(&GameState::new(), &candidates, 0.25);
+        let legal = [0, 1];
+        let mut log_priors = [f32::NEG_INFINITY; ACTION_SPACE];
+        log_priors[0] = 0.5_f32.ln();
+        log_priors[1] = 0.5_f32.ln();
+        let mut policy_target = [0.0; ACTION_SPACE];
+        policy_target[0] = 0.25;
+        policy_target[1] = 0.75;
+
+        assert_close(
+            root_search_value(&root, &legal, &log_priors, &policy_target),
+            0.25,
+        );
     }
 
     #[test]

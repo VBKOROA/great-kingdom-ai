@@ -131,7 +131,12 @@ def run_learner_v2_once(
             cycle_seconds=cycle_seconds,
         )
 
-    dataset = TrajectoryReplayDataset(replay)
+    dataset = TrajectoryReplayDataset(
+        replay,
+        bootstrap_td_steps=train_config.bootstrap_td_steps,
+        gamma=train_config.gamma,
+        value_bootstrap_source=train_config.value_bootstrap_source,
+    )
     candidate_checkpoint = _candidate_checkpoint(config)
     training_latest = _training_latest_checkpoint(config)
     kwargs = _train_checkpoint_kwargs(

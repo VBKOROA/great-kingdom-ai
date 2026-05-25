@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 
+import great_kingdom_ai.replay.dataset as dataset_module
 import numpy as np
 import pytest
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS, PASS_ACTION
@@ -96,6 +97,136 @@ def test_trajectory_replay_dataset_samples_terminal_targets_with_recency() -> No
     assert batch.policies.shape == (2, ACTION_SPACE)
     assert batch.values.tolist() == pytest.approx([-1.0, 1.0])
     assert batch.legal_masks.shape == (2, ACTION_SPACE)
+
+
+def test_trajectory_replay_dataset_bootstraps_from_episode_turn_root_values() -> None:
+    transition = make_transition(
+        episode_id=0,
+        timestep=1,
+        player=2,
+        action=PASS_ACTION,
+        winner=1,
+    )
+    episode = TrajectoryEpisode(
+        episode_id=0,
+        seed=0,
+        transitions=(transition,),
+        winner=1,
+        end_reason=1,
+        territory_scores=(1, 0),
+        turn_players=np.asarray([1, 2, 1, 2], dtype=np.int64),
+        turn_actions=np.asarray([1, PASS_ACTION, 2, PASS_ACTION], dtype=np.int64),
+        turn_root_values=np.asarray([0.1, 0.2, 0.7, -0.4], dtype=np.float32),
+        turn_full_search=np.asarray([False, True, False, False], dtype=np.bool_),
+    )
+    store = TrajectoryReplayStore.from_episodes(8, (episode,))
+    dataset = TrajectoryReplayDataset(
+        store,
+        bootstrap_td_steps=2,
+        value_bootstrap_source="mcts_root",
+    )
+
+    batch = dataset.sample_arrays(1, random.Random(0))
+
+    assert batch.indexes.tolist() == [0]
+    assert batch.values.tolist() == pytest.approx([-0.4])
+
+
+def test_trajectory_replay_dataset_reconstructs_missing_features_from_turn_actions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeState:
+        def __init__(self) -> None:
+            self.actions: list[int] = []
+
+        def is_terminal(self) -> bool:
+            return False
+
+        def apply_action(self, action: int) -> None:
+            self.actions.append(action)
+
+        def feature_planes(self) -> list[float]:
+            row = [0.0] * (FEATURE_CHANNELS * BOARD_SIZE * BOARD_SIZE)
+            row[0] = float(len(self.actions))
+            return row
+
+        def legal_mask(self) -> list[bool]:
+            mask = [False] * ACTION_SPACE
+            mask[PASS_ACTION] = True
+            return mask
+
+        def current_player(self) -> int:
+            return 1 if len(self.actions) % 2 == 0 else 2
+
+    class FakeCore:
+        GameState = FakeState
+
+    monkeypatch.setattr(dataset_module, "import_core", lambda _context: FakeCore)
+    policy = make_policy(PASS_ACTION)
+    transition = TrajectoryTransition(
+        episode_id=0,
+        timestep=1,
+        player=2,
+        features=None,
+        legal_mask=None,
+        action=PASS_ACTION,
+        policy_target=policy,
+        root_value=0.2,
+        winner=1,
+        terminal=True,
+    )
+    episode = TrajectoryEpisode(
+        episode_id=0,
+        seed=0,
+        transitions=(transition,),
+        winner=1,
+        end_reason=1,
+        territory_scores=(1, 0),
+        turn_players=np.asarray([1, 2], dtype=np.int64),
+        turn_actions=np.asarray([1, PASS_ACTION], dtype=np.int64),
+        turn_root_values=np.asarray([0.1, 0.2], dtype=np.float32),
+        turn_full_search=np.asarray([False, True], dtype=np.bool_),
+    )
+    store = TrajectoryReplayStore.from_episodes(8, (episode,))
+    assert store.features is None
+    dataset = TrajectoryReplayDataset(store)
+
+    batch = dataset.sample_arrays(1, random.Random(0))
+
+    assert batch.features[0, 0, 0, 0] == np.float32(1.0)
+    assert batch.legal_masks[0, PASS_ACTION]
+
+
+def test_trajectory_replay_dataset_uses_terminal_when_bootstrap_exceeds_game() -> None:
+    transition = make_transition(
+        episode_id=0,
+        timestep=2,
+        player=1,
+        action=PASS_ACTION,
+        winner=1,
+    )
+    episode = TrajectoryEpisode(
+        episode_id=0,
+        seed=0,
+        transitions=(transition,),
+        winner=1,
+        end_reason=1,
+        territory_scores=(1, 0),
+        turn_players=np.asarray([1, 2, 1], dtype=np.int64),
+        turn_actions=np.asarray([1, 2, PASS_ACTION], dtype=np.int64),
+        turn_root_values=np.asarray([0.1, 0.2, 0.3], dtype=np.float32),
+        turn_full_search=np.asarray([False, False, True], dtype=np.bool_),
+    )
+    store = TrajectoryReplayStore.from_episodes(8, (episode,))
+    dataset = TrajectoryReplayDataset(
+        store,
+        bootstrap_td_steps=5,
+        value_bootstrap_source="mcts_root",
+    )
+
+    batch = dataset.sample_arrays(1, random.Random(0))
+
+    assert batch.values.tolist() == pytest.approx([1.0])
 
 
 def test_trajectory_replay_dataset_supports_priority_sampling() -> None:

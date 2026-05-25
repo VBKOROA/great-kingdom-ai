@@ -136,6 +136,6 @@ pub(crate) fn finish_root_result(
         selected_action: improved.selected_action,
         policy_target: improved.policy_target,
         visit_counts: root.visit_counts(),
-        root_value: root_search_value(root),
+        root_value: root_search_value(root, legal_actions, log_priors, &improved.policy_target),
     }
 }
