@@ -100,3 +100,14 @@ def _copy_file_buffered(source: Path, destination: Path) -> None:
                 if not read:
                     break
                 destination_file.write(view[:read])
+
+
+def copy_file_atomic(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f"{destination.name}.tmp")
+    try:
+        _copy_file_buffered(source, temporary)
+        temporary.replace(destination)
+    finally:
+        if temporary.exists():
+            temporary.unlink()

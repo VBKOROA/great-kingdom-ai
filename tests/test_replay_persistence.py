@@ -67,3 +67,16 @@ def test_save_npz_atomic_can_stage_archive_in_temp_dir(tmp_path: Path) -> None:
     assert not list(temp_dir.iterdir())
     with np.load(destination) as data:
         assert data["features"].tolist() == [0.0, 1.0, 2.0, 3.0]
+
+
+def test_copy_file_atomic_replaces_destination(tmp_path: Path) -> None:
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "backup" / "replay.bin"
+    source.write_bytes(b"new replay")
+    destination.parent.mkdir()
+    destination.write_bytes(b"old replay")
+
+    persistence.copy_file_atomic(source, destination)
+
+    assert destination.read_bytes() == b"new replay"
+    assert not destination.with_name("replay.bin.tmp").exists()

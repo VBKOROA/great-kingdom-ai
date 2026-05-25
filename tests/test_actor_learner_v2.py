@@ -1287,3 +1287,77 @@ def test_learner_v2_loop_defers_replay_save_until_training(
     assert [record.status for record in records] == ["imported", "imported"]
     assert summaries[0]["trained"] is False
     assert summaries[1]["trained"] is True
+
+
+def test_learner_v2_loop_uses_local_replay_and_async_backup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_actor_v2_once(
+        ActorV2Config(
+            work_dir=tmp_path,
+            onnx_model_path=tmp_path / "model.onnx",
+            model_version="ema",
+            games=2,
+            seed_start=0,
+            onnx_device="cpu",
+        ),
+        runner=fake_actor_runner,
+        printer=PipelinePrinter(enabled=False),
+    )
+    train_rows: list[int] = []
+    copies: list[tuple[Path, Path]] = []
+    original_copy_file_atomic = async_v2_cli_module.copy_file_atomic
+
+    def record_copy(source: Path, destination: Path) -> None:
+        copies.append((Path(source), Path(destination)))
+        original_copy_file_atomic(source, destination)
+
+    def fake_train(
+        replay: Any,
+        config: TrainingConfig,
+        *,
+        checkpoint_path: str | Path,
+        resume_path: str | Path | None,
+        bootstrap_weights_path: str | Path | None = None,
+        log_every: int,
+        progress_callback: Any = None,
+    ) -> FakeTrainSummary:
+        del config, resume_path, bootstrap_weights_path, log_every, progress_callback
+        train_rows.append(len(replay))
+        destination = Path(checkpoint_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("candidate", encoding="utf-8")
+        return FakeTrainSummary(destination)
+
+    monkeypatch.setattr(async_v2_cli_module, "copy_file_atomic", record_copy)
+    monkeypatch.setattr(async_v2_cli_module, "train_from_replay", fake_train)
+
+    summaries = _run_learner_cli(
+        LearnerV2Config(
+            work_dir=tmp_path,
+            replay_capacity=16,
+            min_replay_transitions=1,
+            export_onnx=False,
+            train_reuse_factor=16.0,
+            replay_local_dir=tmp_path / "local-replay",
+        ),
+        TrainingConfig(batch_size=2, steps=64, device="cpu"),
+        argparse.Namespace(
+            loop=True,
+            max_cycles=1,
+            sleep_seconds=0.0,
+            json=True,
+            override_optimizer_lr=None,
+        ),
+    )
+
+    local_replay = tmp_path / "local-replay" / "trajectory-replay.npz"
+    network_replay = tmp_path / "replay" / "trajectory-replay.npz"
+    records = load_v2_shard_records(tmp_path / "shards" / "metadata.jsonl")
+    assert summaries[0]["trained"] is True
+    assert train_rows == [4]
+    assert local_replay.is_file()
+    assert network_replay.is_file()
+    assert any(destination == network_replay for _source, destination in copies)
+    assert [record.status for record in records] == ["imported"]

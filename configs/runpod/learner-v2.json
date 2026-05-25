@@ -17,5 +17,6 @@
   "prune_artifacts": true,
   "prune_keep_imported_shards": 2,
   "train_reuse_factor": 10.0,
-  "replay_save_temp_dir": "/tmp/great-kingdom-ai/replay-save"
+  "replay_save_temp_dir": "/tmp/great-kingdom-ai/replay-save",
+  "replay_local_dir": "/tmp/great-kingdom-ai/train-v6/replay"
 }
