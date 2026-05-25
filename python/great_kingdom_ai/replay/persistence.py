@@ -6,10 +6,11 @@ import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from shutil import copyfile
 from typing import Any
 
 import numpy as np
+
+COPY_BUFFER_BYTES = 64 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -69,7 +70,7 @@ def save_npz_atomic(
         copy_seconds = 0.0
         if archive_path != temporary:
             copy_started_at = time.monotonic()
-            copyfile(archive_path, temporary)
+            _copy_file_buffered(archive_path, temporary)
             copy_seconds = time.monotonic() - copy_started_at
         replace_started_at = time.monotonic()
         temporary.replace(destination)
@@ -87,3 +88,15 @@ def save_npz_atomic(
             temporary.unlink()
         if archive_path != temporary and archive_path.exists():
             archive_path.unlink()
+
+
+def _copy_file_buffered(source: Path, destination: Path) -> None:
+    buffer = bytearray(COPY_BUFFER_BYTES)
+    view = memoryview(buffer)
+    with source.open("rb", buffering=0) as source_file:
+        with destination.open("wb", buffering=0) as destination_file:
+            while True:
+                read = source_file.readinto(buffer)
+                if not read:
+                    break
+                destination_file.write(view[:read])
