@@ -45,5 +45,25 @@ def test_save_npz_atomic_write_seconds_excludes_archive_close(
     assert stats.array_stats[0].seconds == 2.0
     assert stats.write_seconds == 6.0
     assert stats.close_seconds == 6.0
+    assert stats.copy_seconds == 0.0
     assert stats.replace_seconds == 3.0
     assert stats.total_seconds == 18.0
+
+
+def test_save_npz_atomic_can_stage_archive_in_temp_dir(tmp_path: Path) -> None:
+    destination = tmp_path / "network" / "replay.npz"
+    temp_dir = tmp_path / "local-tmp"
+    destination.parent.mkdir()
+
+    stats = persistence.save_npz_atomic(
+        destination,
+        {"features": np.arange(4, dtype=np.float32)},
+        compressed=False,
+        temp_dir=temp_dir,
+    )
+
+    assert destination.is_file()
+    assert stats.copy_seconds >= 0.0
+    assert not list(temp_dir.iterdir())
+    with np.load(destination) as data:
+        assert data["features"].tolist() == [0.0, 1.0, 2.0, 3.0]

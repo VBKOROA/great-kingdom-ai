@@ -367,7 +367,12 @@ def _persist_imported_replay(
         before = len(replay)
         replay.compact_to_capacity(config.replay_capacity)
         printer.metric("compacted replay rows", f"{before}->{len(replay)}")
-    _save_replay_with_timing(replay, paths["replay_path"], printer=printer)
+    _save_replay_with_timing(
+        replay,
+        paths["replay_path"],
+        config=config,
+        printer=printer,
+    )
     for shard_id, stats, _replay_transitions in imported_events:
         _append_shard_import_event(
             paths["metadata_path"],
@@ -475,16 +480,24 @@ def _save_replay_with_timing(
     replay: TrajectoryReplayStore,
     path: Path,
     *,
+    config: LearnerV2Config,
     printer: PipelinePrinter,
 ) -> float:
     printer.step(f"saving replay -> {path}")
+    if config.replay_save_temp_dir is not None:
+        printer.metric("replay save temp dir", config.replay_save_temp_dir)
     started_at = time.monotonic()
-    save_stats = replay.save(path, compressed=False)
+    save_stats = replay.save(
+        path,
+        compressed=False,
+        temp_dir=config.replay_save_temp_dir,
+    )
     seconds = time.monotonic() - started_at
     printer.done(
         f"saved replay: file={_format_bytes(path.stat().st_size)}, "
         f"write={save_stats.write_seconds:.2f}s, "
         f"close={save_stats.close_seconds:.2f}s, "
+        f"copy={save_stats.copy_seconds:.2f}s, "
         f"replace={save_stats.replace_seconds:.2f}s, "
         f"total={seconds:.2f}s, slowest={_format_slowest_npz_writes(save_stats)}"
     )

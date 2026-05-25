@@ -16,5 +16,6 @@
   "onnx_prefer_ema": false,
   "prune_artifacts": true,
   "prune_keep_imported_shards": 2,
-  "train_reuse_factor": 10.0
+  "train_reuse_factor": 10.0,
+  "replay_save_temp_dir": "/tmp/great-kingdom-ai/replay-save"
 }

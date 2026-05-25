@@ -49,6 +49,7 @@ class LearnerV2Config:
     prune_keep_imported_shards: int = 0
     train_reuse_factor: float = 16.0
     defer_replay_save_until_train: bool = True
+    replay_save_temp_dir: Path | None = None
 
 @dataclass(frozen=True)
 class FactoryInitV2Config:
@@ -147,6 +148,7 @@ def load_learner_v2_config(path: str | Path) -> LearnerV2Config:
         "training_latest_checkpoint",
         "onnx_output_path",
         "ema_onnx_output_path",
+        "replay_save_temp_dir",
     ):
         if data.get(key) is not None:
             data[key] = Path(data[key])

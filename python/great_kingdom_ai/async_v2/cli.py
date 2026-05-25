@@ -102,6 +102,7 @@ def build_learner_v2_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prune-artifacts", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--prune-keep-imported-shards", type=int, default=None)
     parser.add_argument("--train-reuse-factor", type=float, default=None)
+    parser.add_argument("--replay-save-temp-dir", type=Path, default=None)
     parser.add_argument(
         "--defer-replay-save-until-train",
         action=argparse.BooleanOptionalAction,
@@ -247,6 +248,7 @@ def learner_v2_main() -> NoReturn:
         "prune_keep_imported_shards": args.prune_keep_imported_shards,
         "train_reuse_factor": args.train_reuse_factor,
         "defer_replay_save_until_train": args.defer_replay_save_until_train,
+        "replay_save_temp_dir": args.replay_save_temp_dir,
     }.items():
         if value is not None:
             data[key] = value

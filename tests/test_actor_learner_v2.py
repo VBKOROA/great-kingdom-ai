@@ -529,8 +529,9 @@ def test_learner_v2_marks_shards_imported_only_after_replay_save(
         path: str | Path,
         *,
         compressed: bool = True,
+        temp_dir: str | Path | None = None,
     ) -> None:
-        del self, path, compressed
+        del self, path, compressed, temp_dir
         raise RuntimeError("save failed")
 
     monkeypatch.setattr(TrajectoryReplayStore, "save", fail_save)
@@ -1251,10 +1252,11 @@ def test_learner_v2_loop_defers_replay_save_until_training(
         path: str | Path,
         *,
         compressed: bool = True,
+        temp_dir: str | Path | None = None,
     ) -> Any:
         if Path(path) == tmp_path / "replay" / "trajectory-replay.npz":
             save_rows.append(len(self))
-        return original_save(self, path, compressed=compressed)
+        return original_save(self, path, compressed=compressed, temp_dir=temp_dir)
 
     monkeypatch.setattr(async_v2_cli_module.time, "sleep", fake_sleep)
     monkeypatch.setattr(async_v2_cli_module, "train_from_replay", fake_train)
