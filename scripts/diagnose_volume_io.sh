@@ -26,21 +26,17 @@ run_test() {
 
   echo
   echo "-- write + fdatasync --"
-  /usr/bin/time -f "elapsed=%e sec" \
-    dd if=/dev/zero of="$file" bs="$block_bytes" count="$count" conv=fdatasync status=progress
+  dd if=/dev/zero of="$file" bs="$block_bytes" count="$count" conv=fdatasync status=progress
 
   echo
   echo "-- read direct, fallback buffered if unsupported --"
-  if ! /usr/bin/time -f "elapsed=%e sec" \
-    dd if="$file" of=/dev/null bs="$block_bytes" iflag=direct status=progress; then
-    /usr/bin/time -f "elapsed=%e sec" \
-      dd if="$file" of=/dev/null bs="$block_bytes" status=progress
+  if ! dd if="$file" of=/dev/null bs="$block_bytes" iflag=direct status=progress; then
+    dd if="$file" of=/dev/null bs="$block_bytes" status=progress
   fi
 
   echo
   echo "-- overwrite + fdatasync --"
-  /usr/bin/time -f "elapsed=%e sec" \
-    dd if=/dev/zero of="$file" bs="$block_bytes" count="$count" conv=fdatasync status=progress
+  dd if=/dev/zero of="$file" bs="$block_bytes" count="$count" conv=fdatasync status=progress
 
   rm -f "$file"
   trap - RETURN
