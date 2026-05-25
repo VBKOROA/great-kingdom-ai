@@ -48,6 +48,7 @@ class LearnerV2Config:
     prune_artifacts: bool = False
     prune_keep_imported_shards: int = 0
     train_reuse_factor: float = 16.0
+    defer_replay_save_until_train: bool = True
 
 @dataclass(frozen=True)
 class FactoryInitV2Config:

@@ -40,6 +40,7 @@ def save_npz_atomic(
     try:
         archive = zipfile.ZipFile(temporary, mode="w", compression=compression)
         close_started_at: float | None = None
+        write_seconds = 0.0
         try:
             for key, value in payload.items():
                 array = np.asanyarray(value)
@@ -54,10 +55,10 @@ def save_npz_atomic(
                     )
                 )
         finally:
+            write_seconds = time.monotonic() - started_at
             close_started_at = time.monotonic()
             archive.close()
         close_seconds = time.monotonic() - close_started_at
-        write_seconds = time.monotonic() - started_at
         replace_started_at = time.monotonic()
         temporary.replace(destination)
         replace_seconds = time.monotonic() - replace_started_at

@@ -103,6 +103,15 @@ def build_learner_v2_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prune-keep-imported-shards", type=int, default=None)
     parser.add_argument("--train-reuse-factor", type=float, default=None)
     parser.add_argument(
+        "--defer-replay-save-until-train",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "In continuous mode, keep imported shards staged in memory and write the full "
+            "replay only after a training chunk runs."
+        ),
+    )
+    parser.add_argument(
         "--lr-override",
         "--override-optimizer-lr",
         dest="override_optimizer_lr",
@@ -237,6 +246,7 @@ def learner_v2_main() -> NoReturn:
         "prune_artifacts": args.prune_artifacts,
         "prune_keep_imported_shards": args.prune_keep_imported_shards,
         "train_reuse_factor": args.train_reuse_factor,
+        "defer_replay_save_until_train": args.defer_replay_save_until_train,
     }.items():
         if value is not None:
             data[key] = value
@@ -333,11 +343,18 @@ def _run_learner_continuous_cli(
     cycles = args.max_cycles
     cycle = 0
     train_chunks = 0
+    staged_pending: list[Any] = []
+    staged_imported_events: list[tuple[str, Any, int]] = []
+    staged_shard_ids: set[str] = set()
 
     while cycles is None or cycle < cycles:
         cycle_started_at = time.monotonic()
         printer = PipelinePrinter(enabled=not args.json)
-        pending = pending_v2_shards(paths["metadata_path"])
+        pending = [
+            shard
+            for shard in pending_v2_shards(paths["metadata_path"])
+            if shard.shard_id not in staged_shard_ids
+        ]
         imported_transitions = 0
         imported_games = 0
         imported_events: list[tuple[str, Any, int]] = []
@@ -345,6 +362,8 @@ def _run_learner_continuous_cli(
         printer.title("Learner V2 Continuous")
         printer.metric("work dir", config.work_dir)
         printer.metric("pending shards", len(pending))
+        if staged_pending:
+            printer.metric("staged shards", len(staged_pending))
         printer.metric("replay transitions", len(replay))
         printer.metric("train batch", train_config.batch_size)
         printer.metric("max train steps", train_config.steps)
@@ -362,6 +381,9 @@ def _run_learner_continuous_cli(
         imported_games = sum(stats.games for _, stats, _ in imported_events)
 
         if pending:
+            staged_pending.extend(pending)
+            staged_imported_events.extend(imported_events)
+            staged_shard_ids.update(shard.shard_id for shard in pending)
             train_budget_samples += imported_transitions * config.train_reuse_factor
             printer.metric("imported games", imported_games)
             printer.metric("imported rows", imported_transitions)
@@ -442,15 +464,18 @@ def _run_learner_continuous_cli(
                 progress_callback=progress_callback,
             )
             bootstrap_once_pending = False
-            if pending:
+            if staged_pending:
                 _persist_imported_replay(
                     config=config,
                     paths=paths,
                     replay=replay,
-                    pending=pending,
-                    imported_events=imported_events,
+                    pending=staged_pending,
+                    imported_events=staged_imported_events,
                     printer=printer,
                 )
+                staged_pending = []
+                staged_imported_events = []
+                staged_shard_ids.clear()
             resume_optimizer_lr_override = None
             train_budget_samples = max(
                 0.0,
@@ -510,14 +535,22 @@ def _run_learner_continuous_cli(
         else:
             printer.done("waiting for learner work")
 
-        if pending and not trained:
+        if pending and not trained and not config.defer_replay_save_until_train:
             _persist_imported_replay(
                 config=config,
                 paths=paths,
                 replay=replay,
-                pending=pending,
-                imported_events=imported_events,
+                pending=staged_pending,
+                imported_events=staged_imported_events,
                 printer=printer,
+            )
+            staged_pending = []
+            staged_imported_events = []
+            staged_shard_ids.clear()
+        elif pending and not trained:
+            printer.done(
+                "deferred replay save until train: "
+                f"staged_shards={len(staged_pending)}"
             )
         if pending and config.prune_artifacts:
             prune_summary = _prune_learner_artifacts(config=config, printer=printer)

@@ -1192,3 +1192,96 @@ def test_learner_v2_loop_trains_from_imported_transition_budget(
     assert train_steps == [32]
     assert summaries[0]["trained"] is True
     assert summaries[0]["imported_transitions"] == 4
+
+
+def test_learner_v2_loop_defers_replay_save_until_training(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_actor_v2_once(
+        ActorV2Config(
+            work_dir=tmp_path,
+            onnx_model_path=tmp_path / "model.onnx",
+            model_version="ema",
+            games=2,
+            seed_start=0,
+            onnx_device="cpu",
+        ),
+        runner=fake_actor_runner,
+        printer=PipelinePrinter(enabled=False),
+    )
+    train_rows: list[int] = []
+    save_rows: list[int] = []
+    original_save = TrajectoryReplayStore.save
+
+    def fake_sleep(seconds: float) -> None:
+        del seconds
+        run_actor_v2_once(
+            ActorV2Config(
+                work_dir=tmp_path,
+                onnx_model_path=tmp_path / "model.onnx",
+                model_version="ema",
+                games=2,
+                seed_start=2,
+                onnx_device="cpu",
+            ),
+            runner=fake_actor_runner,
+            printer=PipelinePrinter(enabled=False),
+        )
+
+    def fake_train(
+        replay: Any,
+        config: TrainingConfig,
+        *,
+        checkpoint_path: str | Path,
+        resume_path: str | Path | None,
+        bootstrap_weights_path: str | Path | None = None,
+        log_every: int,
+        progress_callback: Any = None,
+    ) -> FakeTrainSummary:
+        del config, resume_path, bootstrap_weights_path, log_every, progress_callback
+        train_rows.append(len(replay))
+        destination = Path(checkpoint_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("candidate", encoding="utf-8")
+        return FakeTrainSummary(destination)
+
+    def count_save(
+        self: TrajectoryReplayStore,
+        path: str | Path,
+        *,
+        compressed: bool = True,
+    ) -> Any:
+        if Path(path) == tmp_path / "replay" / "trajectory-replay.npz":
+            save_rows.append(len(self))
+        return original_save(self, path, compressed=compressed)
+
+    monkeypatch.setattr(async_v2_cli_module.time, "sleep", fake_sleep)
+    monkeypatch.setattr(async_v2_cli_module, "train_from_replay", fake_train)
+    monkeypatch.setattr(TrajectoryReplayStore, "save", count_save)
+
+    summaries = _run_learner_cli(
+        LearnerV2Config(
+            work_dir=tmp_path,
+            replay_capacity=16,
+            min_replay_transitions=1,
+            export_onnx=False,
+            train_reuse_factor=1.0,
+            defer_replay_save_until_train=True,
+        ),
+        TrainingConfig(batch_size=8, steps=64, device="cpu"),
+        argparse.Namespace(
+            loop=True,
+            max_cycles=2,
+            sleep_seconds=0.0,
+            json=True,
+            override_optimizer_lr=None,
+        ),
+    )
+
+    records = load_v2_shard_records(tmp_path / "shards" / "metadata.jsonl")
+    assert train_rows == [8]
+    assert save_rows == [8]
+    assert [record.status for record in records] == ["imported", "imported"]
+    assert summaries[0]["trained"] is False
+    assert summaries[1]["trained"] is True
