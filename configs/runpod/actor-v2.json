@@ -12,7 +12,7 @@
   "self_play": {
     "max_turns": 112,
     "gumbel_simulations": 64,
-    "gumbel_max_considered_actions": 8,
+    "gumbel_max_considered_actions": 16,
     "gumbel_c_visit": 50.0,
     "gumbel_c_scale": 1.0,
     "gumbel_scale": 1.0,
@@ -22,7 +22,7 @@
     "gumbel_seed": 700000,
     "temperature_turns": 0,
     "sampling_temperature": 1.0,
-    "playout_cap_randomization": true,
+    "playout_cap_randomization": false,
     "playout_cap_full_search_fraction": 0.25,
     "playout_cap_full_simulations": 128,
     "playout_cap_fast_simulations": 32,
