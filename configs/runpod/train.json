@@ -23,7 +23,7 @@
   "mask_policy_loss": true,
   "amp": true,
   "recent_sample_fraction": 0.20,
-  "recent_sample_window": 131072,
+  "recent_sample_window": 262144,
   "bootstrap_td_steps": 5,
   "gamma": 1.0,
   "value_bootstrap_source": "mcts_root",
