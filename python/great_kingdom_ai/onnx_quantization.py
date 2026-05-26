@@ -155,9 +155,24 @@ def _calibration_features(
         return _synthetic_calibration_features(sample_count, seed=seed), "synthetic"
 
     path = Path(calibration_features_path)
-    features = _load_feature_array(path)
-    selected = _select_samples(features, sample_count=sample_count, seed=seed)
+    selected = _load_selected_feature_array(path, sample_count=sample_count, seed=seed)
     return selected, str(path)
+
+
+def _load_selected_feature_array(path: Path, *, sample_count: int, seed: int) -> np.ndarray:
+    data = np.load(path)
+    if isinstance(data, np.lib.npyio.NpzFile):
+        with data:
+            if "features" in data:
+                features = _validate_feature_array(data["features"])
+                return _select_samples(features, sample_count=sample_count, seed=seed)
+        return _load_selected_trajectory_replay_features(
+            path,
+            sample_count=sample_count,
+            seed=seed,
+        )
+    features = _validate_feature_array(data)
+    return _select_samples(features, sample_count=sample_count, seed=seed)
 
 
 def _load_feature_array(path: Path) -> np.ndarray:
@@ -178,6 +193,30 @@ def _select_samples(features: np.ndarray, *, sample_count: int, seed: int) -> np
     indexes = rng.choice(feature_array.shape[0], size=sample_count, replace=False)
     indexes.sort()
     return np.ascontiguousarray(feature_array[indexes], dtype=np.float32)
+
+
+def _load_selected_trajectory_replay_features(
+    path: Path,
+    *,
+    sample_count: int,
+    seed: int,
+) -> np.ndarray:
+    from great_kingdom_ai.replay import TrajectoryReplayStore
+    from great_kingdom_ai.replay.dataset import _features_and_masks_for_rows
+
+    replay = TrajectoryReplayStore.load(path)
+    if len(replay) == 0:
+        raise ValueError(f"{path} trajectory replay must contain at least one transition")
+
+    rng = np.random.default_rng(seed)
+    row_count = min(sample_count, len(replay))
+    indexes = rng.choice(len(replay), size=row_count, replace=False)
+    indexes.sort()
+    features, _legal_masks = _features_and_masks_for_rows(
+        replay,
+        np.asarray(indexes, dtype=np.int64),
+    )
+    return _validate_feature_array(features)
 
 
 def _synthetic_calibration_features(sample_count: int, *, seed: int) -> np.ndarray:
