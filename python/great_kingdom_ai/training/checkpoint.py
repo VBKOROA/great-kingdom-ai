@@ -35,6 +35,7 @@ def create_train_state(config: TrainingConfig) -> TrainState:
     torch = _import_torch()
     from great_kingdom_ai.model import create_model
 
+    torch.manual_seed(config.seed)
     _validate_ema_decay(config.ema_decay)
     model = create_model(config.model_preset).to(config.device)
     optimizer = create_optimizer(torch, model, config)

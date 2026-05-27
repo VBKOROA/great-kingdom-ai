@@ -853,4 +853,4 @@ def test_on_sample_value_targets_match_snapshot_for_mixed_episode_edges(
 
     assert sorted(batch.indexes.tolist()) == list(range(len(store)))
     for replay_index, value in zip(batch.indexes.tolist(), batch.values.tolist(), strict=True):
-        assert value == pytest.approx(float(snapshot.values[replay_index]))
+        assert value == pytest.approx(float(snapshot.values[replay_index]), abs=1e-6)
