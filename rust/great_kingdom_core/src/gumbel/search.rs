@@ -830,12 +830,14 @@ pub(crate) fn reserve_path(nodes: &mut [GumbelNode], path: &[(usize, usize)]) {
     if let Some((node_index, edge_index)) = path.last().copied() {
         nodes[node_index].edges[edge_index].pending_evaluation = true;
     }
+    let mut edge_value = -1.0;
     for (node_index, edge_index) in path.iter().rev().copied() {
         nodes[node_index].edges[edge_index].virtual_visit_count = nodes[node_index].edges
             [edge_index]
             .virtual_visit_count
             .saturating_add(1);
-        nodes[node_index].edges[edge_index].virtual_value_sum -= 1.0;
+        nodes[node_index].edges[edge_index].virtual_value_sum += edge_value;
+        edge_value = -edge_value;
     }
 }
 
@@ -843,16 +845,14 @@ pub(crate) fn unreserve_path(nodes: &mut [GumbelNode], path: &[(usize, usize)]) 
     if let Some((node_index, edge_index)) = path.last().copied() {
         nodes[node_index].edges[edge_index].pending_evaluation = false;
     }
+    let mut edge_value = -1.0;
     for (node_index, edge_index) in path.iter().rev().copied() {
-        debug_assert!(
-            nodes[node_index].edges[edge_index].virtual_visit_count > 0,
-            "virtual_visit_count underflow on unreserve"
-        );
         nodes[node_index].edges[edge_index].virtual_visit_count = nodes[node_index].edges
             [edge_index]
             .virtual_visit_count
             .saturating_sub(1);
-        nodes[node_index].edges[edge_index].virtual_value_sum += 1.0;
+        nodes[node_index].edges[edge_index].virtual_value_sum -= edge_value;
+        edge_value = -edge_value;
     }
 }
 
@@ -1300,7 +1300,7 @@ mod tests {
         assert_eq!(nodes[0].edges[0].visit_count, 0);
         assert_eq!(nodes[0].edges[0].value_sum, 0.0);
 
-        // 2. reserve_path applies virtual visits and constant -1.0 virtual value loss
+        // 2. reserve_path applies virtual visits and alternating virtual values
         reserve_path(&mut nodes, &path);
 
         // Last edge in path [(2, 2)] (from leaf parent) gets -1.0 loss
@@ -1308,11 +1308,11 @@ mod tests {
         assert_eq!(nodes[2].edges[2].virtual_value_sum, -1.0);
         assert!(nodes[2].edges[2].pending_evaluation);
 
-        // Second-to-last edge [(1, 1)] gets -1.0 loss
+        // Second-to-last edge [(1, 1)] gets +1.0
         assert_eq!(nodes[1].edges[1].virtual_visit_count, 1);
-        assert_eq!(nodes[1].edges[1].virtual_value_sum, -1.0);
+        assert_eq!(nodes[1].edges[1].virtual_value_sum, 1.0);
 
-        // First edge [(0, 0)] gets -1.0 loss
+        // First edge [(0, 0)] gets -1.0
         assert_eq!(nodes[0].edges[0].virtual_visit_count, 1);
         assert_eq!(nodes[0].edges[0].virtual_value_sum, -1.0);
 
