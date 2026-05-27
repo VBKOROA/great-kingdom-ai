@@ -677,6 +677,7 @@ pub(crate) enum PendingGumbelSimulation {
 
 const INNER_Q_RANGE_EPSILON: f32 = 1.0e-6;
 const INNER_PRIOR_PROB_EPSILON: f32 = 1.0e-8;
+const VIRTUAL_LOSS_VALUE: f32 = 0.0;
 
 fn select_inner_action_index(node: &GumbelNode, c_visit: f32, c_scale: f32) -> Option<usize> {
     if node.edges.is_empty() {
@@ -835,7 +836,7 @@ pub(crate) fn reserve_path(nodes: &mut [GumbelNode], path: &[(usize, usize)]) {
             [edge_index]
             .virtual_visit_count
             .saturating_add(1);
-        nodes[node_index].edges[edge_index].virtual_value_sum -= 1.0;
+        nodes[node_index].edges[edge_index].virtual_value_sum += VIRTUAL_LOSS_VALUE;
     }
 }
 
@@ -852,7 +853,7 @@ pub(crate) fn unreserve_path(nodes: &mut [GumbelNode], path: &[(usize, usize)]) 
             [edge_index]
             .virtual_visit_count
             .saturating_sub(1);
-        nodes[node_index].edges[edge_index].virtual_value_sum += 1.0;
+        nodes[node_index].edges[edge_index].virtual_value_sum -= VIRTUAL_LOSS_VALUE;
     }
 }
 
@@ -942,8 +943,8 @@ fn parse_gumbel_policy_row(row: Vec<f32>, row_index: usize) -> PyResult<[f32; AC
 #[cfg(test)]
 mod tests {
     use super::{
-        GumbelEvalBatch, GumbelSearch, backup_path, reserve_path, select_inner_action_index,
-        unreserve_path,
+        GumbelEvalBatch, GumbelSearch, VIRTUAL_LOSS_VALUE, backup_path, reserve_path,
+        select_inner_action_index, unreserve_path,
     };
     use crate::{
         eval_request::EvalRequest,
@@ -1300,21 +1301,21 @@ mod tests {
         assert_eq!(nodes[0].edges[0].visit_count, 0);
         assert_eq!(nodes[0].edges[0].value_sum, 0.0);
 
-        // 2. reserve_path applies virtual visits and constant -1.0 virtual value loss
+        // 2. reserve_path applies virtual visits and constant virtual value loss
         reserve_path(&mut nodes, &path);
 
-        // Last edge in path [(2, 2)] (from leaf parent) gets -1.0 loss
+        // Last edge in path [(2, 2)] (from leaf parent) gets the virtual loss
         assert_eq!(nodes[2].edges[2].virtual_visit_count, 1);
-        assert_eq!(nodes[2].edges[2].virtual_value_sum, -1.0);
+        assert_eq!(nodes[2].edges[2].virtual_value_sum, VIRTUAL_LOSS_VALUE);
         assert!(nodes[2].edges[2].pending_evaluation);
 
-        // Second-to-last edge [(1, 1)] gets -1.0 loss
+        // Second-to-last edge [(1, 1)] gets the same virtual loss
         assert_eq!(nodes[1].edges[1].virtual_visit_count, 1);
-        assert_eq!(nodes[1].edges[1].virtual_value_sum, -1.0);
+        assert_eq!(nodes[1].edges[1].virtual_value_sum, VIRTUAL_LOSS_VALUE);
 
-        // First edge [(0, 0)] gets -1.0 loss
+        // First edge [(0, 0)] gets the same virtual loss
         assert_eq!(nodes[0].edges[0].virtual_visit_count, 1);
-        assert_eq!(nodes[0].edges[0].virtual_value_sum, -1.0);
+        assert_eq!(nodes[0].edges[0].virtual_value_sum, VIRTUAL_LOSS_VALUE);
 
         // Real completed stats are untouched
         assert_eq!(nodes[0].edges[0].visit_count, 0);
@@ -1323,7 +1324,7 @@ mod tests {
         // effective_inner_stats helper works correctly
         let eff_stats = nodes[0].edges[0].effective_inner_stats();
         assert_eq!(eff_stats.visit_count, 1);
-        assert_eq!(eff_stats.value_sum, -1.0);
+        assert_eq!(eff_stats.value_sum, VIRTUAL_LOSS_VALUE);
 
         // Final visit_counts() excludes virtual visits
         assert_eq!(nodes[0].visit_counts()[0], 0);
@@ -1363,12 +1364,11 @@ mod tests {
             Some(0)
         );
 
-        // If we apply virtual loss of -1.0 to edge 0 (by setting virtual_visit_count = 1, virtual_value_sum = -1.0)
-        selection_node.edges[0].virtual_visit_count = 1;
-        selection_node.edges[0].virtual_value_sum = -1.0;
+        // If repeated pending selections apply virtual loss to edge 0, its effective value
+        // drops enough that select_inner_action_index should choose another edge.
+        selection_node.edges[0].virtual_visit_count = 4;
+        selection_node.edges[0].virtual_value_sum = 4.0 * VIRTUAL_LOSS_VALUE;
 
-        // Now its effective value sum is 0.0, and effective visits is 2, which makes it less attractive
-        // so select_inner_action_index should choose another edge (not 0)
         let selected = select_inner_action_index(&selection_node, 50.0, 1.0).unwrap();
         assert_ne!(selected, 0);
     }
