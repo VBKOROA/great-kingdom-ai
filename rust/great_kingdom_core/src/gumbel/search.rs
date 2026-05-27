@@ -1352,24 +1352,34 @@ mod tests {
         assert_eq!(nodes[0].edges[0].visit_count, 1);
         assert_eq!(nodes[0].edges[0].value_sum, -0.75);
 
-        // 5. select_inner_action_index avoids virtually reserved edges
-        let mut selection_node = GumbelNode::from_uniform_log_priors(&state, 0.0);
-        // Let's make selection_node.edges[0] very attractive by giving it a high positive value
-        selection_node.edges[0].visit_count = 1;
-        selection_node.edges[0].value_sum = 1.0;
+        // 5. select_inner_action_index accounts for virtual visits.
+        let selection_actions = state
+            .legal_action_indexes()
+            .into_iter()
+            .take(2)
+            .collect::<Vec<_>>();
+        let mut selection_node = GumbelNode::from_log_priors_for_actions(
+            &state,
+            &selection_actions,
+            &[0.0; ACTION_SPACE],
+            0.0,
+        );
+        let reserved_action = selection_node.edges[0].action_index();
+        let alternate_action = selection_node.edges[1].action_index();
 
-        // Initially, select_inner_action_index chooses edge 0
+        // Initially, equal stats tie-break to the lower action index.
         assert_eq!(
             select_inner_action_index(&selection_node, 50.0, 1.0),
-            Some(0)
+            Some(reserved_action)
         );
 
-        // If repeated pending selections apply virtual loss to edge 0, its effective value
-        // drops enough that select_inner_action_index should choose another edge.
-        selection_node.edges[0].virtual_visit_count = 4;
-        selection_node.edges[0].virtual_value_sum = 4.0 * VIRTUAL_LOSS_VALUE;
+        // A pending visit on the selected edge is enough to prefer the equal alternative.
+        selection_node.edges[0].virtual_visit_count = 1;
+        selection_node.edges[0].virtual_value_sum = VIRTUAL_LOSS_VALUE;
 
-        let selected = select_inner_action_index(&selection_node, 50.0, 1.0).unwrap();
-        assert_ne!(selected, 0);
+        assert_eq!(
+            select_inner_action_index(&selection_node, 50.0, 1.0),
+            Some(alternate_action)
+        );
     }
 }
