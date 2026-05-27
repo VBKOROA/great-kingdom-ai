@@ -7,6 +7,7 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 RUST_CRATE_DIR="$ROOT_DIR/rust/great_kingdom_core"
 RUNPOD_RUST_FEATURES="${RUNPOD_RUST_FEATURES:-extension-module,onnx-cuda}"
 CARGO_TEST_FEATURES="${CARGO_TEST_FEATURES:-onnx-cuda}"
+RUNPOD_CARGO_TARGET_DIR="${RUNPOD_CARGO_TARGET_DIR:-/tmp/great-kingdom-ai-cargo-target}"
 
 cd "$ROOT_DIR"
 
@@ -227,12 +228,14 @@ echo "Configuring CUDA library path for Rust ONNX Runtime"
 configure_cuda_library_path
 
 export RUSTFLAGS="${RUSTFLAGS:-} -C target-cpu=native"
+export CARGO_TARGET_DIR="$RUNPOD_CARGO_TARGET_DIR"
 echo "Rust build flags: $RUSTFLAGS"
+echo "Rust cargo target dir: $CARGO_TARGET_DIR"
 
 echo "Building Python extension with maturin features: $RUNPOD_RUST_FEATURES"
 cd "$RUST_CRATE_DIR"
 echo "Cleaning maturin build cache to avoid stale or partial extension artifacts"
-rm -rf "$RUST_CRATE_DIR/target/maturin"
+rm -rf "$CARGO_TARGET_DIR/maturin"
 python -m maturin develop --release --features "$RUNPOD_RUST_FEATURES"
 
 PY_LIBDIR="$(python - <<'PY'
