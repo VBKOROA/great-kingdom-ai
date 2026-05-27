@@ -231,6 +231,8 @@ echo "Rust build flags: $RUSTFLAGS"
 
 echo "Building Python extension with maturin features: $RUNPOD_RUST_FEATURES"
 cd "$RUST_CRATE_DIR"
+echo "Cleaning maturin build cache to avoid stale or partial extension artifacts"
+rm -rf "$RUST_CRATE_DIR/target/maturin"
 python -m maturin develop --release --features "$RUNPOD_RUST_FEATURES"
 
 PY_LIBDIR="$(python - <<'PY'
