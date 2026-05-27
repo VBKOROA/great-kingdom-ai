@@ -9,7 +9,7 @@ use super::{
     config::GumbelConfig,
     node::GumbelNode,
     policy::{
-        log_priors_from_logits, log_priors_from_priors, root_improved_action_logits_effective,
+        log_priors_from_logits, log_priors_from_priors, root_improved_action_logits,
         root_improved_policy_target, root_search_value,
     },
     result::GumbelResult,
@@ -693,15 +693,11 @@ fn select_inner_action_index(node: &GumbelNode, c_visit: f32, c_scale: f32) -> O
         .iter()
         .map(|edge| (edge.log_prior - max_log_prior).exp())
         .sum::<f32>();
-    let total_visits = node
-        .edges
-        .iter()
-        .map(|edge| edge.visit_count + edge.virtual_visit_count)
-        .sum::<u32>();
+    let total_visits = node.edges.iter().map(|edge| edge.visit_count).sum::<u32>();
     let max_visit_count = node
         .edges
         .iter()
-        .map(|edge| edge.visit_count + edge.virtual_visit_count)
+        .map(|edge| edge.visit_count)
         .max()
         .unwrap_or(0) as f32;
 
@@ -709,15 +705,13 @@ fn select_inner_action_index(node: &GumbelNode, c_visit: f32, c_scale: f32) -> O
     let mut visited_weighted_q = 0.0;
     if total_visits > 0 {
         for edge in &node.edges {
-            let eff_visit_count = edge.visit_count + edge.virtual_visit_count;
-            if eff_visit_count == 0 {
+            if edge.visit_count == 0 {
                 continue;
             }
             let prior_prob = ((edge.log_prior - max_log_prior).exp() / sum_exp_prior)
                 .max(INNER_PRIOR_PROB_EPSILON);
             visited_prior_sum += prior_prob;
-            let eff_value_sum = edge.value_sum + edge.virtual_value_sum;
-            visited_weighted_q += prior_prob * eff_value_sum / eff_visit_count as f32;
+            visited_weighted_q += prior_prob * edge.value_sum / edge.visit_count as f32;
         }
     }
 
@@ -731,10 +725,8 @@ fn select_inner_action_index(node: &GumbelNode, c_visit: f32, c_scale: f32) -> O
     let mut q_min = f32::INFINITY;
     let mut q_max = f32::NEG_INFINITY;
     for edge in &node.edges {
-        let eff_visit_count = edge.visit_count + edge.virtual_visit_count;
-        let eff_value_sum = edge.value_sum + edge.virtual_value_sum;
-        let completed_q = if eff_visit_count > 0 {
-            eff_value_sum / eff_visit_count as f32
+        let completed_q = if edge.visit_count > 0 {
+            edge.value_sum / edge.visit_count as f32
         } else {
             mixed_value
         };
@@ -746,10 +738,8 @@ fn select_inner_action_index(node: &GumbelNode, c_visit: f32, c_scale: f32) -> O
 
     let mut max_logit = f32::NEG_INFINITY;
     for edge in &node.edges {
-        let eff_visit_count = edge.visit_count + edge.virtual_visit_count;
-        let eff_value_sum = edge.value_sum + edge.virtual_value_sum;
-        let completed_q = if eff_visit_count > 0 {
-            eff_value_sum / eff_visit_count as f32
+        let completed_q = if edge.visit_count > 0 {
+            edge.value_sum / edge.visit_count as f32
         } else {
             mixed_value
         };
@@ -761,10 +751,8 @@ fn select_inner_action_index(node: &GumbelNode, c_visit: f32, c_scale: f32) -> O
         .edges
         .iter()
         .map(|edge| {
-            let eff_visit_count = edge.visit_count + edge.virtual_visit_count;
-            let eff_value_sum = edge.value_sum + edge.virtual_value_sum;
-            let completed_q = if eff_visit_count > 0 {
-                eff_value_sum / eff_visit_count as f32
+            let completed_q = if edge.visit_count > 0 {
+                edge.value_sum / edge.visit_count as f32
             } else {
                 mixed_value
             };
@@ -776,16 +764,14 @@ fn select_inner_action_index(node: &GumbelNode, c_visit: f32, c_scale: f32) -> O
     let total_visits_f32 = total_visits as f32;
     let mut best: Option<(usize, f32)> = None;
     for edge in &node.edges {
-        let eff_visit_count = edge.visit_count + edge.virtual_visit_count;
-        let eff_value_sum = edge.value_sum + edge.virtual_value_sum;
-        let completed_q = if eff_visit_count > 0 {
-            eff_value_sum / eff_visit_count as f32
+        let completed_q = if edge.visit_count > 0 {
+            edge.value_sum / edge.visit_count as f32
         } else {
             mixed_value
         };
         let q_bonus = visit_scale * ((completed_q - q_min) / q_range);
         let probability = (edge.log_prior + q_bonus - max_logit).exp() / sum_exp_logit;
-        let score = probability - eff_visit_count as f32 / (1.0 + total_visits_f32);
+        let score = probability - edge.visit_count as f32 / (1.0 + total_visits_f32);
         let action = edge.action.to_index();
         let replace = best.is_none_or(|(best_action, best_score)| {
             score.total_cmp(&best_score).is_gt()
@@ -804,7 +790,7 @@ pub(crate) fn root_ranking_scores(
     c_visit: f32,
     c_scale: f32,
 ) -> Vec<(usize, f32)> {
-    root_improved_action_logits_effective(root, c_visit, c_scale)
+    root_improved_action_logits(root, c_visit, c_scale)
 }
 
 pub(crate) fn backup_path(
@@ -830,29 +816,11 @@ pub(crate) fn reserve_path(nodes: &mut [GumbelNode], path: &[(usize, usize)]) {
     if let Some((node_index, edge_index)) = path.last().copied() {
         nodes[node_index].edges[edge_index].pending_evaluation = true;
     }
-    let mut edge_value = -1.0;
-    for (node_index, edge_index) in path.iter().rev().copied() {
-        nodes[node_index].edges[edge_index].virtual_visit_count = nodes[node_index].edges
-            [edge_index]
-            .virtual_visit_count
-            .saturating_add(1);
-        nodes[node_index].edges[edge_index].virtual_value_sum += edge_value;
-        edge_value = -edge_value;
-    }
 }
 
 pub(crate) fn unreserve_path(nodes: &mut [GumbelNode], path: &[(usize, usize)]) {
     if let Some((node_index, edge_index)) = path.last().copied() {
         nodes[node_index].edges[edge_index].pending_evaluation = false;
-    }
-    let mut edge_value = -1.0;
-    for (node_index, edge_index) in path.iter().rev().copied() {
-        nodes[node_index].edges[edge_index].virtual_visit_count = nodes[node_index].edges
-            [edge_index]
-            .virtual_visit_count
-            .saturating_sub(1);
-        nodes[node_index].edges[edge_index].virtual_value_sum -= edge_value;
-        edge_value = -edge_value;
     }
 }
 
@@ -941,10 +909,7 @@ fn parse_gumbel_policy_row(row: Vec<f32>, row_index: usize) -> PyResult<[f32; AC
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        GumbelEvalBatch, GumbelSearch, backup_path, reserve_path, select_inner_action_index,
-        unreserve_path,
-    };
+    use super::{GumbelEvalBatch, GumbelSearch, backup_path, select_inner_action_index};
     use crate::{
         eval_request::EvalRequest,
         game::{
@@ -1049,7 +1014,7 @@ mod tests {
             let reference_edges = node
                 .edges
                 .iter()
-                .map(|edge| edge.effective_inner_stats())
+                .map(|edge| edge.inner_stats())
                 .collect::<Vec<_>>();
 
             assert_eq!(
@@ -1177,85 +1142,86 @@ mod tests {
     fn leaf_batching_matches_sequential_root_outputs_for_deterministic_evaluator() {
         let mut max_root_visit_l1 = 0_u32;
         let mut max_policy_l1 = 0.0_f32;
-        for simulations in [2_u32, 4_u32, 8_u32] {
-            let max_considered_actions = simulations as usize;
-            for bad_action in 0..max_considered_actions {
-                let mut root_logits = [-100.0; ACTION_SPACE];
-                for (action, root_logit) in root_logits
-                    .iter_mut()
-                    .enumerate()
-                    .take(max_considered_actions)
-                {
-                    *root_logit = (max_considered_actions - action) as f32;
-                }
+        for simulations in [8, 12, 16, 24] {
+            for max_considered_actions in [2, 4, 8] {
+                for bad_action in 0..max_considered_actions {
+                    let mut root_logits = [-100.0; ACTION_SPACE];
+                    for (action, root_logit) in root_logits
+                        .iter_mut()
+                        .enumerate()
+                        .take(max_considered_actions)
+                    {
+                        *root_logit = (max_considered_actions - action) as f32;
+                    }
 
-                let config = GumbelConfig::new_with_full_config(
-                    simulations,
-                    max_considered_actions,
-                    50.0,
-                    1.0,
-                    7,
-                    0.0,
-                    1.0e-6,
-                    50.0,
-                    1.0,
-                );
-                let mut sequential_search = GumbelSearch::new(config);
-                let sequential_result = sequential_search
-                    .result_from_logits_with_evaluator(
-                        &GameState::new(),
-                        &root_logits,
-                        1,
-                        0.0,
-                        |request| leaf_batch_probe_evaluator(request, bad_action),
-                    )
-                    .unwrap();
-
-                let mut batched_search = GumbelSearch::new(config);
-                let batched_result = batched_search
-                    .result_from_logits_with_evaluator(
-                        &GameState::new(),
-                        &root_logits,
+                    let config = GumbelConfig::new_with_full_config(
+                        simulations,
                         max_considered_actions,
+                        50.0,
+                        1.0,
+                        7,
                         0.0,
-                        |request| leaf_batch_probe_evaluator(request, bad_action),
-                    )
-                    .unwrap();
+                        1.0,
+                        50.0,
+                        1.0,
+                    );
+                    let mut sequential_search = GumbelSearch::new(config);
+                    let sequential_result = sequential_search
+                        .result_from_logits_with_evaluator(
+                            &GameState::new(),
+                            &root_logits,
+                            1,
+                            0.0,
+                            |request| leaf_batch_probe_evaluator(request, bad_action),
+                        )
+                        .unwrap();
 
-                let root_visit_l1 = sequential_result
-                    .visit_counts
-                    .iter()
-                    .zip(batched_result.visit_counts.iter())
-                    .map(|(left, right)| left.abs_diff(*right))
-                    .sum::<u32>();
-                let policy_l1 = sequential_result
-                    .policy_target
-                    .iter()
-                    .zip(batched_result.policy_target.iter())
-                    .map(|(left, right)| (left - right).abs())
-                    .sum::<f32>();
+                    let mut batched_search = GumbelSearch::new(config);
+                    let batched_result = batched_search
+                        .result_from_logits_with_evaluator(
+                            &GameState::new(),
+                            &root_logits,
+                            max_considered_actions,
+                            0.0,
+                            |request| leaf_batch_probe_evaluator(request, bad_action),
+                        )
+                        .unwrap();
 
-                max_root_visit_l1 = max_root_visit_l1.max(root_visit_l1);
-                max_policy_l1 = max_policy_l1.max(policy_l1);
+                    let root_visit_l1 = sequential_result
+                        .visit_counts
+                        .iter()
+                        .zip(batched_result.visit_counts.iter())
+                        .map(|(left, right)| left.abs_diff(*right))
+                        .sum::<u32>();
+                    let policy_l1 = sequential_result
+                        .policy_target
+                        .iter()
+                        .zip(batched_result.policy_target.iter())
+                        .map(|(left, right)| (left - right).abs())
+                        .sum::<f32>();
 
-                assert_eq!(
-                    sequential_result.selected_action, batched_result.selected_action,
-                    "simulations={simulations} max_considered_actions={max_considered_actions} bad_action={bad_action}",
-                );
-                assert_eq!(
-                    sequential_result.visit_counts, batched_result.visit_counts,
-                    "root visit L1={root_visit_l1}; simulations={simulations} max_considered_actions={max_considered_actions} bad_action={bad_action}",
-                );
-                assert!(
-                    policy_l1 <= 1.0e-6,
-                    "policy target L1={policy_l1}; simulations={simulations} max_considered_actions={max_considered_actions} bad_action={bad_action}",
-                );
-                assert!(
-                    (sequential_result.root_value - batched_result.root_value).abs() <= 1.0e-6,
-                    "root value drift: sequential={} batched={}; simulations={simulations} max_considered_actions={max_considered_actions} bad_action={bad_action}",
-                    sequential_result.root_value,
-                    batched_result.root_value,
-                );
+                    max_root_visit_l1 = max_root_visit_l1.max(root_visit_l1);
+                    max_policy_l1 = max_policy_l1.max(policy_l1);
+
+                    assert_eq!(
+                        sequential_result.selected_action, batched_result.selected_action,
+                        "simulations={simulations} max_considered_actions={max_considered_actions} bad_action={bad_action}",
+                    );
+                    assert_eq!(
+                        sequential_result.visit_counts, batched_result.visit_counts,
+                        "root visit L1={root_visit_l1}; simulations={simulations} max_considered_actions={max_considered_actions} bad_action={bad_action}",
+                    );
+                    assert!(
+                        policy_l1 <= 1.0e-6,
+                        "policy target L1={policy_l1}; simulations={simulations} max_considered_actions={max_considered_actions} bad_action={bad_action}",
+                    );
+                    assert!(
+                        (sequential_result.root_value - batched_result.root_value).abs() <= 1.0e-6,
+                        "root value drift: sequential={} batched={}; simulations={simulations} max_considered_actions={max_considered_actions} bad_action={bad_action}",
+                        sequential_result.root_value,
+                        batched_result.root_value,
+                    );
+                }
             }
         }
 
@@ -1280,96 +1246,6 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(request_lengths, vec![1, 3]);
-    }
-
-    #[test]
-    fn virtual_loss_properties_and_selection_behavior() {
-        let state = GameState::new();
-        let mut nodes = vec![
-            GumbelNode::from_uniform_log_priors(&state, 0.0),
-            GumbelNode::from_uniform_log_priors(&state, 0.0),
-            GumbelNode::from_uniform_log_priors(&state, 0.0),
-        ];
-
-        let path = [(0, 0), (1, 1), (2, 2)];
-
-        // 1. Initially, virtual stats and completed stats are 0
-        assert_eq!(nodes[0].edges[0].virtual_visit_count, 0);
-        assert_eq!(nodes[0].edges[0].virtual_value_sum, 0.0);
-        assert_eq!(nodes[0].edges[0].visit_count, 0);
-        assert_eq!(nodes[0].edges[0].value_sum, 0.0);
-
-        // 2. reserve_path applies virtual visits and alternating virtual values
-        reserve_path(&mut nodes, &path);
-
-        // Last edge in path [(2, 2)] (from leaf parent) gets -1.0 loss
-        assert_eq!(nodes[2].edges[2].virtual_visit_count, 1);
-        assert_eq!(nodes[2].edges[2].virtual_value_sum, -1.0);
-        assert!(nodes[2].edges[2].pending_evaluation);
-
-        // Second-to-last edge [(1, 1)] gets +1.0
-        assert_eq!(nodes[1].edges[1].virtual_visit_count, 1);
-        assert_eq!(nodes[1].edges[1].virtual_value_sum, 1.0);
-
-        // First edge [(0, 0)] gets -1.0
-        assert_eq!(nodes[0].edges[0].virtual_visit_count, 1);
-        assert_eq!(nodes[0].edges[0].virtual_value_sum, -1.0);
-
-        // Real completed stats are untouched
-        assert_eq!(nodes[0].edges[0].visit_count, 0);
-        assert_eq!(nodes[0].edges[0].value_sum, 0.0);
-
-        // effective_inner_stats helper works correctly
-        let eff_stats = nodes[0].edges[0].effective_inner_stats();
-        assert_eq!(eff_stats.visit_count, 1);
-        assert_eq!(eff_stats.value_sum, -1.0);
-
-        // Final visit_counts() excludes virtual visits
-        assert_eq!(nodes[0].visit_counts()[0], 0);
-
-        // 3. unreserve_path fully restores virtual stats to exactly zero
-        unreserve_path(&mut nodes, &path);
-
-        assert_eq!(nodes[2].edges[2].virtual_visit_count, 0);
-        assert_eq!(nodes[2].edges[2].virtual_value_sum, 0.0);
-        assert!(!nodes[2].edges[2].pending_evaluation);
-
-        assert_eq!(nodes[1].edges[1].virtual_visit_count, 0);
-        assert_eq!(nodes[1].edges[1].virtual_value_sum, 0.0);
-
-        assert_eq!(nodes[0].edges[0].virtual_visit_count, 0);
-        assert_eq!(nodes[0].edges[0].virtual_value_sum, 0.0);
-
-        // 4. backup_path produces correct completed stats
-        backup_path(&mut nodes, &path, 0.75, true);
-
-        assert_eq!(nodes[2].edges[2].visit_count, 1);
-        assert_eq!(nodes[2].edges[2].value_sum, -0.75);
-        assert_eq!(nodes[1].edges[1].visit_count, 1);
-        assert_eq!(nodes[1].edges[1].value_sum, 0.75);
-        assert_eq!(nodes[0].edges[0].visit_count, 1);
-        assert_eq!(nodes[0].edges[0].value_sum, -0.75);
-
-        // 5. select_inner_action_index avoids virtually reserved edges
-        let mut selection_node = GumbelNode::from_uniform_log_priors(&state, 0.0);
-        // Let's make selection_node.edges[0] very attractive by giving it a high positive value
-        selection_node.edges[0].visit_count = 1;
-        selection_node.edges[0].value_sum = 1.0;
-
-        // Initially, select_inner_action_index chooses edge 0
-        assert_eq!(
-            select_inner_action_index(&selection_node, 50.0, 1.0),
-            Some(0)
-        );
-
-        // If we apply virtual loss of -1.0 to edge 0 (by setting virtual_visit_count = 1, virtual_value_sum = -1.0)
-        selection_node.edges[0].virtual_visit_count = 1;
-        selection_node.edges[0].virtual_value_sum = -1.0;
-
-        // Now its effective value sum is 0.0, and effective visits is 2, which makes it less attractive
-        // so select_inner_action_index should choose another edge (not 0)
-        let selected = select_inner_action_index(&selection_node, 50.0, 1.0).unwrap();
-        assert_ne!(selected, 0);
+        assert!(request_lengths.iter().all(|length| *length == 1));
     }
 }

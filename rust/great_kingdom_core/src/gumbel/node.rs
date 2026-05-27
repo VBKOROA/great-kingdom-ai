@@ -15,8 +15,6 @@ pub(crate) struct GumbelEdge {
     pub(crate) value_sum: f32,
     pub(crate) child: Option<usize>,
     pub(crate) pending_evaluation: bool,
-    pub(crate) virtual_visit_count: u32,
-    pub(crate) virtual_value_sum: f32,
 }
 
 impl GumbelEdge {
@@ -30,8 +28,6 @@ impl GumbelEdge {
             value_sum: 0.0,
             child: None,
             pending_evaluation: false,
-            virtual_visit_count: 0,
-            virtual_value_sum: 0.0,
         }
     }
 
@@ -58,16 +54,6 @@ impl GumbelEdge {
             self.log_prior,
             self.visit_count,
             self.value_sum,
-        )
-    }
-
-    #[must_use]
-    pub(crate) fn effective_inner_stats(&self) -> InnerEdgeStats {
-        InnerEdgeStats::new(
-            self.action_index(),
-            self.log_prior,
-            self.visit_count + self.virtual_visit_count,
-            self.value_sum + self.virtual_value_sum,
         )
     }
 }

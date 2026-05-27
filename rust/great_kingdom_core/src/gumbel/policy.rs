@@ -158,30 +158,7 @@ pub(crate) fn root_improved_action_logits(
         })
         .collect()
 }
-#[must_use]
-pub(crate) fn root_improved_action_logits_effective(
-    root: &GumbelNode,
-    c_visit: f32,
-    c_scale: f32,
-) -> Vec<(usize, f32)> {
-    let edge_stats = root
-        .edges
-        .iter()
-        .map(|edge| edge.effective_inner_stats())
-        .collect::<Vec<_>>();
-    let prior_probs = prior_probabilities(&edge_stats);
-    let completed_q = completed_q_values(&edge_stats, &prior_probs, root.node_value);
-    let q_bonus = transformed_completed_q(&edge_stats, &completed_q, c_visit, c_scale);
-    root.edges
-        .iter()
-        .zip(q_bonus)
-        .map(|(edge, bonus)| {
-            let action = edge.action_index();
-            let logit = edge.gumbel.unwrap_or(0.0) + edge.log_prior + bonus;
-            (action, logit)
-        })
-        .collect()
-}
+
 #[must_use]
 pub(crate) fn root_selected_action(root: &GumbelNode, c_visit: f32, c_scale: f32) -> Option<usize> {
     let max_visit_count = root.edges.iter().map(|edge| edge.visit_count).max()?;
