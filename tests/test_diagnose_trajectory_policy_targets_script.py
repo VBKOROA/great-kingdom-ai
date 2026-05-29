@@ -54,3 +54,46 @@ def test_summarize_root_prior_reports_argmax_mismatch() -> None:
     assert summary["available_rows"] == 2
     assert summary["argmax_mismatch_ratio"] == pytest.approx(0.5)
     assert summary["max_probability"]["mean"] > 0.5
+
+
+class FakeReplay:
+    def __init__(self) -> None:
+        self.episode_offsets = np.asarray([0, 3], dtype=np.int64)
+        self.turn_offsets = np.asarray([0, 3], dtype=np.int64)
+        self.timesteps = np.asarray([0, 1, 2], dtype=np.int64)
+        self.players = np.asarray([1, 2, 1], dtype=np.int64)
+        self.turn_players = np.asarray([1, 2, 1], dtype=np.int64)
+        self.turn_root_values = np.asarray([0.1, -0.4, 0.7], dtype=np.float32)
+        self.episode_winners = np.asarray([1], dtype=np.int64)
+        self.episode_count = 1
+
+    def __len__(self) -> int:
+        return 3
+
+
+def test_mcts_root_bootstrap_targets_match_training_dataset_logic() -> None:
+    replay = FakeReplay()
+
+    targets = module.training_value_targets(
+        replay,
+        bootstrap_td_steps=1,
+        gamma=1.0,
+        value_bootstrap_source="mcts_root",
+    )
+
+    assert targets.tolist() == pytest.approx([0.4, -0.7, 1.0])
+
+
+def test_resolve_value_target_config_allows_cli_overrides() -> None:
+    resolved = module.resolve_value_target_config(
+        train_config_path=None,
+        bootstrap_td_steps=2,
+        gamma=0.5,
+        value_bootstrap_source="terminal",
+    )
+
+    assert resolved == {
+        "bootstrap_td_steps": 2,
+        "gamma": 0.5,
+        "value_bootstrap_source": "terminal",
+    }
