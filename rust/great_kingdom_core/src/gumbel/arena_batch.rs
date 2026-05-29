@@ -45,7 +45,11 @@ impl GumbelArenaBatch {
         policy_target_temperature = 1.0,
         policy_target_c_visit = None,
         policy_target_c_scale = None,
-        paired_seeds = false
+        paired_seeds = false,
+        candidate_c_scale = None,
+        candidate_policy_target_c_scale = None,
+        best_c_scale = None,
+        best_policy_target_c_scale = None
     ))]
     #[allow(clippy::too_many_arguments)]
     pub fn py_new(
@@ -62,6 +66,10 @@ impl GumbelArenaBatch {
         policy_target_c_visit: Option<f32>,
         policy_target_c_scale: Option<f32>,
         paired_seeds: bool,
+        candidate_c_scale: Option<f32>,
+        candidate_policy_target_c_scale: Option<f32>,
+        best_c_scale: Option<f32>,
+        best_policy_target_c_scale: Option<f32>,
     ) -> PyResult<Self> {
         if game_count == 0 {
             return Err(PyValueError::new_err("game_count must be positive"));
@@ -82,11 +90,15 @@ impl GumbelArenaBatch {
             policy_target_c_scale,
         );
         config.validate()?;
-        Ok(Self::new(
+        let candidate_config =
+            arena_side_config(config, candidate_c_scale, candidate_policy_target_c_scale)?;
+        let best_config = arena_side_config(config, best_c_scale, best_policy_target_c_scale)?;
+        Ok(Self::new_with_side_configs(
             game_count,
             seed_start,
             game_index_start,
-            config,
+            candidate_config,
+            best_config,
             paired_seeds,
         ))
     }
@@ -285,6 +297,25 @@ impl GumbelArenaBatch {
         config: GumbelConfig,
         paired_seeds: bool,
     ) -> Self {
+        Self::new_with_side_configs(
+            game_count,
+            seed_start,
+            game_index_start,
+            config,
+            config,
+            paired_seeds,
+        )
+    }
+
+    #[must_use]
+    pub fn new_with_side_configs(
+        game_count: usize,
+        seed_start: u64,
+        game_index_start: usize,
+        candidate_config: GumbelConfig,
+        best_config: GumbelConfig,
+        paired_seeds: bool,
+    ) -> Self {
         let mut searches = Vec::with_capacity(game_count);
         let mut candidate_players = Vec::with_capacity(game_count);
         let mut seeds = Vec::with_capacity(game_count);
@@ -298,12 +329,21 @@ impl GumbelArenaBatch {
             };
             let game_seed = seed_start.wrapping_add(seed_offset);
             seeds.push(game_seed);
-            candidate_players.push(if game_index % 2 == 0 { BLUE } else { ORANGE });
+            let candidate_player = if game_index % 2 == 0 { BLUE } else { ORANGE };
+            candidate_players.push(candidate_player);
 
-            let mut blue_config = config;
-            blue_config.seed = config.seed.wrapping_add(game_seed.wrapping_mul(2));
-            let mut orange_config = config;
-            orange_config.seed = config
+            let mut blue_config = if candidate_player == BLUE {
+                candidate_config
+            } else {
+                best_config
+            };
+            blue_config.seed = blue_config.seed.wrapping_add(game_seed.wrapping_mul(2));
+            let mut orange_config = if candidate_player == ORANGE {
+                candidate_config
+            } else {
+                best_config
+            };
+            orange_config.seed = orange_config
                 .seed
                 .wrapping_add(game_seed.wrapping_mul(2).wrapping_add(1));
             searches.push([
@@ -537,6 +577,21 @@ impl GumbelArenaBatch {
         }
         Ok(results)
     }
+}
+
+fn arena_side_config(
+    mut config: GumbelConfig,
+    c_scale: Option<f32>,
+    policy_target_c_scale: Option<f32>,
+) -> PyResult<GumbelConfig> {
+    if let Some(c_scale) = c_scale {
+        config.c_scale = c_scale;
+    }
+    if let Some(policy_target_c_scale) = policy_target_c_scale {
+        config.policy_target_c_scale = policy_target_c_scale;
+    }
+    config.validate()?;
+    Ok(config)
 }
 
 trait ArenaLeafEvaluator {
