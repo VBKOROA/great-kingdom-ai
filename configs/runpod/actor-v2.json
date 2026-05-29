@@ -17,7 +17,7 @@
     "gumbel_c_scale": 1.0,
     "gumbel_scale": 1.0,
     "policy_target_c_visit": 50.0,
-    "policy_target_c_scale": 1.0,
+    "policy_target_c_scale": 0.05,
     "policy_target_temperature": 1.0,
     "gumbel_seed": 700000,
     "temperature_turns": 0,
