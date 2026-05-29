@@ -20,6 +20,7 @@ def test_console_scripts_are_current_entrypoints() -> None:
         "great-kingdom-single-batch-overfit": "great_kingdom_ai.single_batch_overfit:main",
         "great-kingdom-evaluate": "great_kingdom_ai.evaluate:main",
         "great-kingdom-export-onnx": "great_kingdom_ai.onnx_export:main",
+        "great-kingdom-onnx-value-trace": "great_kingdom_ai.onnx_value_trace:main",
         "great-kingdom-actor-v2": "great_kingdom_ai.async_v2.cli:actor_v2_main",
         "great-kingdom-learner-v2": "great_kingdom_ai.async_v2.cli:learner_v2_main",
         "great-kingdom-init-async-v2": "great_kingdom_ai.async_v2.cli:factory_init_v2_main",

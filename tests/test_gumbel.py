@@ -120,6 +120,8 @@ def test_gumbel_result_shape_from_logits_skeleton() -> None:
     assert len(result.visit_counts()) == core.action_space()
     assert sum(result.policy_target()) == pytest.approx(1.0)
     assert result.policy_target()[40] == 0.0
+    if hasattr(result, "selected_action_q"):
+        assert result.selected_action_q() == pytest.approx(0.0)
 
 
 @pytest.mark.skipif(

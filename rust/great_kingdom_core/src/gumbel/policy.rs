@@ -231,6 +231,63 @@ pub(crate) fn root_search_value(
     value.clamp(-1.0, 1.0)
 }
 
+#[must_use]
+pub(crate) fn root_completed_q_for_action(
+    root: &GumbelNode,
+    legal_actions: &[usize],
+    log_priors: &[f32; ACTION_SPACE],
+    action: Option<usize>,
+) -> Option<f32> {
+    let action = action?;
+    let edge_stats = legal_actions
+        .iter()
+        .map(|legal_action| {
+            root.edge_index_for_action(*legal_action).map_or_else(
+                || {
+                    super::selection::InnerEdgeStats::new(
+                        *legal_action,
+                        log_priors[*legal_action],
+                        0,
+                        0.0,
+                    )
+                },
+                |edge_index| root.edges[edge_index].inner_stats(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let prior_probs = prior_probabilities(&edge_stats);
+    let completed_q = completed_q_values(&edge_stats, &prior_probs, root.node_value);
+    legal_actions
+        .iter()
+        .zip(completed_q)
+        .find_map(|(legal_action, q)| (*legal_action == action).then_some(q.clamp(-1.0, 1.0)))
+}
+
+#[must_use]
+pub(crate) fn completed_q_by_action(node: &GumbelNode) -> [f32; ACTION_SPACE] {
+    let edge_stats = node
+        .edges
+        .iter()
+        .map(|edge| edge.inner_stats())
+        .collect::<Vec<_>>();
+    let prior_probs = prior_probabilities(&edge_stats);
+    let completed_q = completed_q_values(&edge_stats, &prior_probs, node.node_value);
+    let mut by_action = [0.0; ACTION_SPACE];
+    for (edge, q) in node.edges.iter().zip(completed_q) {
+        by_action[edge.action_index()] = q.clamp(-1.0, 1.0);
+    }
+    by_action
+}
+
+#[must_use]
+pub(crate) fn log_priors_by_action(node: &GumbelNode) -> [f32; ACTION_SPACE] {
+    let mut by_action = [f32::NEG_INFINITY; ACTION_SPACE];
+    for edge in &node.edges {
+        by_action[edge.action_index()] = edge.log_prior;
+    }
+    by_action
+}
+
 fn validate_policy_len(row: &[f32], name: &str) -> PyResult<()> {
     if row.len() != ACTION_SPACE {
         return Err(PyValueError::new_err(format!(

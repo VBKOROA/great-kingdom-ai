@@ -3,12 +3,12 @@ use pyo3::{exceptions::PyValueError, prelude::*};
 use super::{
     node::GumbelNode,
     policy::{
-        log_priors_from_logits, log_priors_from_priors, root_improved_policy_target,
-        root_search_value,
+        log_priors_from_logits, log_priors_from_priors, root_completed_q_for_action,
+        root_improved_policy_target, root_search_value,
     },
     result::GumbelResult,
     sampling::sample_root_candidates,
-    search::{GumbelSearch, root_ranking_scores},
+    search::{GumbelSearch, root_ranking_scores, selected_child_stats},
     sequential_halving::RootSequentialHalving,
 };
 use crate::game::{ACTION_SPACE, GameState};
@@ -50,6 +50,10 @@ impl RootSearchState {
 pub(crate) fn empty_result() -> GumbelResult {
     GumbelResult {
         selected_action: None,
+        selected_action_q: None,
+        selected_child_visit_counts: [0; ACTION_SPACE],
+        selected_child_completed_q: [0.0; ACTION_SPACE],
+        selected_child_log_priors: [f32::NEG_INFINITY; ACTION_SPACE],
         policy_target: [0.0; ACTION_SPACE],
         visit_counts: [0; ACTION_SPACE],
         root_value: 0.0,
@@ -132,8 +136,19 @@ pub(crate) fn finish_root_result(
         search.config.policy_target_c_scale,
         search.config.policy_target_temperature,
     );
+    let (selected_child_visit_counts, selected_child_completed_q, selected_child_log_priors) =
+        selected_child_stats(&search.nodes, root_index, improved.selected_action);
     GumbelResult {
         selected_action: improved.selected_action,
+        selected_action_q: root_completed_q_for_action(
+            root,
+            legal_actions,
+            log_priors,
+            improved.selected_action,
+        ),
+        selected_child_visit_counts,
+        selected_child_completed_q,
+        selected_child_log_priors,
         policy_target: improved.policy_target,
         visit_counts: root.visit_counts(),
         root_value: root_search_value(root, legal_actions, log_priors, &improved.policy_target),

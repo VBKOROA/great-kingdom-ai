@@ -9,7 +9,8 @@ use super::{
     config::GumbelConfig,
     node::GumbelNode,
     policy::{
-        log_priors_from_logits, log_priors_from_priors, root_improved_action_logits,
+        completed_q_by_action, log_priors_by_action, log_priors_from_logits,
+        log_priors_from_priors, root_completed_q_for_action, root_improved_action_logits,
         root_improved_policy_target, root_search_value,
     },
     result::GumbelResult,
@@ -127,6 +128,10 @@ impl GumbelSearch {
         if legal_actions.is_empty() || state.is_terminal() {
             return GumbelResult {
                 selected_action: None,
+                selected_action_q: None,
+                selected_child_visit_counts: [0; ACTION_SPACE],
+                selected_child_completed_q: [0.0; ACTION_SPACE],
+                selected_child_log_priors: [f32::NEG_INFINITY; ACTION_SPACE],
                 policy_target: [0.0; ACTION_SPACE],
                 visit_counts: [0; ACTION_SPACE],
                 root_value: 0.0,
@@ -160,6 +165,10 @@ impl GumbelSearch {
         if legal_actions.is_empty() || state.is_terminal() {
             return Ok(GumbelResult {
                 selected_action: None,
+                selected_action_q: None,
+                selected_child_visit_counts: [0; ACTION_SPACE],
+                selected_child_completed_q: [0.0; ACTION_SPACE],
+                selected_child_log_priors: [f32::NEG_INFINITY; ACTION_SPACE],
                 policy_target: [0.0; ACTION_SPACE],
                 visit_counts: [0; ACTION_SPACE],
                 root_value: 0.0,
@@ -191,6 +200,10 @@ impl GumbelSearch {
         if legal_actions.is_empty() || state.is_terminal() {
             return GumbelResult {
                 selected_action: None,
+                selected_action_q: None,
+                selected_child_visit_counts: [0; ACTION_SPACE],
+                selected_child_completed_q: [0.0; ACTION_SPACE],
+                selected_child_log_priors: [f32::NEG_INFINITY; ACTION_SPACE],
                 policy_target: [0.0; ACTION_SPACE],
                 visit_counts: [0; ACTION_SPACE],
                 root_value: 0.0,
@@ -214,6 +227,10 @@ impl GumbelSearch {
 
         GumbelResult {
             selected_action,
+            selected_action_q: None,
+            selected_child_visit_counts: [0; ACTION_SPACE],
+            selected_child_completed_q: [0.0; ACTION_SPACE],
+            selected_child_log_priors: [f32::NEG_INFINITY; ACTION_SPACE],
             policy_target,
             visit_counts: [0; ACTION_SPACE],
             root_value: 0.0,
@@ -230,6 +247,10 @@ impl GumbelSearch {
         if candidates.is_empty() {
             return GumbelResult {
                 selected_action: None,
+                selected_action_q: None,
+                selected_child_visit_counts: [0; ACTION_SPACE],
+                selected_child_completed_q: [0.0; ACTION_SPACE],
+                selected_child_log_priors: [f32::NEG_INFINITY; ACTION_SPACE],
                 policy_target: [0.0; ACTION_SPACE],
                 visit_counts: [0; ACTION_SPACE],
                 root_value: 0.0,
@@ -284,16 +305,23 @@ impl GumbelSearch {
             self.config.policy_target_temperature,
         );
 
+        let root = &self.nodes[root_index];
+        let (selected_child_visit_counts, selected_child_completed_q, selected_child_log_priors) =
+            selected_child_stats(&self.nodes, root_index, improved.selected_action);
         GumbelResult {
             selected_action: improved.selected_action,
-            policy_target: improved.policy_target,
-            visit_counts: self.nodes[root_index].visit_counts(),
-            root_value: root_search_value(
-                &self.nodes[root_index],
+            selected_action_q: root_completed_q_for_action(
+                root,
                 legal_actions,
                 log_priors,
-                &improved.policy_target,
+                improved.selected_action,
             ),
+            selected_child_visit_counts,
+            selected_child_completed_q,
+            selected_child_log_priors,
+            policy_target: improved.policy_target,
+            visit_counts: root.visit_counts(),
+            root_value: root_search_value(root, legal_actions, log_priors, &improved.policy_target),
         }
     }
 
@@ -315,6 +343,10 @@ impl GumbelSearch {
         if candidates.is_empty() {
             return Ok(GumbelResult {
                 selected_action: None,
+                selected_action_q: None,
+                selected_child_visit_counts: [0; ACTION_SPACE],
+                selected_child_completed_q: [0.0; ACTION_SPACE],
+                selected_child_log_priors: [f32::NEG_INFINITY; ACTION_SPACE],
                 policy_target: [0.0; ACTION_SPACE],
                 visit_counts: [0; ACTION_SPACE],
                 root_value: 0.0,
@@ -420,16 +452,23 @@ impl GumbelSearch {
             self.config.policy_target_temperature,
         );
 
+        let root = &self.nodes[root_index];
+        let (selected_child_visit_counts, selected_child_completed_q, selected_child_log_priors) =
+            selected_child_stats(&self.nodes, root_index, improved.selected_action);
         Ok(GumbelResult {
             selected_action: improved.selected_action,
-            policy_target: improved.policy_target,
-            visit_counts: self.nodes[root_index].visit_counts(),
-            root_value: root_search_value(
-                &self.nodes[root_index],
+            selected_action_q: root_completed_q_for_action(
+                root,
                 legal_actions,
                 log_priors,
-                &improved.policy_target,
+                improved.selected_action,
             ),
+            selected_child_visit_counts,
+            selected_child_completed_q,
+            selected_child_log_priors,
+            policy_target: improved.policy_target,
+            visit_counts: root.visit_counts(),
+            root_value: root_search_value(root, legal_actions, log_priors, &improved.policy_target),
         })
     }
 
@@ -791,6 +830,62 @@ pub(crate) fn root_ranking_scores(
     c_scale: f32,
 ) -> Vec<(usize, f32)> {
     root_improved_action_logits(root, c_visit, c_scale)
+}
+
+#[must_use]
+pub(crate) fn selected_child_stats(
+    nodes: &[GumbelNode],
+    root_index: usize,
+    selected_action: Option<usize>,
+) -> (
+    [u32; ACTION_SPACE],
+    [f32; ACTION_SPACE],
+    [f32; ACTION_SPACE],
+) {
+    let Some(action) = selected_action else {
+        return (
+            [0; ACTION_SPACE],
+            [0.0; ACTION_SPACE],
+            [f32::NEG_INFINITY; ACTION_SPACE],
+        );
+    };
+    let Some(root) = nodes.get(root_index) else {
+        return (
+            [0; ACTION_SPACE],
+            [0.0; ACTION_SPACE],
+            [f32::NEG_INFINITY; ACTION_SPACE],
+        );
+    };
+    let Some(root_edge_index) = root.edge_index_for_action(action) else {
+        return (
+            [0; ACTION_SPACE],
+            [0.0; ACTION_SPACE],
+            [f32::NEG_INFINITY; ACTION_SPACE],
+        );
+    };
+    let Some(child_index) = root.edges[root_edge_index].child else {
+        return (
+            [0; ACTION_SPACE],
+            [0.0; ACTION_SPACE],
+            [f32::NEG_INFINITY; ACTION_SPACE],
+        );
+    };
+    let Some(child) = nodes.get(child_index) else {
+        return (
+            [0; ACTION_SPACE],
+            [0.0; ACTION_SPACE],
+            [f32::NEG_INFINITY; ACTION_SPACE],
+        );
+    };
+
+    let mut completed_q = completed_q_by_action(child);
+    let log_priors = log_priors_by_action(child);
+    if child.to_play != root.to_play {
+        for value in &mut completed_q {
+            *value = -*value;
+        }
+    }
+    (child.visit_counts(), completed_q, log_priors)
 }
 
 pub(crate) fn backup_path(
