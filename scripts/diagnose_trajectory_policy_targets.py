@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 import numpy as np
+from great_kingdom_ai.priority_sampling import legal_masks_from_features
 from great_kingdom_ai.replay import TrajectoryReplayStore
 from great_kingdom_ai.self_play_data import value_target_for_player
 from great_kingdom_ai.training import load_training_config
@@ -76,15 +77,21 @@ def summarize_trajectory_policy_targets(
     if top_k <= 0:
         raise ValueError("top_k must be positive")
     target = np.asarray(replay.policy_targets, dtype=np.float32)
-    legal_masks = np.asarray(replay.legal_masks, dtype=np.bool_)
+    legal_masks, legal_mask_source = resolve_legal_masks(replay)
     target_argmax = np.argmax(target, axis=1)
     target_summary: dict[str, Any] = {
         "entropy": asdict(describe_array(policy_entropy(target))),
         "max_probability": asdict(describe_array(target.max(axis=1))),
         "support": asdict(describe_array(np.count_nonzero(target > 1e-6, axis=1))),
         "argmax_top": top_counts(target_argmax, top_k=top_k),
-        "illegal_mass": asdict(describe_array(np.where(~legal_masks, target, 0.0).sum(axis=1))),
+        "legal_mask_source": legal_mask_source,
     }
+    if legal_masks is None:
+        target_summary["illegal_mass"] = None
+    else:
+        target_summary["illegal_mass"] = asdict(
+            describe_array(np.where(~legal_masks, target, 0.0).sum(axis=1))
+        )
     payload: dict[str, Any] = {
         "rows": len(replay),
         "episodes": replay.episode_count,
@@ -100,6 +107,12 @@ def summarize_trajectory_policy_targets(
             "missing_reason": "trajectory replay does not include root_policy_logits",
         }
         return payload
+    if legal_masks is None:
+        payload["root_prior"] = {
+            "available_rows": 0,
+            "missing_reason": "root prior analysis requires legal_masks or features",
+        }
+        return payload
 
     root_logits = np.asarray(replay.root_policy_logits, dtype=np.float32)
     available = np.isfinite(root_logits).all(axis=1)
@@ -111,6 +124,14 @@ def summarize_trajectory_policy_targets(
         top_k=top_k,
     )
     return payload
+
+
+def resolve_legal_masks(replay: TrajectoryReplayStore) -> tuple[np.ndarray | None, str]:
+    if replay.legal_masks is not None:
+        return np.asarray(replay.legal_masks, dtype=np.bool_), "replay.legal_masks"
+    if replay.features is not None:
+        return legal_masks_from_features(replay.features), "replay.features"
+    return None, "missing"
 
 
 def resolve_value_target_config(

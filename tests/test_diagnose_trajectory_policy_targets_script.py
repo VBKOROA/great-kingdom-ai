@@ -71,6 +71,39 @@ class FakeReplay:
         return 3
 
 
+class FakeSummaryReplay(FakeReplay):
+    def __init__(self) -> None:
+        super().__init__()
+        self.capacity = 8
+        self.policy_targets = np.asarray(
+            [[1.0, 0.0], [0.25, 0.75], [0.5, 0.5]],
+            dtype=np.float32,
+        )
+        self.legal_masks = None
+        self.features = None
+        self.root_policy_logits = np.zeros((3, 2), dtype=np.float32)
+        self.model_versions = np.asarray([1, 1, 2], dtype=np.int64)
+        self.created_iterations = np.asarray([4, 4, 5], dtype=np.int64)
+
+
+def test_summarize_trajectory_policy_targets_tolerates_missing_legal_masks() -> None:
+    replay = FakeSummaryReplay()
+
+    summary = module.summarize_trajectory_policy_targets(
+        replay,
+        value_config={
+            "bootstrap_td_steps": 0,
+            "gamma": 1.0,
+            "value_bootstrap_source": "terminal",
+        },
+    )
+
+    assert summary["policy_target"]["legal_mask_source"] == "missing"
+    assert summary["policy_target"]["illegal_mass"] is None
+    assert summary["root_prior"]["available_rows"] == 0
+    assert "legal_masks or features" in summary["root_prior"]["missing_reason"]
+
+
 def test_mcts_root_bootstrap_targets_match_training_dataset_logic() -> None:
     replay = FakeReplay()
 
