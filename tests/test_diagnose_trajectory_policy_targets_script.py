@@ -104,6 +104,17 @@ def test_summarize_trajectory_policy_targets_tolerates_missing_legal_masks() -> 
     assert "legal_masks or features" in summary["root_prior"]["missing_reason"]
 
 
+def test_turn_root_value_deltas_include_same_perspective_alignment() -> None:
+    replay = FakeReplay()
+    replay.turn_root_values = np.asarray([0.4, -0.5, -0.2], dtype=np.float32)
+    replay.turn_players = np.asarray([1, 2, 2], dtype=np.int64)
+
+    raw, same_perspective = module.turn_root_value_deltas(replay)
+
+    assert raw.tolist() == pytest.approx([-0.9, 0.3])
+    assert same_perspective.tolist() == pytest.approx([0.1, 0.3])
+
+
 def test_mcts_root_bootstrap_targets_match_training_dataset_logic() -> None:
     replay = FakeReplay()
 

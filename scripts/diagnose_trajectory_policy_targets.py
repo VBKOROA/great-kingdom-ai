@@ -188,7 +188,7 @@ def summarize_value_targets(
         gamma=float(resolved["gamma"]),
         value_bootstrap_source=str(resolved["value_bootstrap_source"]),
     )
-    deltas = turn_root_value_deltas(replay)
+    raw_deltas, perspective_deltas = turn_root_value_deltas(replay)
     finite_turn_roots = replay.turn_root_values[np.isfinite(replay.turn_root_values)]
     return {
         "config": dict(resolved),
@@ -198,22 +198,37 @@ def summarize_value_targets(
         "turn_root_values": value_target_distribution(
             finite_turn_roots.astype(np.float32, copy=False)
         ),
-        "turn_root_value_abs_delta": asdict(describe_array(np.abs(deltas))),
-        "turn_root_value_delta": asdict(describe_array(deltas)),
+        "turn_root_value_abs_delta_raw": asdict(describe_array(np.abs(raw_deltas))),
+        "turn_root_value_delta_raw": asdict(describe_array(raw_deltas)),
+        "turn_root_value_abs_delta_same_perspective": asdict(
+            describe_array(np.abs(perspective_deltas))
+        ),
+        "turn_root_value_delta_same_perspective": asdict(describe_array(perspective_deltas)),
     }
 
 
-def turn_root_value_deltas(replay: TrajectoryReplayStore) -> np.ndarray:
-    rows: list[np.ndarray] = []
+def turn_root_value_deltas(replay: TrajectoryReplayStore) -> tuple[np.ndarray, np.ndarray]:
+    raw_rows: list[np.ndarray] = []
+    perspective_rows: list[np.ndarray] = []
     root_values = replay.turn_root_values.astype(np.float32, copy=False)
+    players = replay.turn_players.astype(np.int64, copy=False)
     for episode_index in range(replay.episode_count):
         start = int(replay.turn_offsets[episode_index])
         end = int(replay.turn_offsets[episode_index + 1])
         if end - start > 1:
-            rows.append(np.diff(root_values[start:end]))
-    if not rows:
-        return np.empty((0,), dtype=np.float32)
-    return np.concatenate(rows).astype(np.float32, copy=False)
+            episode_values = root_values[start:end]
+            episode_players = players[start:end]
+            raw_rows.append(np.diff(episode_values))
+            next_values = episode_values[1:].copy()
+            next_values[episode_players[1:] != episode_players[:-1]] *= -1.0
+            perspective_rows.append(next_values - episode_values[:-1])
+    if not raw_rows:
+        empty = np.empty((0,), dtype=np.float32)
+        return empty, empty
+    return (
+        np.concatenate(raw_rows).astype(np.float32, copy=False),
+        np.concatenate(perspective_rows).astype(np.float32, copy=False),
+    )
 
 
 def value_target_distribution(values: np.ndarray) -> dict[str, Any]:
