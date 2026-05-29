@@ -109,72 +109,92 @@ def prune_candidates(
     round_index = 1
     while len(active_candidates) > top_k:
         pivot_index = (0 + len(active_candidates) - 1) // 2
-        pivot = active_candidates[pivot_index]
 
-        matches = []
-        survivors = []
+        while True:
+            pivot = active_candidates[pivot_index]
+            matches = []
+            survivors = []
 
-        print(f"Round {round_index}: {len(active_candidates)} candidates, pivot: {pivot.name}")
+            print(
+                f"Round {round_index}: {len(active_candidates)} candidates, pivot: {pivot.name} (index: {pivot_index})"
+            )
 
-        for candidate in active_candidates:
-            if candidate == pivot:
-                survivors.append(candidate)
+            for candidate in active_candidates:
+                if candidate == pivot:
+                    survivors.append(candidate)
+                    matches.append(
+                        {
+                            "candidate": candidate.name,
+                            "pivot": pivot.name,
+                            "candidate_win_rate": 0.5,
+                            "survived": True,
+                            "report_path": None,
+                        }
+                    )
+                    continue
+
+                eval_result = evaluate_fn(candidate, pivot, round_index)
+                win_rate = eval_result["win_rate"]
+                survived = win_rate >= 0.5
+                if survived:
+                    survivors.append(candidate)
+
                 matches.append(
                     {
                         "candidate": candidate.name,
                         "pivot": pivot.name,
-                        "candidate_win_rate": 0.5,
-                        "survived": True,
-                        "report_path": None,
+                        "candidate_win_rate": win_rate,
+                        "survived": survived,
+                        "report_path": eval_result["report_path"],
                     }
                 )
-                continue
 
-            eval_result = evaluate_fn(candidate, pivot, round_index)
-            win_rate = eval_result["win_rate"]
-            survived = win_rate >= 0.5
-            if survived:
-                survivors.append(candidate)
+            survivors = sorted(survivors, key=snapshot_sort_key)
 
-            matches.append(
-                {
-                    "candidate": candidate.name,
-                    "pivot": pivot.name,
-                    "candidate_win_rate": win_rate,
-                    "survived": survived,
-                    "report_path": eval_result["report_path"],
-                }
-            )
+            round_summary = {
+                "round": round_index,
+                "pivot": pivot.name,
+                "before_count": len(active_candidates),
+                "after_count": len(survivors),
+                "matches": matches,
+            }
+            round_summaries.append(round_summary)
 
-        survivors = sorted(survivors, key=snapshot_sort_key)
+            if len(survivors) == len(active_candidates):
+                new_pivot_index = (pivot_index + len(active_candidates)) // 2
+                if new_pivot_index <= pivot_index:
+                    new_pivot_index = pivot_index + 1
 
-        round_summary = {
-            "round": round_index,
-            "pivot": pivot.name,
-            "before_count": len(active_candidates),
-            "after_count": len(survivors),
-            "matches": matches,
-        }
-        round_summaries.append(round_summary)
+                if new_pivot_index >= len(active_candidates) - 1:
+                    print(
+                        f"No shrinking occurred. Next pivot index {new_pivot_index} is latest or out of bounds (max index: {len(active_candidates) - 1}). Falling back to ranking."
+                    )
+                    candidate_to_win_rate = {
+                        m["candidate"]: m["candidate_win_rate"] for m in matches
+                    }
 
-        if len(survivors) == len(active_candidates):
-            print("No shrinking occurred this round. Falling back to ranking.")
-            candidate_to_win_rate = {m["candidate"]: m["candidate_win_rate"] for m in matches}
-
-            ranked_candidates = sorted(
-                active_candidates,
-                key=lambda c: (
-                    _fallback_win_rate(c, pivot, candidate_to_win_rate),
-                    snapshot_mtime(c),
-                    c.name,
-                ),
-                reverse=True,
-            )
-            active_candidates = sorted(ranked_candidates[:top_k], key=snapshot_sort_key)
-            break
-
-        active_candidates = survivors
-        round_index += 1
+                    ranked_candidates = sorted(
+                        active_candidates,
+                        key=lambda c: (
+                            _fallback_win_rate(c, pivot, candidate_to_win_rate),
+                            snapshot_mtime(c),
+                            c.name,
+                        ),
+                        reverse=True,
+                    )
+                    active_candidates = sorted(ranked_candidates[:top_k], key=snapshot_sort_key)
+                    break
+                else:
+                    print(
+                        f"No shrinking occurred. Retrying round {round_index} with a stronger pivot index {new_pivot_index} (was {pivot_index})."
+                    )
+                    pivot_index = new_pivot_index
+                    round_index += 1
+                    continue
+            else:
+                active_candidates = survivors
+                round_index += 1
+                break
 
     final_survivors = [c.name for c in active_candidates]
     return {

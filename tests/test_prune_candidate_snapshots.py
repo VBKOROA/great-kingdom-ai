@@ -74,7 +74,11 @@ def test_prune_candidates_no_shrink_fallback_keeps_pivot_eligible(tmp_path: Path
 
     assert result["final_count"] == 3
     assert result["survivors"] == ["snapshot-300.pt", "snapshot-400.pt", "snapshot-500.pt"]
-    assert len(result["rounds"]) == 1
+    assert len(result["rounds"]) == 2
+    assert result["rounds"][0]["pivot"] == "snapshot-300.pt"
+    assert result["rounds"][0]["round"] == 1
+    assert result["rounds"][1]["pivot"] == "snapshot-400.pt"
+    assert result["rounds"][1]["round"] == 2
 
 
 def test_prune_candidates_already_small(tmp_path: Path) -> None:
