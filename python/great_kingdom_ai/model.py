@@ -22,6 +22,10 @@ class ModelConfig:
     policy_kernel_size: int = 1
     spatial_value_head: bool = False
     value_spatial_channels: int = 2
+    attention_blocks: int = 0
+    attention_heads: int = 4
+    attention_ffn_multiplier: int = 4
+    attention_residual_scale_init: float = 1e-3
 
 
 
