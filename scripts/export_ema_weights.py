@@ -18,6 +18,9 @@ from great_kingdom_ai.onnx_quantization import (
     DEFAULT_QDQ_CALIBRATION_BATCH_SIZE,
     DEFAULT_QDQ_CALIBRATION_SAMPLES,
     DEFAULT_QDQ_CALIBRATION_SEED,
+    DEFAULT_QDQ_QUANTIZATION_MODE,
+    QDQ_CALIBRATION_METHODS,
+    QDQ_QUANTIZATION_MODES,
     CalibrationFeatureSummary,
     quantize_onnx_s8s8_qdq,
 )
@@ -42,6 +45,8 @@ def export_ema_onnx(
     calibration_sample_count: int = DEFAULT_QDQ_CALIBRATION_SAMPLES,
     calibration_batch_size: int = DEFAULT_QDQ_CALIBRATION_BATCH_SIZE,
     calibration_seed: int = DEFAULT_QDQ_CALIBRATION_SEED,
+    calibration_method: str = "minmax",
+    quantization_mode: str = DEFAULT_QDQ_QUANTIZATION_MODE,
 ) -> dict[str, Any]:
     if onnx_output_path is None and quantized_onnx_output_path is None:
         raise ValueError("onnx_output_path or quantized_onnx_output_path is required")
@@ -78,6 +83,8 @@ def export_ema_onnx(
                 calibration_sample_count=calibration_sample_count,
                 calibration_batch_size=calibration_batch_size,
                 calibration_seed=calibration_seed,
+                calibration_method=calibration_method,
+                quantization_mode=quantization_mode,
             )
             summary["quantized_onnx_output"] = str(quantized_onnx_output_path)
             summary["quantization"] = quantization_summary
@@ -103,6 +110,8 @@ def export_ema_onnx(
             calibration_sample_count=calibration_sample_count,
             calibration_batch_size=calibration_batch_size,
             calibration_seed=calibration_seed,
+            calibration_method=calibration_method,
+            quantization_mode=quantization_mode,
         )
         summary["quantized_onnx_output"] = str(quantized_onnx_output_path)
         summary["quantization"] = quantization_summary
@@ -124,7 +133,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--quantization-format",
         choices=[QUANTIZATION_FORMAT_QDQ_S8S8, QUANTIZATION_FORMAT_DYNAMIC],
         default=QUANTIZATION_FORMAT_QDQ_S8S8,
-        help="INT8 ONNX quantization representation; qdq-s8s8 is the web-runtime default",
+        help="INT8 ONNX quantization representation; qdq-s8s8 is the CPU serving default",
+    )
+    parser.add_argument(
+        "--quantization-mode",
+        choices=QDQ_QUANTIZATION_MODES,
+        default=DEFAULT_QDQ_QUANTIZATION_MODE,
+        help=(
+            "QDQ quantization scope; selective-attention quantizes Conv/Gemm while keeping "
+            "attention-sensitive nodes in FP32"
+        ),
+    )
+    parser.add_argument(
+        "--calibration-method",
+        choices=QDQ_CALIBRATION_METHODS,
+        default="minmax",
+        help="QDQ static calibration method",
     )
     parser.add_argument(
         "--allow-raw-fallback",
@@ -192,6 +216,8 @@ def main() -> NoReturn:
         calibration_sample_count=args.calibration_samples,
         calibration_batch_size=args.calibration_batch_size,
         calibration_seed=args.calibration_seed,
+        calibration_method=args.calibration_method,
+        quantization_mode=args.quantization_mode,
     )
     print(json.dumps(summary, sort_keys=True))
     raise SystemExit(0)
@@ -247,6 +273,8 @@ def _quantize_onnx(
     calibration_sample_count: int,
     calibration_batch_size: int,
     calibration_seed: int,
+    calibration_method: str,
+    quantization_mode: str,
 ) -> dict[str, Any]:
     if quantization_format == QUANTIZATION_FORMAT_QDQ_S8S8:
         calibration = _quantize_onnx_qdq_s8s8(
@@ -259,6 +287,8 @@ def _quantize_onnx(
             calibration_sample_count=calibration_sample_count,
             calibration_batch_size=calibration_batch_size,
             calibration_seed=calibration_seed,
+            calibration_method=calibration_method,
+            quantization_mode=quantization_mode,
         )
         return {
             "format": QUANTIZATION_FORMAT_QDQ_S8S8,
@@ -293,6 +323,8 @@ def _quantize_onnx_qdq_s8s8(
     calibration_sample_count: int,
     calibration_batch_size: int,
     calibration_seed: int,
+    calibration_method: str,
+    quantization_mode: str,
 ) -> CalibrationFeatureSummary:
     return quantize_onnx_s8s8_qdq(
         input_path,
@@ -301,6 +333,8 @@ def _quantize_onnx_qdq_s8s8(
         calibration_sample_count=calibration_sample_count,
         calibration_batch_size=calibration_batch_size,
         calibration_seed=calibration_seed,
+        calibration_method=calibration_method,
+        quantization_mode=quantization_mode,
         per_channel=per_channel,
         reduce_range=reduce_range,
         preprocess=preprocess,

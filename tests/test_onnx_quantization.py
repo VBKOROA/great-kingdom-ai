@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import great_kingdom_ai.replay.dataset as dataset_module
 import numpy as np
 import pytest
+
+import great_kingdom_ai.onnx_quantization as quantization_module
+import great_kingdom_ai.replay.dataset as dataset_module
 from great_kingdom_ai.features import BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.onnx_quantization import (
     FeatureCalibrationDataReader,
@@ -144,3 +146,51 @@ def test_calibration_features_reject_wrong_shape(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="expected calibration features shape"):
         _calibration_features(calibration_features_path=path, sample_count=1, seed=0)
+
+
+def test_selective_attention_quantization_excludes_attention_sensitive_nodes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeNode:
+        def __init__(self, name: str, op_type: str) -> None:
+            self.name = name
+            self.op_type = op_type
+
+    class FakeGraph:
+        node = [
+            FakeNode("/stem/stem.0/Conv", "Conv"),
+            FakeNode("/attention/attention.0/qkv_proj/Gemm", "Gemm"),
+            FakeNode("/value_head/value_head.3/Gemm", "Gemm"),
+            FakeNode("/attention/attention.0/MatMul", "MatMul"),
+            FakeNode("/attention/attention.0/Softmax", "Softmax"),
+            FakeNode("/attention/attention.0/norm1/LayerNormalization", "LayerNormalization"),
+        ]
+
+    class FakeModel:
+        graph = FakeGraph()
+
+    class FakeOnnx:
+        @staticmethod
+        def load(path: Path) -> FakeModel:
+            assert path == tmp_path / "model.onnx"
+            return FakeModel()
+
+    monkeypatch.setattr(
+        quantization_module.importlib,
+        "import_module",
+        lambda name: FakeOnnx if name == "onnx" else __import__(name),
+    )
+
+    quantized_op_types, excluded_nodes = quantization_module._quantization_selection(
+        tmp_path / "model.onnx",
+        quantization_mode="selective-attention",
+    )
+
+    assert quantized_op_types == ("Conv", "Gemm")
+    assert "/stem/stem.0/Conv" not in excluded_nodes
+    assert "/value_head/value_head.3/Gemm" not in excluded_nodes
+    assert "/attention/attention.0/qkv_proj/Gemm" in excluded_nodes
+    assert "/attention/attention.0/MatMul" in excluded_nodes
+    assert "/attention/attention.0/Softmax" in excluded_nodes
+    assert "/attention/attention.0/norm1/LayerNormalization" in excluded_nodes

@@ -97,6 +97,8 @@ def test_export_ema_onnx_can_write_only_quantized_onnx(
         calibration_sample_count: int,
         calibration_batch_size: int,
         calibration_seed: int,
+        calibration_method: str,
+        quantization_mode: str,
     ) -> module.CalibrationFeatureSummary:
         assert Path(input_path).read_text(encoding="utf-8") == "fp32 onnx"
         assert per_channel is True
@@ -106,6 +108,8 @@ def test_export_ema_onnx_can_write_only_quantized_onnx(
         assert calibration_sample_count == module.DEFAULT_QDQ_CALIBRATION_SAMPLES
         assert calibration_batch_size == module.DEFAULT_QDQ_CALIBRATION_BATCH_SIZE
         assert calibration_seed == module.DEFAULT_QDQ_CALIBRATION_SEED
+        assert calibration_method == "minmax"
+        assert quantization_mode == module.DEFAULT_QDQ_QUANTIZATION_MODE
         Path(output_path).write_text("int8 onnx", encoding="utf-8")
         return module.CalibrationFeatureSummary(
             source="synthetic",
@@ -125,6 +129,74 @@ def test_export_ema_onnx_can_write_only_quantized_onnx(
     assert summary["quantization"]["weight_type"] == "QInt8"
     assert summary["quantization"]["quant_format"] == "QDQ"
     assert "onnx_output" not in summary
+
+
+def test_export_ema_onnx_passes_selective_quantization_options(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _save_ema_checkpoint(tmp_path / "source.pt")
+    output = tmp_path / "ema.onnx"
+    quantized = tmp_path / "ema-selective-int8.onnx"
+    calls: list[dict[str, object]] = []
+
+    def fake_export(checkpoint_path: Path, output_path: Path, **kwargs: object) -> None:
+        assert Path(checkpoint_path) == source
+        Path(output_path).write_text("fp32 onnx", encoding="utf-8")
+
+    def fake_quantize(
+        input_path: Path,
+        output_path: Path,
+        *,
+        per_channel: bool,
+        reduce_range: bool,
+        preprocess: bool,
+        calibration_features_path: Path | None,
+        calibration_sample_count: int,
+        calibration_batch_size: int,
+        calibration_seed: int,
+        calibration_method: str,
+        quantization_mode: str,
+    ) -> module.CalibrationFeatureSummary:
+        calls.append(
+            {
+                "calibration_method": calibration_method,
+                "quantization_mode": quantization_mode,
+                "calibration_sample_count": calibration_sample_count,
+            }
+        )
+        Path(output_path).write_text("selective int8 onnx", encoding="utf-8")
+        return module.CalibrationFeatureSummary(
+            source="synthetic",
+            sample_count=calibration_sample_count,
+            batch_size=calibration_batch_size,
+            calibration_method=calibration_method,
+            quantization_mode=quantization_mode,
+            quantized_op_types=("Conv", "Gemm"),
+            excluded_node_count=12,
+        )
+
+    monkeypatch.setattr(module, "export_checkpoint_to_onnx", fake_export)
+    monkeypatch.setattr(module, "_quantize_onnx_qdq_s8s8", fake_quantize)
+
+    summary = module.export_ema_onnx(
+        source,
+        onnx_output_path=output,
+        quantized_onnx_output_path=quantized,
+        calibration_method="percentile",
+        quantization_mode="selective-attention",
+    )
+
+    assert calls == [
+        {
+            "calibration_method": "percentile",
+            "quantization_mode": "selective-attention",
+            "calibration_sample_count": module.DEFAULT_QDQ_CALIBRATION_SAMPLES,
+        }
+    ]
+    assert summary["quantization"]["calibration"]["calibration_method"] == "percentile"
+    assert summary["quantization"]["calibration"]["quantization_mode"] == "selective-attention"
+    assert summary["quantization"]["calibration"]["excluded_node_count"] == 12
 
 
 def test_export_ema_onnx_can_use_legacy_dynamic_quantization(

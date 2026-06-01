@@ -6,7 +6,7 @@ import importlib
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 
@@ -16,6 +16,12 @@ FEATURE_SHAPE = (FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
 DEFAULT_QDQ_CALIBRATION_SAMPLES = 64
 DEFAULT_QDQ_CALIBRATION_BATCH_SIZE = 8
 DEFAULT_QDQ_CALIBRATION_SEED = 0
+QDQ_CALIBRATION_METHODS = ("minmax", "entropy", "percentile")
+QDQ_QUANTIZATION_MODES = ("full", "selective-attention")
+DEFAULT_QDQ_QUANTIZATION_MODE = "full"
+SELECTIVE_ATTENTION_QUANTIZED_OP_TYPES = ("Conv", "Gemm")
+SELECTIVE_ATTENTION_EXCLUDED_OP_TYPES = ("LayerNormalization", "MatMul", "Softmax")
+ATTENTION_NODE_NAME_MARKERS = ("/attention/", ".attention.", "attention/")
 
 
 @dataclass(frozen=True)
@@ -23,12 +29,24 @@ class CalibrationFeatureSummary:
     source: str
     sample_count: int
     batch_size: int
+    calibration_method: str = "minmax"
+    quantization_mode: str = DEFAULT_QDQ_QUANTIZATION_MODE
+    quantized_op_types: tuple[str, ...] | None = None
+    excluded_node_count: int = 0
+    excluded_node_samples: tuple[str, ...] = ()
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
             "source": self.source,
             "sample_count": self.sample_count,
             "batch_size": self.batch_size,
+            "calibration_method": self.calibration_method,
+            "quantization_mode": self.quantization_mode,
+            "quantized_op_types": (
+                None if self.quantized_op_types is None else list(self.quantized_op_types)
+            ),
+            "excluded_node_count": self.excluded_node_count,
+            "excluded_node_samples": list(self.excluded_node_samples),
         }
 
 
@@ -75,10 +93,22 @@ def quantize_onnx_s8s8_qdq(
     per_channel: bool = True,
     reduce_range: bool = False,
     preprocess: bool = True,
+    calibration_method: str = "minmax",
+    quantization_mode: str = DEFAULT_QDQ_QUANTIZATION_MODE,
 ) -> CalibrationFeatureSummary:
     """Quantize an FP32 ONNX model as static S8S8 QDQ for ONNX Runtime."""
     if calibration_sample_count < 1:
         raise ValueError("calibration sample count must be at least 1")
+    calibration_method = _normalize_choice(
+        calibration_method,
+        choices=QDQ_CALIBRATION_METHODS,
+        name="calibration_method",
+    )
+    quantization_mode = _normalize_choice(
+        quantization_mode,
+        choices=QDQ_QUANTIZATION_MODES,
+        name="quantization_mode",
+    )
 
     quantization = _import_onnxruntime_quantization()
     destination = Path(output_path)
@@ -93,10 +123,18 @@ def quantize_onnx_s8s8_qdq(
 
     source = Path(input_path)
     model_input = source
+    quantized_op_types, nodes_to_exclude = _quantization_selection(
+        source,
+        quantization_mode=quantization_mode,
+    )
     if preprocess:
         with tempfile.TemporaryDirectory(prefix="gka-onnx-quant-pre-") as temp_dir:
             preprocessed = Path(temp_dir) / "preprocessed.onnx"
             quantization.quant_pre_process(source, preprocessed)
+            _, nodes_to_exclude = _quantization_selection(
+                preprocessed,
+                quantization_mode=quantization_mode,
+            )
             _quantize_static_s8s8_qdq(
                 quantization,
                 preprocessed,
@@ -104,6 +142,9 @@ def quantize_onnx_s8s8_qdq(
                 reader=reader,
                 per_channel=per_channel,
                 reduce_range=reduce_range,
+                calibration_method=calibration_method,
+                quantized_op_types=quantized_op_types,
+                nodes_to_exclude=nodes_to_exclude,
             )
     else:
         _quantize_static_s8s8_qdq(
@@ -113,12 +154,20 @@ def quantize_onnx_s8s8_qdq(
             reader=reader,
             per_channel=per_channel,
             reduce_range=reduce_range,
+            calibration_method=calibration_method,
+            quantized_op_types=quantized_op_types,
+            nodes_to_exclude=nodes_to_exclude,
         )
 
     return CalibrationFeatureSummary(
         source=calibration_source,
         sample_count=int(features.shape[0]),
         batch_size=calibration_batch_size,
+        calibration_method=calibration_method,
+        quantization_mode=quantization_mode,
+        quantized_op_types=quantized_op_types,
+        excluded_node_count=len(nodes_to_exclude),
+        excluded_node_samples=tuple(nodes_to_exclude[:8]),
     )
 
 
@@ -130,19 +179,83 @@ def _quantize_static_s8s8_qdq(
     reader: FeatureCalibrationDataReader,
     per_channel: bool,
     reduce_range: bool,
+    calibration_method: str,
+    quantized_op_types: tuple[str, ...] | None,
+    nodes_to_exclude: tuple[str, ...],
 ) -> None:
     reader.rewind()
-    quantization.quantize_static(
-        model_input,
-        model_output,
-        reader,
-        quant_format=quantization.QuantFormat.QDQ,
-        activation_type=quantization.QuantType.QInt8,
-        weight_type=quantization.QuantType.QInt8,
-        per_channel=per_channel,
-        reduce_range=reduce_range,
-        calibrate_method=quantization.CalibrationMethod.MinMax,
-    )
+    kwargs: dict[str, Any] = {
+        "quant_format": quantization.QuantFormat.QDQ,
+        "activation_type": quantization.QuantType.QInt8,
+        "weight_type": quantization.QuantType.QInt8,
+        "per_channel": per_channel,
+        "reduce_range": reduce_range,
+        "calibrate_method": _calibration_method_enum(quantization, calibration_method),
+    }
+    if quantized_op_types is not None:
+        kwargs["op_types_to_quantize"] = list(quantized_op_types)
+    if nodes_to_exclude:
+        kwargs["nodes_to_exclude"] = list(nodes_to_exclude)
+    quantization.quantize_static(model_input, model_output, reader, **kwargs)
+
+
+def _quantization_selection(
+    model_path: Path,
+    *,
+    quantization_mode: str,
+) -> tuple[tuple[str, ...] | None, tuple[str, ...]]:
+    if quantization_mode == "full":
+        return None, ()
+    if quantization_mode != "selective-attention":
+        raise ValueError(f"unknown quantization mode: {quantization_mode}")
+
+    excluded_nodes = _selective_attention_excluded_nodes(model_path)
+    if not excluded_nodes:
+        raise ValueError(
+            "selective-attention quantization did not find any attention-sensitive ONNX nodes"
+        )
+    return SELECTIVE_ATTENTION_QUANTIZED_OP_TYPES, excluded_nodes
+
+
+def _selective_attention_excluded_nodes(model_path: Path) -> tuple[str, ...]:
+    try:
+        onnx = importlib.import_module("onnx")
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("onnx is required for selective attention quantization") from exc
+
+    model = onnx.load(model_path)
+    selected: list[str] = []
+    for node in model.graph.node:
+        name = str(node.name)
+        if not name:
+            continue
+        if node.op_type in SELECTIVE_ATTENTION_EXCLUDED_OP_TYPES or _is_attention_node_name(name):
+            selected.append(name)
+    selected.sort()
+    return tuple(selected)
+
+
+def _is_attention_node_name(name: str) -> bool:
+    normalized = name.lower()
+    return any(marker in normalized for marker in ATTENTION_NODE_NAME_MARKERS)
+
+
+def _calibration_method_enum(quantization: Any, calibration_method: str) -> Any:
+    if calibration_method == "minmax":
+        return quantization.CalibrationMethod.MinMax
+    if calibration_method == "entropy":
+        return quantization.CalibrationMethod.Entropy
+    if calibration_method == "percentile":
+        return quantization.CalibrationMethod.Percentile
+    raise ValueError(f"unknown calibration method: {calibration_method}")
+
+
+def _normalize_choice(value: str, *, choices: Sequence[str], name: str) -> str:
+    normalized = value.lower().replace("_", "-")
+    if normalized not in choices:
+        joined = ", ".join(choices)
+        raise ValueError(f"{name} must be one of: {joined}")
+    return normalized
 
 
 def _calibration_features(
@@ -282,6 +395,9 @@ __all__ = [
     "DEFAULT_QDQ_CALIBRATION_BATCH_SIZE",
     "DEFAULT_QDQ_CALIBRATION_SAMPLES",
     "DEFAULT_QDQ_CALIBRATION_SEED",
+    "DEFAULT_QDQ_QUANTIZATION_MODE",
+    "QDQ_CALIBRATION_METHODS",
+    "QDQ_QUANTIZATION_MODES",
     "CalibrationFeatureSummary",
     "FeatureCalibrationDataReader",
     "quantize_onnx_s8s8_qdq",

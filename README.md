@@ -448,6 +448,32 @@ great-kingdom-export-onnx \
   --check-parity
 ```
 
+CPU serving용 ONNX export + selective QDQ S8S8 quantization:
+
+```bash
+python scripts/export_ema_weights.py \
+  --checkpoint data/runpod/train-strong-attn/checkpoints/training-latest.pt \
+  --onnx-output data/runpod/train-strong-attn/checkpoints/onnx/training-latest-ema.fp32.onnx \
+  --quantized-onnx-output data/runpod/train-strong-attn/checkpoints/onnx/training-latest-ema.selective-qdq-s8s8.onnx \
+  --quantization-format qdq-s8s8 \
+  --quantization-mode selective-attention \
+  --calibration-features data/runpod/train-strong-attn/replay/trajectory-replay.npz \
+  --calibration-samples 2048 \
+  --calibration-batch-size 32
+```
+
+권장 흐름은 checkpoint에서 **FP32 ONNX**를 먼저 만들고, ONNX Runtime `quant_pre_process` 후
+실제 replay feature로 static **QDQ S8S8** quantization을 수행하는 방식이다. attention이 들어간
+모델은 `--quantization-mode selective-attention`을 우선 사용한다. 이 모드는 `Conv`/`Gemm` 중심으로
+양자화하고 attention 이름을 가진 노드와 `MatMul`/`Softmax`/`LayerNormalization`은 FP32로 남긴다.
+CPU serving에서는 `fp16` ONNX보다 `fp32.onnx` 원본과 selective `qdq-s8s8.onnx` 후보를 함께 보관한
+뒤 latency, policy/value diff, arena 결과를 보고 최종 선택한다. calibration data는 attention
+quantization 품질에 직접 영향을 주므로 synthetic calibration보다 실제 trajectory replay를 우선
+사용한다.
+
+전역 QDQ S8S8을 비교 후보로 만들 때는 `--quantization-mode full`을 사용한다.
+MinMax calibration에서 policy/value diff가 크면 `--calibration-method percentile`도 비교한다.
+
 ## 개발 원칙
 
 - 테스트하기 쉬운 구조를 유지합니다.
