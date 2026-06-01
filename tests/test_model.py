@@ -17,7 +17,17 @@ from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 
 @pytest.mark.parametrize(
     "preset",
-    ["small", "medium", "medium_plus", "large", "large_policy", "large_plus", "strong"],
+    [
+        "small",
+        "medium",
+        "medium_plus",
+        "large",
+        "large_policy",
+        "large_plus",
+        "strong",
+        "strong_clean",
+        "strong_attn",
+    ],
 )
 def test_model_presets_return_policy_logits_and_value_scalar(preset: str) -> None:
     from great_kingdom_ai.model import create_model
@@ -164,3 +174,61 @@ def test_model_rejects_wrong_input_shape() -> None:
 
     with pytest.raises(ValueError, match="expected input shape"):
         model(torch.zeros((1, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE - 1)))
+
+
+def test_attention_block_keeps_input_shape() -> None:
+    from great_kingdom_ai.model import BoardSelfAttentionBlock
+
+    block = BoardSelfAttentionBlock(channels=64, num_heads=4)
+    block.eval()
+    inputs = torch.randn(2, 64, BOARD_SIZE, BOARD_SIZE)
+    with torch.no_grad():
+        outputs = block(inputs)
+    assert outputs.shape == inputs.shape
+
+
+def test_full_2d_relative_position_bias_shapes_and_values() -> None:
+    from great_kingdom_ai.model import Full2DRelativePositionBias
+
+    num_heads = 4
+    bias_module = Full2DRelativePositionBias(num_heads=num_heads, board_size=BOARD_SIZE)
+    assert bias_module.relative_bias_table.shape == (289, num_heads)
+    assert bias_module.relative_index.shape == (81, 81)
+
+    # Check that indices are within 0..288
+    assert torch.all(bias_module.relative_index >= 0)
+    assert torch.all(bias_module.relative_index < 289)
+
+    # Output shape should be [1, heads, 81, 81]
+    with torch.no_grad():
+        bias = bias_module()
+    assert bias.shape == (1, num_heads, 81, 81)
+
+
+def test_attention_block_scale_initialization() -> None:
+    from great_kingdom_ai.model import BoardSelfAttentionBlock
+
+    residual_scale_init = 1e-3
+    block = BoardSelfAttentionBlock(
+        channels=64, num_heads=4, residual_scale_init=residual_scale_init
+    )
+
+    assert torch.allclose(block.attn_scale, torch.full((64,), residual_scale_init))
+    assert torch.allclose(block.ffn_scale, torch.full((64,), residual_scale_init))
+
+
+def test_strong_attn_preset_contains_two_attention_blocks() -> None:
+    from great_kingdom_ai.model import create_model, BoardSelfAttentionBlock
+
+    model = create_model("strong_attn")
+
+    # Check ModelConfig fields
+    assert model.config.attention_blocks == 2
+    assert model.config.attention_heads == 4
+    assert model.config.attention_ffn_multiplier == 4
+    assert model.config.attention_residual_scale_init == 1e-3
+
+    # Check model architecture
+    assert len(model.attention) == 2
+    for block in model.attention:
+        assert isinstance(block, BoardSelfAttentionBlock)
