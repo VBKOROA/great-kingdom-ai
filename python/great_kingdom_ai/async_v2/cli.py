@@ -8,8 +8,7 @@ import os
 import shutil
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import asdict, replace
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -24,12 +23,12 @@ from great_kingdom_ai.async_v2.config import (
 )
 from great_kingdom_ai.async_v2.factory import run_factory_init_v2_once
 from great_kingdom_ai.async_v2.learner import (
+    _append_shard_import_event,
     _continuous_train_steps,
     _drop_async_unused_replay_arrays,
     _format_train_loss_detail,
     _import_shards_into_replay,
     _load_or_create_replay,
-    _append_shard_import_event,
     _persist_imported_replay,
     _print_learner_optimizer_state,
     _prune_learner_artifacts,
@@ -38,7 +37,6 @@ from great_kingdom_ai.async_v2.learner import (
     _validate_learner_config,
     run_learner_v2_once,
 )
-from great_kingdom_ai.model import MODEL_PRESETS
 from great_kingdom_ai.async_v2.metadata import _append_game_logs, pending_v2_shards
 from great_kingdom_ai.async_v2.paths import (
     _candidate_checkpoint,
@@ -49,6 +47,7 @@ from great_kingdom_ai.async_v2.paths import (
     _source_checkpoint,
     _training_latest_checkpoint,
 )
+from great_kingdom_ai.model import MODEL_PRESETS
 from great_kingdom_ai.onnx_export import export_checkpoint_to_onnx
 from great_kingdom_ai.pipeline_printer import PipelinePrinter
 from great_kingdom_ai.replay import TrajectoryReplayDataset
@@ -861,7 +860,11 @@ def _run_learner_continuous_cli(
                 if completed_backup is None:
                     time.sleep(0.1)
 
-            staged_pending, staged_imported_events, staged_shard_ids = _remove_backed_up_staged_shards(
+            (
+                staged_pending,
+                staged_imported_events,
+                staged_shard_ids,
+            ) = _remove_backed_up_staged_shards(
                 staged_pending=staged_pending,
                 staged_imported_events=staged_imported_events,
                 backed_up_ids=completed_backup.shard_ids,
@@ -889,7 +892,11 @@ def _run_learner_continuous_cli(
                     if completed_backup is None:
                         time.sleep(0.1)
 
-                _remove_backed_up_staged_shards(
+                (
+                    staged_pending,
+                    staged_imported_events,
+                    staged_shard_ids,
+                ) = _remove_backed_up_staged_shards(
                     staged_pending=staged_pending,
                     staged_imported_events=staged_imported_events,
                     backed_up_ids=completed_backup.shard_ids,

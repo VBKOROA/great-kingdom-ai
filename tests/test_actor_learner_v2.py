@@ -1381,10 +1381,10 @@ def test_learner_v2_loop_coalescing_queue(
     )
 
     import threading
-    import time
 
     first_copy_started = threading.Event()
     allow_first_copy_finish = threading.Event()
+    queued_event_fired = threading.Event()
     copies: list[tuple[Path, Path]] = []
 
     original_copy_file_atomic = async_v2_cli_module.copy_file_atomic
@@ -1413,8 +1413,21 @@ def test_learner_v2_loop_coalescing_queue(
         torch.save({"state_dict": {}, "optimizer_state": {}}, destination)
         return FakeTrainSummary(destination)
 
+    original_start_or_queue = async_v2_cli_module._ReplayBackupManager.start_or_queue
+
+    def mock_start_or_queue(self: Any, *args: Any, **kwargs: Any) -> bool:
+        result = original_start_or_queue(self, *args, **kwargs)
+        if self._queued:
+            queued_event_fired.set()
+        return result
+
     monkeypatch.setattr(async_v2_cli_module, "copy_file_atomic", delayed_copy)
     monkeypatch.setattr(async_v2_cli_module, "train_from_replay", fake_train)
+    monkeypatch.setattr(
+        async_v2_cli_module._ReplayBackupManager,
+        "start_or_queue",
+        mock_start_or_queue,
+    )
 
     import concurrent.futures
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -1453,6 +1466,9 @@ def test_learner_v2_loop_coalescing_queue(
         printer=PipelinePrinter(enabled=False),
     )
 
+    # Wait until the second backup request has been queued (queued path actually hit)
+    assert queued_event_fired.wait(timeout=10.0)
+
     allow_first_copy_finish.set()
 
     summaries = future.result(timeout=15.0)
@@ -1465,3 +1481,4 @@ def test_learner_v2_loop_coalescing_queue(
     assert local_replay.is_file()
     assert network_replay.is_file()
     assert [record.status for record in records] == ["imported", "imported"]
+    assert len(summaries) == 2
