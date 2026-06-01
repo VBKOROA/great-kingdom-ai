@@ -81,6 +81,43 @@ class ResidualBlock(nn.Module):
         return cast(torch.Tensor, self.activation(x + self.block(x)))
 
 
+class Full2DRelativePositionBias(nn.Module):
+    def __init__(self, num_heads: int, board_size: int = 9) -> None:
+        super().__init__()
+        self.num_heads = num_heads
+        self.board_size = board_size
+        self.num_positions = board_size * board_size
+
+        self.max_relative_position = 2 * board_size - 1
+        self.num_relative_positions = self.max_relative_position * self.max_relative_position
+
+        self.relative_bias_table = nn.Parameter(
+            torch.zeros(self.num_relative_positions, num_heads)
+        )
+
+        relative_index = self._compute_relative_index()
+        self.register_buffer("relative_index", relative_index)
+
+    def _compute_relative_index(self) -> torch.Tensor:
+        coords = torch.arange(self.num_positions)
+        r = coords // self.board_size
+        c = coords % self.board_size
+
+        dr = r.unsqueeze(0) - r.unsqueeze(1)
+        dc = c.unsqueeze(0) - c.unsqueeze(1)
+
+        dr_idx = dr + (self.board_size - 1)
+        dc_idx = dc + (self.board_size - 1)
+
+        relative_index = dr_idx * self.max_relative_position + dc_idx
+        return relative_index
+
+    def forward(self) -> torch.Tensor:
+        bias = self.relative_bias_table[self.relative_index]  # [81, 81, num_heads]
+        bias = bias.permute(2, 0, 1).unsqueeze(0)  # [1, num_heads, 81, 81]
+        return bias
+
+
 class BoardSelfAttentionBlock(nn.Module):
     def __init__(
         self,
@@ -100,6 +137,8 @@ class BoardSelfAttentionBlock(nn.Module):
         self.norm1 = nn.LayerNorm(channels)
         self.qkv_proj = nn.Linear(channels, channels * 3, bias=True)
         self.out_proj = nn.Linear(channels, channels, bias=True)
+
+        self.relative_bias = Full2DRelativePositionBias(num_heads)
 
         self.norm2 = nn.LayerNorm(channels)
         self.ffn = nn.Sequential(
@@ -133,7 +172,9 @@ class BoardSelfAttentionBlock(nn.Module):
         # scores: [B, num_heads, N, N]
         scores = torch.matmul(q, k.transpose(-2, -1)) / (self.head_dim ** 0.5)
 
-        # (Placeholder for relative position bias in step 3)
+        # Add full 2D relative position bias
+        # bias: [1, num_heads, N, N]
+        scores = scores + self.relative_bias()
 
         attn_weights = torch.softmax(scores, dim=-1)
 
@@ -249,5 +290,6 @@ __all__ = [
     "ModelConfig",
     "PolicyValueNetwork",
     "BoardSelfAttentionBlock",
+    "Full2DRelativePositionBias",
     "create_model",
 ]
