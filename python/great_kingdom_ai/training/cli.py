@@ -11,6 +11,7 @@ from typing import NoReturn
 from great_kingdom_ai.training.batch import ReplayDataset
 from great_kingdom_ai.training.config import TrainingConfig, load_training_config
 from great_kingdom_ai.training.loop import train_from_replay
+from great_kingdom_ai.model import MODEL_PRESETS
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -30,15 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument(
         "--model-preset",
-        choices=[
-            "small",
-            "medium",
-            "medium_plus",
-            "strong",
-            "large",
-            "large_policy",
-            "large_plus",
-        ],
+        choices=list(MODEL_PRESETS),
         default=None,
     )
     parser.add_argument(

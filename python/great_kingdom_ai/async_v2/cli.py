@@ -38,6 +38,7 @@ from great_kingdom_ai.async_v2.learner import (
     _validate_learner_config,
     run_learner_v2_once,
 )
+from great_kingdom_ai.model import MODEL_PRESETS
 from great_kingdom_ai.async_v2.metadata import _append_game_logs, pending_v2_shards
 from great_kingdom_ai.async_v2.paths import (
     _candidate_checkpoint,
@@ -150,15 +151,7 @@ def build_factory_init_v2_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", choices=["cpu", "cuda"], default=None)
     parser.add_argument(
         "--model-preset",
-        choices=[
-            "small",
-            "medium",
-            "medium_plus",
-            "strong",
-            "large",
-            "large_policy",
-            "large_plus",
-        ],
+        choices=list(MODEL_PRESETS),
         default=None,
     )
     parser.add_argument("--ema-decay", type=float, default=None)

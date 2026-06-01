@@ -23,6 +23,7 @@ from great_kingdom_ai.training import (
     save_checkpoint,
     train_step,
 )
+from great_kingdom_ai.model import MODEL_PRESETS
 
 if TYPE_CHECKING:
     import torch
@@ -146,15 +147,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--learning-rate", type=float, default=None)
     parser.add_argument(
         "--model-preset",
-        choices=[
-            "small",
-            "medium",
-            "medium_plus",
-            "strong",
-            "large",
-            "large_policy",
-            "large_plus",
-        ],
+        choices=list(MODEL_PRESETS),
         default=None,
     )
     parser.add_argument("--log-every", type=int, default=50)
