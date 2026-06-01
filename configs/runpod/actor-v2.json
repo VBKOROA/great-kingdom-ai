@@ -4,7 +4,7 @@
   "ema_onnx_model_path": "data/runpod/train-strong-attn/checkpoints/onnx/training-latest-ema.onnx",
   "ema_opponent_fraction": 0.25,
   "model_version": "training-latest",
-  "games": 128,
+  "games": 64,
   "seed_start": 0,
   "onnx_device": "cuda",
   "onnx_max_batch_size": 4096,
