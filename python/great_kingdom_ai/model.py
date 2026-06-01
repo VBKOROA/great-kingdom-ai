@@ -210,6 +210,17 @@ class PolicyValueNetwork(nn.Module):
         self.backbone = nn.Sequential(
             *[ResidualBlock(config.channels) for _ in range(config.residual_blocks)]
         )
+        self.attention = nn.Sequential(
+            *[
+                BoardSelfAttentionBlock(
+                    channels=config.channels,
+                    num_heads=config.attention_heads,
+                    ffn_multiplier=config.attention_ffn_multiplier,
+                    residual_scale_init=config.attention_residual_scale_init,
+                )
+                for _ in range(config.attention_blocks)
+            ]
+        )
         self.policy_spatial = nn.Sequential(
             nn.Conv2d(
                 config.channels,
@@ -255,6 +266,7 @@ class PolicyValueNetwork(nn.Module):
             self._validate_input_shape(x)
 
         features = self.backbone(self.stem(x))
+        features = self.attention(features)
         board_logits = self.policy_spatial(features).flatten(start_dim=1)
         pass_logits = self.policy_pass(features)
         policy_logits = torch.cat([board_logits, pass_logits], dim=1)
