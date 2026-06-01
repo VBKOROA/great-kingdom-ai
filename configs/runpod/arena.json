@@ -3,7 +3,7 @@
   "batch_size": 200,
   "max_turns": 112,
   "gumbel_simulations": 64,
-  "gumbel_max_considered_actions": 16,
+  "gumbel_max_considered_actions": 8,
   "gumbel_c_visit": 50.0,
   "gumbel_c_scale": 0.1,
   "gumbel_scale": 0.0,
@@ -13,7 +13,7 @@
   "policy_target_c_scale": 0.1,
   "policy_target_temperature": 1.0,
   "paired_seeds": true,
-  "leaf_batch_size": 2048,
+  "leaf_batch_size": 1024,
   "device": "cuda",
   "promotion_threshold": 0.5,
   "require_side_win_rates_for_promotion": true
