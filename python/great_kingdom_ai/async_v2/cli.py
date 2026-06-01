@@ -347,11 +347,21 @@ class _ReplayBackupManager:
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="replay-backup")
         self._future: Future[None] | None = None
         self._request: _ReplayBackupRequest | None = None
+        self._queued: bool = False
 
-    def close(self) -> None:
+    def close(self, printer: PipelinePrinter | None = None) -> None:
         self._executor.shutdown(wait=True)
         if self._future is not None:
             self._future.result()
+        if self._queued:
+            msg = (
+                "replay backup closed with queued request remaining. "
+                "some staged shards might not be backed up."
+            )
+            if printer is not None:
+                printer.done(msg)
+            else:
+                print(msg)
 
     def poll(self, printer: PipelinePrinter) -> _ReplayBackupRequest | None:
         if self._future is None or self._request is None or not self._future.done():
@@ -367,7 +377,7 @@ class _ReplayBackupManager:
         )
         return request
 
-    def start_if_idle(
+    def start_or_queue(
         self,
         *,
         replay_path: Path,
@@ -381,7 +391,8 @@ class _ReplayBackupManager:
         if not pending:
             return False
         if self._future is not None:
-            printer.done("replay backup already running")
+            self._queued = True
+            printer.done(f"queued replay backup: staged_shards={len(pending)}")
             return False
         snapshot_path = _local_replay_backup_snapshot_path(replay_path)
         _link_or_copy_local_snapshot(replay_path, snapshot_path)
@@ -400,6 +411,12 @@ class _ReplayBackupManager:
             f"shards={len(request.pending)}, source={snapshot_path}, path={backup_path}"
         )
         return True
+
+    def has_queued_request(self) -> bool:
+        return self._queued
+
+    def clear_queued_request(self) -> None:
+        self._queued = False
 
 
 def _run_replay_backup(request: _ReplayBackupRequest) -> None:
@@ -537,16 +554,24 @@ def _run_learner_continuous_cli(
                         )
                         pruned_artifacts = prune_summary["items"]
                         pruned_bytes = prune_summary["bytes"]
-                    if staged_pending:
-                        backup_manager.start_if_idle(
-                            replay_path=active_replay_path,
-                            backup_path=paths["replay_path"],
-                            metadata_path=paths["metadata_path"],
-                            game_log_path=paths["game_log_path"],
-                            pending=staged_pending,
-                            imported_events=staged_imported_events,
-                            printer=printer,
-                        )
+                    if backup_manager.has_queued_request():
+                        backup_manager.clear_queued_request()
+                        if staged_pending:
+                            _save_continuous_local_replay(
+                                config=config,
+                                replay=replay,
+                                path=active_replay_path,
+                                printer=printer,
+                            )
+                            backup_manager.start_or_queue(
+                                replay_path=active_replay_path,
+                                backup_path=paths["replay_path"],
+                                metadata_path=paths["metadata_path"],
+                                game_log_path=paths["game_log_path"],
+                                pending=staged_pending,
+                                imported_events=staged_imported_events,
+                                printer=printer,
+                            )
 
             pending = [
                 shard
@@ -686,7 +711,7 @@ def _run_learner_continuous_cli(
                             path=active_replay_path,
                             printer=printer,
                         )
-                        backup_manager.start_if_idle(
+                        backup_manager.start_or_queue(
                             replay_path=active_replay_path,
                             backup_path=paths["replay_path"],
                             metadata_path=paths["metadata_path"],
@@ -774,7 +799,7 @@ def _run_learner_continuous_cli(
                         path=active_replay_path,
                         printer=printer,
                     )
-                    backup_manager.start_if_idle(
+                    backup_manager.start_or_queue(
                         replay_path=active_replay_path,
                         backup_path=paths["replay_path"],
                         metadata_path=paths["metadata_path"],
@@ -826,9 +851,53 @@ def _run_learner_continuous_cli(
             )
             if not has_train_work:
                 time.sleep(args.sleep_seconds)
+        # Flush any queued backup before closing
+        if backup_manager is not None and backup_manager.has_queued_request():
+            shutdown_printer = PipelinePrinter(enabled=not args.json)
+            shutdown_printer.title("Learner V2 Shutdown Flush")
+            completed_backup = None
+            while completed_backup is None:
+                completed_backup = backup_manager.poll(shutdown_printer)
+                if completed_backup is None:
+                    time.sleep(0.1)
+
+            staged_pending, staged_imported_events, staged_shard_ids = _remove_backed_up_staged_shards(
+                staged_pending=staged_pending,
+                staged_imported_events=staged_imported_events,
+                backed_up_ids=completed_backup.shard_ids,
+            )
+            if staged_pending:
+                backup_manager.clear_queued_request()
+                _save_continuous_local_replay(
+                    config=config,
+                    replay=replay,
+                    path=active_replay_path,
+                    printer=shutdown_printer,
+                )
+                backup_manager.start_or_queue(
+                    replay_path=active_replay_path,
+                    backup_path=paths["replay_path"],
+                    metadata_path=paths["metadata_path"],
+                    game_log_path=paths["game_log_path"],
+                    pending=staged_pending,
+                    imported_events=staged_imported_events,
+                    printer=shutdown_printer,
+                )
+                completed_backup = None
+                while completed_backup is None:
+                    completed_backup = backup_manager.poll(shutdown_printer)
+                    if completed_backup is None:
+                        time.sleep(0.1)
+
+                _remove_backed_up_staged_shards(
+                    staged_pending=staged_pending,
+                    staged_imported_events=staged_imported_events,
+                    backed_up_ids=completed_backup.shard_ids,
+                )
     finally:
         if backup_manager is not None:
-            backup_manager.close()
+            shutdown_printer = PipelinePrinter(enabled=not args.json)
+            backup_manager.close(shutdown_printer)
 
     return summaries
 
