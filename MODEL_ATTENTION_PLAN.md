@@ -1,17 +1,17 @@
-# Clean ResNet + 1x Self-Attention 추가 계획
+# Clean ResNet + 2x Self-Attention 추가 계획
 
 ## 목표
 
-현재 `strong` 모델을 기준으로, residual CNN backbone 뒤쪽에 self-attention block 1개를 추가한 비교군을 만든다.
+현재 `strong` 모델을 기준으로, residual CNN backbone 뒤쪽에 self-attention block 2개를 추가한 비교군을 만든다.
 
 핵심 비교는 다음 두 모델로 제한한다.
 
 - `strong_clean`: 모델 구조 trick을 줄인 기준 ResNet
-- `strong_attn`: `strong_clean` 뒤쪽에 board self-attention block 1개를 추가한 실험군
+- `strong_attn`: `strong_clean` 뒤쪽에 board self-attention block 2개를 추가한 실험군
 
 SE block은 이번 실험에 포함하지 않는다. attention 효과를 먼저 분리해서 보기 위함이다.
 
-전제: `strong_clean` 자체는 별도 목표로 만든다. 따라서 1차 유료 실험의 질문은 "현재 legacy `strong` 대비 attention이 좋은가"가 아니라, "정리된 ResNet 기준형에 attention block 1개를 추가할 가치가 있는가"로 둔다.
+전제: `strong_clean` 자체는 별도 목표로 만든다. 따라서 1차 유료 실험의 질문은 "현재 legacy `strong` 대비 attention이 좋은가"가 아니라, "정리된 ResNet 기준형에 attention block 2개를 추가할 가치가 있는가"로 둔다.
 
 ## 현재 모델에서 정리할 부분
 
@@ -36,7 +36,7 @@ SE block은 이번 실험에 포함하지 않는다. attention 효과를 먼저 
 input [B, C_in, 9, 9]
 -> stem Conv3x3-BN-ReLU
 -> N x ResidualBlock
--> optional BoardSelfAttentionBlock
+-> optional N x BoardSelfAttentionBlock
 -> policy head
 -> value head
 ```
@@ -160,7 +160,7 @@ Manhattan distance bias는 사용하지 않는다. 구현은 더 단순하지만
     residual_blocks=10,
     value_hidden=256,
     policy_channels=16,
-    attention_blocks=1,
+    attention_blocks=2,
     attention_heads=4,
 )
 ```
@@ -198,7 +198,7 @@ Manhattan distance bias는 사용하지 않는다. 구현은 더 단순하지만
    - relative bias 출력 shape가 `[1, heads, 81, 81]`인지 확인
    - relative index가 `0..288` 범위를 벗어나지 않는지 확인
    - `attn_scale`, `ffn_scale` 초기값이 설정값과 같은지 확인
-   - `strong_attn`이 `BoardSelfAttentionBlock`을 포함하는지 확인
+   - `strong_attn`이 `BoardSelfAttentionBlock` 2개를 포함하는지 확인
    - ONNX export smoke test가 깨지지 않는지 확인
 
 ## 검증 계획
@@ -233,7 +233,7 @@ Runpod:
 1. local shape/ONNX test
 2. Runpod short smoke
    - 둘 다 같은 작은 step 수로 학습
-   - loss NaN, throughput 급락, export 실패 여부만 확인
+   - loss NaN, throughput 급락, latency 증가, export 실패 여부만 확인
 3. Runpod medium probe
    - 같은 replay snapshot에서 `strong_clean`, `strong_attn` 학습
    - 같은 후보 평가 config로 arena 비교
@@ -241,6 +241,8 @@ Runpod:
    - medium probe에서 attention이 명확히 나쁘지 않을 때만 진행
 
 가능하면 wall-clock 기준도 같이 기록한다. attention 모델이 update당 약간 강해도 self-play throughput이 크게 떨어지면 전체 파이프라인에서는 손해일 수 있다.
+
+2-block attention은 9x9 보드라 메모리 fit 가능성은 높지만, block 수에 거의 비례해서 inference latency가 늘 수 있다. 따라서 첫 smoke에서는 학습 batch fit 여부보다 ONNX/Rust self-play throughput 저하 폭을 더 민감하게 본다.
 
 ## 성공 기준
 
@@ -263,6 +265,7 @@ Runpod:
 
 더 정석적으로 보려면 후속으로 다음 비교군을 둔다.
 
+- `strong_attn_1`: attention block 1개만 추가한 더 얕은 attention 비교군
 - `strong_clean_wide`: attention 파라미터 증가분에 맞춘 약간 넓은 CNN
 - `strong_se`: SE block만 추가한 CNN
 
