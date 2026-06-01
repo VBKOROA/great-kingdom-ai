@@ -81,6 +81,82 @@ class ResidualBlock(nn.Module):
         return cast(torch.Tensor, self.activation(x + self.block(x)))
 
 
+class BoardSelfAttentionBlock(nn.Module):
+    def __init__(
+        self,
+        channels: int,
+        num_heads: int = 4,
+        ffn_multiplier: int = 4,
+        residual_scale_init: float = 1e-3,
+    ) -> None:
+        super().__init__()
+        if channels % num_heads != 0:
+            raise ValueError(f"channels ({channels}) must be divisible by num_heads ({num_heads})")
+
+        self.channels = channels
+        self.num_heads = num_heads
+        self.head_dim = channels // num_heads
+
+        self.norm1 = nn.LayerNorm(channels)
+        self.qkv_proj = nn.Linear(channels, channels * 3, bias=True)
+        self.out_proj = nn.Linear(channels, channels, bias=True)
+
+        self.norm2 = nn.LayerNorm(channels)
+        self.ffn = nn.Sequential(
+            nn.Linear(channels, channels * ffn_multiplier),
+            nn.GELU(),
+            nn.Linear(channels * ffn_multiplier, channels),
+        )
+
+        self.attn_scale = nn.Parameter(torch.full((channels,), residual_scale_init))
+        self.ffn_scale = nn.Parameter(torch.full((channels,), residual_scale_init))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, C, H, W = x.shape
+        N = H * W
+
+        # Flatten spatial dimensions: [B, C, H, W] -> [B, N, C]
+        x_flat = x.permute(0, 2, 3, 1).view(B, N, C)
+
+        # Self-Attention Branch
+        norm_x = self.norm1(x_flat)
+        qkv = self.qkv_proj(norm_x)  # [B, N, 3 * C]
+        q, k, v = qkv.chunk(3, dim=-1)  # Each [B, N, C]
+
+        # Reshape to [B, num_heads, N, head_dim]
+        q = q.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
+
+        # Compute scaled dot-product attention scores
+        # q: [B, num_heads, N, head_dim], k^T: [B, num_heads, head_dim, N]
+        # scores: [B, num_heads, N, N]
+        scores = torch.matmul(q, k.transpose(-2, -1)) / (self.head_dim ** 0.5)
+
+        # (Placeholder for relative position bias in step 3)
+
+        attn_weights = torch.softmax(scores, dim=-1)
+
+        # Compute context vector
+        # context: [B, num_heads, N, head_dim]
+        context = torch.matmul(attn_weights, v)
+        # Reshape back to [B, N, C]
+        context = context.transpose(1, 2).contiguous().view(B, N, C)
+
+        attn_out = self.out_proj(context)
+
+        # Apply LayerScale and residual connection
+        x_flat = x_flat + self.attn_scale * attn_out
+
+        # FFN Branch
+        ffn_out = self.ffn(self.norm2(x_flat))
+        x_flat = x_flat + self.ffn_scale * ffn_out
+
+        # Reshape back to [B, C, H, W]
+        x_out = x_flat.view(B, H, W, C).permute(0, 3, 1, 2).contiguous()
+        return x_out
+
+
 class PolicyValueNetwork(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
@@ -172,5 +248,6 @@ __all__ = [
     "MODEL_PRESETS",
     "ModelConfig",
     "PolicyValueNetwork",
+    "BoardSelfAttentionBlock",
     "create_model",
 ]
