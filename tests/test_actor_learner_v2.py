@@ -1361,3 +1361,107 @@ def test_learner_v2_loop_uses_local_replay_and_async_backup(
     assert network_replay.is_file()
     assert any(destination == network_replay for _source, destination in copies)
     assert [record.status for record in records] == ["imported"]
+
+
+def test_learner_v2_loop_coalescing_queue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_actor_v2_once(
+        ActorV2Config(
+            work_dir=tmp_path,
+            onnx_model_path=tmp_path / "model.onnx",
+            model_version="ema",
+            games=2,
+            seed_start=0,
+            onnx_device="cpu",
+        ),
+        runner=fake_actor_runner,
+        printer=PipelinePrinter(enabled=False),
+    )
+
+    import threading
+    import time
+
+    first_copy_started = threading.Event()
+    allow_first_copy_finish = threading.Event()
+    copies: list[tuple[Path, Path]] = []
+
+    original_copy_file_atomic = async_v2_cli_module.copy_file_atomic
+
+    def delayed_copy(source: Path, destination: Path) -> None:
+        copies.append((Path(source), Path(destination)))
+        if "trajectory-replay.npz" in destination.name:
+            first_copy_started.set()
+            allow_first_copy_finish.wait(timeout=10.0)
+        original_copy_file_atomic(source, destination)
+
+    def fake_train(
+        replay: Any,
+        config: TrainingConfig,
+        *,
+        checkpoint_path: str | Path,
+        resume_path: str | Path | None,
+        bootstrap_weights_path: str | Path | None = None,
+        log_every: int,
+        progress_callback: Any = None,
+    ) -> FakeTrainSummary:
+        del config, resume_path, bootstrap_weights_path, log_every, progress_callback
+        destination = Path(checkpoint_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        import torch
+        torch.save({"state_dict": {}, "optimizer_state": {}}, destination)
+        return FakeTrainSummary(destination)
+
+    monkeypatch.setattr(async_v2_cli_module, "copy_file_atomic", delayed_copy)
+    monkeypatch.setattr(async_v2_cli_module, "train_from_replay", fake_train)
+
+    import concurrent.futures
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+    config = LearnerV2Config(
+        work_dir=tmp_path,
+        replay_capacity=16,
+        min_replay_transitions=1,
+        export_onnx=False,
+        train_reuse_factor=16.0,
+        replay_local_dir=tmp_path / "local-replay",
+    )
+    train_config = TrainingConfig(batch_size=2, steps=64, device="cpu")
+    args = argparse.Namespace(
+        loop=True,
+        max_cycles=2,
+        sleep_seconds=0.1,
+        json=True,
+        override_optimizer_lr=None,
+    )
+
+    future = executor.submit(_run_learner_cli, config, train_config, args)
+
+    assert first_copy_started.wait(timeout=5.0)
+
+    run_actor_v2_once(
+        ActorV2Config(
+            work_dir=tmp_path,
+            onnx_model_path=tmp_path / "model.onnx",
+            model_version="ema",
+            games=2,
+            seed_start=2,
+            onnx_device="cpu",
+        ),
+        runner=fake_actor_runner,
+        printer=PipelinePrinter(enabled=False),
+    )
+
+    allow_first_copy_finish.set()
+
+    summaries = future.result(timeout=15.0)
+    executor.shutdown()
+
+    local_replay = tmp_path / "local-replay" / "trajectory-replay.npz"
+    network_replay = tmp_path / "replay" / "trajectory-replay.npz"
+    records = load_v2_shard_records(tmp_path / "shards" / "metadata.jsonl")
+
+    assert local_replay.is_file()
+    assert network_replay.is_file()
+    assert [record.status for record in records] == ["imported", "imported"]
