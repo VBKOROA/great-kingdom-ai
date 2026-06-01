@@ -18,7 +18,7 @@
   "lr_cosine_steps": 200000,
   "seed": 20260522,
   "device": "cuda",
-  "model_preset": "strong",
+  "model_preset": "strong_attn",
   "symmetry_augmentation": true,
   "mask_policy_loss": true,
   "amp": true,

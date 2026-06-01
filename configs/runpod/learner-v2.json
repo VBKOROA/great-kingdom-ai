@@ -1,5 +1,5 @@
 {
-  "work_dir": "data/runpod/train-v6",
+  "work_dir": "data/runpod/train-strong-attn",
   "replay_capacity": 1048576,
   "min_replay_transitions": 16384,
   "source_checkpoint": null,
@@ -7,8 +7,8 @@
   "training_latest_checkpoint": null,
   "train_checkpoint_mode": "resume",
   "export_onnx": true,
-  "onnx_output_path": "data/runpod/train-v6/checkpoints/onnx/training-latest.onnx",
-  "ema_onnx_output_path": "data/runpod/train-v6/checkpoints/onnx/training-latest-ema.onnx",
+  "onnx_output_path": "data/runpod/train-strong-attn/checkpoints/onnx/training-latest.onnx",
+  "ema_onnx_output_path": "data/runpod/train-strong-attn/checkpoints/onnx/training-latest-ema.onnx",
   "export_ema_onnx": true,
   "onnx_device": "cuda",
   "onnx_precision": "fp16",
@@ -18,5 +18,5 @@
   "prune_keep_imported_shards": 2,
   "train_reuse_factor": 5.0,
   "replay_save_temp_dir": "/tmp/great-kingdom-ai/replay-save",
-  "replay_local_dir": "/tmp/great-kingdom-ai/train-v6/replay"
+  "replay_local_dir": "/tmp/great-kingdom-ai/train-strong-attn/replay"
 }
