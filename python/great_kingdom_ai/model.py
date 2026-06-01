@@ -142,6 +142,7 @@ class BoardSelfAttentionBlock(nn.Module):
         num_heads: int = 4,
         ffn_multiplier: int = 4,
         residual_scale_init: float = 1e-3,
+        board_size: int = BOARD_SIZE,
     ) -> None:
         super().__init__()
         if channels % num_heads != 0:
@@ -150,12 +151,13 @@ class BoardSelfAttentionBlock(nn.Module):
         self.channels = channels
         self.num_heads = num_heads
         self.head_dim = channels // num_heads
+        self.board_size = board_size
 
         self.norm1 = nn.LayerNorm(channels)
         self.qkv_proj = nn.Linear(channels, channels * 3, bias=True)
         self.out_proj = nn.Linear(channels, channels, bias=True)
 
-        self.relative_bias = Full2DRelativePositionBias(num_heads)
+        self.relative_bias = Full2DRelativePositionBias(num_heads, board_size=board_size)
 
         self.norm2 = nn.LayerNorm(channels)
         self.ffn = nn.Sequential(
@@ -169,6 +171,10 @@ class BoardSelfAttentionBlock(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
+        if H != self.board_size or W != self.board_size:
+            raise ValueError(
+                f"expected spatial shape ({self.board_size}, {self.board_size}), got ({H}, {W})"
+            )
         N = H * W
 
         # Flatten spatial dimensions: [B, C, H, W] -> [B, N, C]

@@ -232,3 +232,15 @@ def test_strong_attn_preset_contains_two_attention_blocks() -> None:
     assert len(model.attention) == 2
     for block in model.attention:
         assert isinstance(block, BoardSelfAttentionBlock)
+
+
+def test_attention_block_rejects_wrong_spatial_dimensions() -> None:
+    from great_kingdom_ai.model import BoardSelfAttentionBlock
+
+    block = BoardSelfAttentionBlock(channels=64, num_heads=4, board_size=9)
+    block.eval()
+
+    # 3x27 has 81 cells, but wrong spatial dims
+    inputs_wrong_dims = torch.randn(2, 64, 3, 27)
+    with pytest.raises(ValueError, match="expected spatial shape"):
+        block(inputs_wrong_dims)
