@@ -29,10 +29,10 @@ from great_kingdom_ai.training import (  # noqa: E402
 )
 
 
-def _save_test_checkpoint(tmp_path) -> object:
-    state = create_train_state(TrainingConfig(model_preset="small"))
+def _save_test_checkpoint(tmp_path, model_preset: str = "small") -> object:
+    state = create_train_state(TrainingConfig(model_preset=model_preset))
     state.model.eval()
-    return save_checkpoint(state, tmp_path / "checkpoint.pt")
+    return save_checkpoint(state, tmp_path / f"checkpoint_{model_preset}.pt")
 
 
 def test_export_checkpoint_to_onnx_uses_opset_17_and_dynamic_batch_axis(tmp_path) -> None:
@@ -129,3 +129,17 @@ def test_core_onnx_self_play_smoke_reaches_terminal_game(tmp_path) -> None:
     assert policy_row.shape == (ACTION_SPACE,)
     assert np.isfinite(feature_row).all()
     assert np.isfinite(policy_row).all()
+
+
+def test_strong_attn_onnx_runtime_outputs_match_pytorch(tmp_path) -> None:
+    checkpoint_path = _save_test_checkpoint(tmp_path, model_preset="strong_attn")
+    onnx_path = tmp_path / "model_strong_attn.onnx"
+    export_checkpoint_to_onnx(checkpoint_path, onnx_path)
+
+    summary = compare_checkpoint_to_onnx(checkpoint_path, onnx_path, batch_size=4, seed=17)
+
+    assert summary.policy_shape == (4, ACTION_SPACE)
+    assert summary.value_shape == (4,)
+    assert summary.max_policy_abs_diff <= 1e-5
+    assert summary.max_value_abs_diff <= 1e-5
+    assert summary.passed

@@ -171,10 +171,12 @@ class BoardSelfAttentionBlock(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
-        if H != self.board_size or W != self.board_size:
-            raise ValueError(
-                f"expected spatial shape ({self.board_size}, {self.board_size}), got ({H}, {W})"
-            )
+        is_tracing = cast("Callable[[], bool]", torch.jit.is_tracing)  # type: ignore[attr-defined]
+        if not is_tracing():
+            if H != self.board_size or W != self.board_size:
+                raise ValueError(
+                    f"expected spatial shape ({self.board_size}, {self.board_size}), got ({H}, {W})"
+                )
         N = H * W
 
         # Flatten spatial dimensions: [B, C, H, W] -> [B, N, C]
