@@ -102,7 +102,26 @@ training-latest.onnx
 
 ### 실행 순서
 
-먼저 Runpod 환경을 준비합니다.
+#### 0. 최초 학습 초기화 (Initialization)
+
+처음으로 완전히 새로운 자율 학습(Self-play) 루프를 가동할 경우, actor들이 self-play 데이터를 생성하기 전에 **초기화된 무작위 가중치 텐서 및 기본 ONNX 모델 파일**이 작업 디렉토리에 미리 존재해야 합니다. 아래의 초기화 CLI 도구를 사용해 이를 선제 생성합니다.
+
+```bash
+great-kingdom-init-async-v2 \
+  --train-config configs/runpod/train.json \
+  --work-dir data/runpod/train-strong-attn \
+  --model-preset strong_attn \
+  --overwrite
+```
+
+* **수행 결과**:
+  - `data/runpod/train-strong-attn/checkpoints/training-latest.pt` 초기화 체크포인트 저장.
+  - actor가 로드하여 첫 self-play shard를 제작할 수 있는 `checkpoints/onnx/training-latest.onnx` 및 `training-latest-ema.onnx` 자동 생성.
+  - 기존에 누적되어 있던 이전 실험 체크포인트를 완전히 초기화하고 덮어쓰기 위해 `--overwrite` 옵션을 적용합니다.
+
+#### 1. 환경 준비 및 프로세스 기동
+
+먼저 Runpod 가상 환경을 활성화합니다.
 
 ```bash
 source .venv/bin/activate
