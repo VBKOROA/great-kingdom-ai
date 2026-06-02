@@ -247,6 +247,9 @@ def run_or_load_snapshot_pair(
     onnx_precision: str = "fp16",
     onnx_max_batch_size: int = 8192,
 ) -> PairwiseMatchResult:
+    # Override games to match the pair setting
+    pair_config = ArenaConfig(**{**asdict(arena_config), "games": pair.games})
+    
     use_cache = False
     if report_path.exists() and not force:
         try:
@@ -255,28 +258,21 @@ def run_or_load_snapshot_pair(
             cached_summary = cached_data.get("summary")
             cached_config = cached_data.get("config", {})
             cached_backend = cached_data.get("backend")
+            cached_precision = cached_data.get("onnx_precision")
+            cached_max_batch = cached_data.get("onnx_max_batch_size")
             
-            is_games_match = cached_config.get("games") == pair.games
+            # Full configuration dictionary comparison
+            is_config_match = cached_config == asdict(pair_config)
             is_backend_match = cached_backend == backend
-            is_sims_match = (
-                cached_config.get("gumbel_simulations")
-                == arena_config.gumbel_simulations
-            )
-            is_max_actions_match = (
-                cached_config.get("gumbel_max_considered_actions")
-                == arena_config.gumbel_max_considered_actions
-            )
-            is_paired_seeds_match = (
-                cached_config.get("paired_seeds") == arena_config.paired_seeds
-            )
+            is_precision_match = cached_precision == onnx_precision
+            is_max_batch_match = cached_max_batch == onnx_max_batch_size
             
             if (
                 cached_summary
-                and is_games_match
+                and is_config_match
                 and is_backend_match
-                and is_sims_match
-                and is_max_actions_match
-                and is_paired_seeds_match
+                and is_precision_match
+                and is_max_batch_match
             ):
                 use_cache = True
         except Exception:
@@ -285,9 +281,6 @@ def run_or_load_snapshot_pair(
     if use_cache:
         summary = _load_arena_summary(report_path)
     else:
-        # Override games to match the pair setting
-        pair_config = ArenaConfig(**{**asdict(arena_config), "games": pair.games})
-        
         if backend == "pytorch":
             from great_kingdom_ai.evaluate import (
                 load_model_from_checkpoint,
@@ -309,6 +302,8 @@ def run_or_load_snapshot_pair(
             summary = report.summary.to_dict()
             report_dict = report.to_dict()
             report_dict["backend"] = backend
+            report_dict["onnx_precision"] = onnx_precision
+            report_dict["onnx_max_batch_size"] = onnx_max_batch_size
             
             report_path.write_text(
                 json.dumps(report_dict, indent=2, sort_keys=True),
@@ -327,6 +322,8 @@ def run_or_load_snapshot_pair(
             summary = report.summary.to_dict()
             report_dict = report.to_dict()
             report_dict["backend"] = backend
+            report_dict["onnx_precision"] = onnx_precision
+            report_dict["onnx_max_batch_size"] = onnx_max_batch_size
             
             report_path.write_text(
                 json.dumps(report_dict, indent=2, sort_keys=True),
@@ -497,6 +494,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> NoReturn:
     args = build_parser().parse_args()
     
+    if args.games <= 0:
+        raise SystemExit("Error: --games must be a positive integer.")
+    if args.anchor_games <= 0:
+        raise SystemExit("Error: --anchor-games must be a positive integer.")
+        
     # 1. Selection
     snapshots = select_snapshots(
         args.checkpoint_dir,
@@ -623,19 +625,25 @@ def main() -> NoReturn:
     for match in matches:
         try:
             report_data = json.loads(match.report_path.read_text(encoding="utf-8"))
-            games_list = report_data.get("games", [])
-            for g in games_list:
+        except Exception as e:
+            raise SystemExit(
+                f"Error: Failed to read match report {match.report_path}: {e}"
+            ) from e
+            
+        games_list = report_data.get("games", [])
+        for g in games_list:
+            try:
                 pgn_game = blue_orange_game_to_ordo_pgn(
                     g,
                     candidate_id=match.candidate.stem,
                     baseline_id=match.baseline.stem,
                 )
-                pgn_content.append(pgn_game)
-        except Exception as e:
-            print(
-                f"Warning: Failed to process report {match.report_path}: {e}",
-                flush=True,
-            )
+            except ValueError as e:
+                raise SystemExit(
+                    f"Error: Game result validation failed "
+                    f"in {match.report_path}: {e}"
+                ) from e
+            pgn_content.append(pgn_game)
             
     pgn_path.write_text("\n".join(pgn_content), encoding="utf-8")
     
