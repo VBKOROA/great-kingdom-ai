@@ -246,7 +246,7 @@ def run_or_load_snapshot_pair(
     force: bool,
     onnx_precision: str = "fp16",
     onnx_max_batch_size: int = 8192,
-) -> PairwiseMatchResult:
+) -> tuple[PairwiseMatchResult, bool]:
     # Override games to match the pair setting
     pair_config = ArenaConfig(**{**asdict(arena_config), "games": pair.games})
     
@@ -261,8 +261,17 @@ def run_or_load_snapshot_pair(
             cached_precision = cached_data.get("onnx_precision")
             cached_max_batch = cached_data.get("onnx_max_batch_size")
             
-            # Full configuration dictionary comparison
-            is_config_match = cached_config == asdict(pair_config)
+            # Compare configurations excluding random seeds
+            clean_cached = {
+                k: v for k, v in cached_config.items()
+                if k not in ("seed_start", "gumbel_seed")
+            }
+            clean_pair = {
+                k: v for k, v in asdict(pair_config).items()
+                if k not in ("seed_start", "gumbel_seed")
+            }
+            
+            is_config_match = clean_cached == clean_pair
             is_backend_match = cached_backend == backend
             is_precision_match = cached_precision == onnx_precision
             is_max_batch_match = cached_max_batch == onnx_max_batch_size
@@ -333,13 +342,14 @@ def run_or_load_snapshot_pair(
         else:
             raise ValueError(f"Unknown backend: {backend}")
             
-    return _match_from_summary(
+    result = _match_from_summary(
         match_index=match_index,
         candidate=pair.candidate,
         baseline=pair.baseline,
         report_path=report_path,
         summary=summary,
     )
+    return result, use_cache
 
 
 def run_ordo(
@@ -576,6 +586,7 @@ def main() -> NoReturn:
     
     # 3. Arena Matches
     matches: list[PairwiseMatchResult] = []
+    all_cached = True
     for match_index, pair in enumerate(pairs, start=1):
         report_path = (
             pairs_dir
@@ -594,7 +605,7 @@ def main() -> NoReturn:
             flush=True,
         )
         
-        result = run_or_load_snapshot_pair(
+        result, cache_used = run_or_load_snapshot_pair(
             pair,
             match_index=match_index,
             report_path=report_path,
@@ -605,6 +616,8 @@ def main() -> NoReturn:
             onnx_max_batch_size=args.onnx_max_batch_size,
         )
         matches.append(result)
+        if not cache_used:
+            all_cached = False
         
         print(
             json.dumps(
@@ -630,7 +643,19 @@ def main() -> NoReturn:
                 f"Error: Failed to read match report {match.report_path}: {e}"
             ) from e
             
-        games_list = report_data.get("games", [])
+        games_list = report_data.get("games")
+        if not isinstance(games_list, list):
+            raise SystemExit(
+                f"Error: Match report {match.report_path} "
+                f"is missing 'games' list."
+            )
+        if len(games_list) != match.games:
+            raise SystemExit(
+                f"Error: Match report {match.report_path} "
+                f"has game count mismatch. "
+                f"Expected {match.games}, got {len(games_list)}."
+            )
+            
         for g in games_list:
             try:
                 pgn_game = blue_orange_game_to_ordo_pgn(
@@ -650,16 +675,24 @@ def main() -> NoReturn:
     # 5. Run Ordo
     ordo_output_path = output_dir / "ordo.txt"
     ordo_error_message = None
-    try:
-        run_ordo(
-            ordo_bin=args.ordo_bin,
-            pgn_path=pgn_path,
-            output_path=ordo_output_path,
-        )
-    except Exception as e:
-        ordo_error_message = str(e)
-        print(f"Error executing Ordo: {ordo_error_message}", flush=True)
-        print("PGN and Arena reports have been saved successfully.", flush=True)
+    
+    skip_ordo = False
+    if all_cached and ordo_output_path.exists() and not args.force_ordo:
+        skip_ordo = True
+        
+    if skip_ordo:
+        print("Ordo output is already up-to-date. Skipping Ordo run.", flush=True)
+    else:
+        try:
+            run_ordo(
+                ordo_bin=args.ordo_bin,
+                pgn_path=pgn_path,
+                output_path=ordo_output_path,
+            )
+        except Exception as e:
+            ordo_error_message = str(e)
+            print(f"Error executing Ordo: {ordo_error_message}", flush=True)
+            print("PGN and Arena reports have been saved successfully.", flush=True)
         
     # 6. Parse Ordo Output and post-normalize
     parsed_ratings: list[OrdoRating] = []
