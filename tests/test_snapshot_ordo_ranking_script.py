@@ -224,3 +224,15 @@ def test_parse_ordo_output_alternate_format() -> None:
     assert ratings[0].elo == 42.3
     assert ratings[0].error == 18.7
     assert ratings[0].games == 96
+
+
+def test_arena_cache_config_ignores_all_seed_fields() -> None:
+    config_a = module.ArenaConfig(seed_start=10, gumbel_seed=20, games=8)
+    config_b = module.ArenaConfig(seed_start=999, gumbel_seed=777, games=8)
+
+    cache_a = module.arena_cache_config(config_a)
+    cache_b = module.arena_cache_config(config_b)
+
+    assert cache_a == cache_b
+    assert "seed_start" not in cache_a
+    assert "gumbel_seed" not in cache_a

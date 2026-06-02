@@ -26,6 +26,7 @@ from run_candidate_pairwise_matrix import (
 
 BLUE = 1
 ORANGE = 2
+CACHE_KEY_IGNORED_CONFIG_FIELDS = ("seed_start", "gumbel_seed")
 
 
 @dataclass(frozen=True)
@@ -237,6 +238,14 @@ def parse_ordo_output(ordo_text: str) -> list[OrdoRating]:
     return ratings
 
 
+def arena_cache_config(config: ArenaConfig) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in asdict(config).items()
+        if key not in CACHE_KEY_IGNORED_CONFIG_FIELDS
+    }
+
+
 def run_or_load_snapshot_pair(
     pair: SnapshotPair,
     *,
@@ -247,7 +256,6 @@ def run_or_load_snapshot_pair(
     force: bool,
     onnx_precision: str = "fp16",
     onnx_max_batch_size: int = 8192,
-    is_seed_start_explicit: bool = False,
 ) -> tuple[PairwiseMatchResult, bool]:
     # Override games to match the pair setting
     pair_config = ArenaConfig(**{**asdict(arena_config), "games": pair.games})
@@ -263,19 +271,11 @@ def run_or_load_snapshot_pair(
             cached_precision = cached_data.get("onnx_precision")
             cached_max_batch = cached_data.get("onnx_max_batch_size")
             
-            # Compare configurations excluding random seeds conditionally
-            exclude_fields = ["gumbel_seed"]
-            if not is_seed_start_explicit:
-                exclude_fields.append("seed_start")
-                
             clean_cached = {
                 k: v for k, v in cached_config.items()
-                if k not in exclude_fields
+                if k not in CACHE_KEY_IGNORED_CONFIG_FIELDS
             }
-            clean_pair = {
-                k: v for k, v in asdict(pair_config).items()
-                if k not in exclude_fields
-            }
+            clean_pair = arena_cache_config(pair_config)
             
             is_config_match = clean_cached == clean_pair
             is_backend_match = cached_backend == backend
@@ -468,7 +468,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--force-arena",
         action="store_true",
-        help="rerun arena matches even if reports exist",
+        help=(
+            "rerun arena matches even if reports exist; arena cache ignores "
+            "seed_start/gumbel_seed"
+        ),
     )
     parser.add_argument(
         "--force-ordo",
@@ -620,7 +623,6 @@ def main() -> NoReturn:
             force=args.force_arena,
             onnx_precision=onnx_precision,
             onnx_max_batch_size=args.onnx_max_batch_size,
-            is_seed_start_explicit=args.seed_start is not None,
         )
         matches.append(result)
         if not cache_used:
@@ -836,6 +838,7 @@ def main() -> NoReturn:
         "games_total": sum(match.games for match in matches),
         "backend": args.backend,
         "arena_config": asdict(arena_config),
+        "cache_key_ignored_config_fields": list(CACHE_KEY_IGNORED_CONFIG_FIELDS),
         "pgn_path": str(pgn_path),
         "pgn_hash": pgn_hash,
         "ordo_output_path": (
