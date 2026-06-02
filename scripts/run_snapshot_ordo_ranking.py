@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 from dataclasses import asdict, dataclass
@@ -246,6 +247,7 @@ def run_or_load_snapshot_pair(
     force: bool,
     onnx_precision: str = "fp16",
     onnx_max_batch_size: int = 8192,
+    is_seed_start_explicit: bool = False,
 ) -> tuple[PairwiseMatchResult, bool]:
     # Override games to match the pair setting
     pair_config = ArenaConfig(**{**asdict(arena_config), "games": pair.games})
@@ -261,14 +263,18 @@ def run_or_load_snapshot_pair(
             cached_precision = cached_data.get("onnx_precision")
             cached_max_batch = cached_data.get("onnx_max_batch_size")
             
-            # Compare configurations excluding random seeds
+            # Compare configurations excluding random seeds conditionally
+            exclude_fields = ["gumbel_seed"]
+            if not is_seed_start_explicit:
+                exclude_fields.append("seed_start")
+                
             clean_cached = {
                 k: v for k, v in cached_config.items()
-                if k not in ("seed_start", "gumbel_seed")
+                if k not in exclude_fields
             }
             clean_pair = {
                 k: v for k, v in asdict(pair_config).items()
-                if k not in ("seed_start", "gumbel_seed")
+                if k not in exclude_fields
             }
             
             is_config_match = clean_cached == clean_pair
@@ -614,6 +620,7 @@ def main() -> NoReturn:
             force=args.force_arena,
             onnx_precision=onnx_precision,
             onnx_max_batch_size=args.onnx_max_batch_size,
+            is_seed_start_explicit=args.seed_start is not None,
         )
         matches.append(result)
         if not cache_used:
@@ -670,7 +677,9 @@ def main() -> NoReturn:
                 ) from e
             pgn_content.append(pgn_game)
             
-    pgn_path.write_text("\n".join(pgn_content), encoding="utf-8")
+    pgn_data = "\n".join(pgn_content)
+    pgn_hash = hashlib.sha256(pgn_data.encode("utf-8")).hexdigest()
+    pgn_path.write_text(pgn_data, encoding="utf-8")
     
     # 5. Run Ordo
     ordo_output_path = output_dir / "ordo.txt"
@@ -678,7 +687,14 @@ def main() -> NoReturn:
     
     skip_ordo = False
     if all_cached and ordo_output_path.exists() and not args.force_ordo:
-        skip_ordo = True
+        try:
+            summary_path = output_dir / "summary.json"
+            if summary_path.exists():
+                old_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                if old_summary.get("pgn_hash") == pgn_hash:
+                    skip_ordo = True
+        except Exception:
+            skip_ordo = False
         
     if skip_ordo:
         print("Ordo output is already up-to-date. Skipping Ordo run.", flush=True)
@@ -821,6 +837,7 @@ def main() -> NoReturn:
         "backend": args.backend,
         "arena_config": asdict(arena_config),
         "pgn_path": str(pgn_path),
+        "pgn_hash": pgn_hash,
         "ordo_output_path": (
             str(ordo_output_path) if ordo_error_message is None else None
         ),
