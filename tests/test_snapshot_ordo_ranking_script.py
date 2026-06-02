@@ -7,11 +7,18 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "run_snapshot_ordo_ranking.py"
+SCRIPT_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "scripts"
+    / "run_snapshot_ordo_ranking.py"
+)
 SCRIPT_DIR = SCRIPT_PATH.parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
-SPEC = importlib.util.spec_from_file_location("run_snapshot_ordo_ranking", SCRIPT_PATH)
+SPEC = importlib.util.spec_from_file_location(
+    "run_snapshot_ordo_ranking",
+    SCRIPT_PATH,
+)
 assert SPEC is not None
 module = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -62,7 +69,11 @@ def test_select_snapshots_sort_by_mtime(tmp_path: Path) -> None:
         sort_by_mtime=True,
     )
 
-    assert [p.name for p in selected] == ["snapshot-000200.pt", "snapshot-000150.pt", "snapshot-000100.pt"]
+    assert [p.name for p in selected] == [
+        "snapshot-000200.pt",
+        "snapshot-000150.pt",
+        "snapshot-000100.pt",
+    ]
 
 
 def test_generate_sparse_pairs_neighbor_offsets() -> None:
@@ -172,14 +183,14 @@ def test_blue_orange_game_to_ordo_pgn_orange_wins() -> None:
     assert '[Result "0-1"]' in pgn
 
 
-def test_blue_orange_game_to_ordo_pgn_draw() -> None:
-    # Draw/no-winner -> Result "1/2-1/2"
+def test_blue_orange_game_to_ordo_pgn_draw_raises_value_error() -> None:
+    # Draw/no-winner (winner not in (BLUE, ORANGE)) -> Raises ValueError
     game = {
         "candidate_player": 1,
         "winner": 0,
     }
-    pgn = module.blue_orange_game_to_ordo_pgn(game, "cand", "base")
-    assert '[Result "1/2-1/2"]' in pgn
+    with pytest.raises(ValueError, match="unresolved winner"):
+        module.blue_orange_game_to_ordo_pgn(game, "cand", "base")
 
 
 def test_parse_ordo_output_representative_table() -> None:

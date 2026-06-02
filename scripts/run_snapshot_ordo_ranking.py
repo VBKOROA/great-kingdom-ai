@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import gc
 import json
 import subprocess
 from dataclasses import asdict, dataclass
@@ -13,16 +12,14 @@ from typing import Any, Literal, NoReturn
 
 from great_kingdom_ai.evaluate import (
     ArenaConfig,
-    load_arena_config,
     run_arena_checkpoints_onnx,
-    save_arena_report,
 )
 from run_candidate_pairwise_matrix import (
     DEFAULT_ARENA_CONFIG,
     PairwiseMatchResult,
+    _load_arena_summary,
     _load_effective_arena_config,
     _match_from_summary,
-    _load_arena_summary,
     _release_cuda_cache,
 )
 
@@ -127,6 +124,12 @@ def blue_orange_game_to_ordo_pgn(
     candidate_player = game.get("candidate_player")
     winner = game.get("winner")
     
+    if winner not in (BLUE, ORANGE):
+        raise ValueError(
+            f"Game has unresolved winner: {winner}. "
+            "Great Kingdom must always have a winner."
+        )
+    
     if candidate_player == BLUE:
         white_player = candidate_id
         black_player = baseline_id
@@ -167,7 +170,12 @@ def parse_ordo_output(ordo_text: str) -> list[OrdoRating]:
         line = line.strip()
         if not line:
             continue
-        if line.startswith("#") or line.startswith("list") or line.startswith("Ordo") or line.startswith("Ranking"):
+        if (
+            line.startswith("#")
+            or line.startswith("list")
+            or line.startswith("Ordo")
+            or line.startswith("Ranking")
+        ):
             continue
             
         parts = line.split()
@@ -203,7 +211,13 @@ def parse_ordo_output(ordo_text: str) -> list[OrdoRating]:
             error = floats[0]
         elif len(remaining_parts) >= 1:
             try:
-                error = float(remaining_parts[0].replace("+", "").replace("-", "").replace("/", "").strip())
+                error = float(
+                    remaining_parts[0]
+                    .replace("+", "")
+                    .replace("-", "")
+                    .replace("/", "")
+                    .strip()
+                )
             except ValueError:
                 pass
                 
@@ -230,24 +244,76 @@ def run_or_load_snapshot_pair(
     arena_config: ArenaConfig,
     backend: Literal["onnx", "pytorch"],
     force: bool,
+    onnx_precision: str = "fp16",
+    onnx_max_batch_size: int = 8192,
 ) -> PairwiseMatchResult:
+    use_cache = False
     if report_path.exists() and not force:
+        try:
+            with report_path.open("r", encoding="utf-8") as f:
+                cached_data = json.load(f)
+            cached_summary = cached_data.get("summary")
+            cached_config = cached_data.get("config", {})
+            cached_backend = cached_data.get("backend")
+            
+            is_games_match = cached_config.get("games") == pair.games
+            is_backend_match = cached_backend == backend
+            is_sims_match = (
+                cached_config.get("gumbel_simulations")
+                == arena_config.gumbel_simulations
+            )
+            is_max_actions_match = (
+                cached_config.get("gumbel_max_considered_actions")
+                == arena_config.gumbel_max_considered_actions
+            )
+            is_paired_seeds_match = (
+                cached_config.get("paired_seeds") == arena_config.paired_seeds
+            )
+            
+            if (
+                cached_summary
+                and is_games_match
+                and is_backend_match
+                and is_sims_match
+                and is_max_actions_match
+                and is_paired_seeds_match
+            ):
+                use_cache = True
+        except Exception:
+            use_cache = False
+            
+    if use_cache:
         summary = _load_arena_summary(report_path)
     else:
         # Override games to match the pair setting
         pair_config = ArenaConfig(**{**asdict(arena_config), "games": pair.games})
         
         if backend == "pytorch":
-            from great_kingdom_ai.evaluate import load_model_from_checkpoint, run_arena
-            candidate_model = load_model_from_checkpoint(pair.candidate, device=pair_config.device)
-            baseline_model = load_model_from_checkpoint(pair.baseline, device=pair_config.device)
+            from great_kingdom_ai.evaluate import (
+                load_model_from_checkpoint,
+                run_arena,
+            )
+            candidate_model = load_model_from_checkpoint(
+                pair.candidate,
+                device=pair_config.device,
+            )
+            baseline_model = load_model_from_checkpoint(
+                pair.baseline,
+                device=pair_config.device,
+            )
             report = run_arena(
                 candidate_model=candidate_model,
                 best_model=baseline_model,
                 config=pair_config,
             )
-            save_arena_report(report, report_path)
             summary = report.summary.to_dict()
+            report_dict = report.to_dict()
+            report_dict["backend"] = backend
+            
+            report_path.write_text(
+                json.dumps(report_dict, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
             del candidate_model, baseline_model
             _release_cuda_cache()
         elif backend == "onnx":
@@ -255,9 +321,17 @@ def run_or_load_snapshot_pair(
                 candidate_checkpoint=pair.candidate,
                 best_checkpoint=pair.baseline,
                 config=pair_config,
+                onnx_max_batch_size=onnx_max_batch_size,
+                onnx_precision=onnx_precision,
             )
-            save_arena_report(report, report_path)
             summary = report.summary.to_dict()
+            report_dict = report.to_dict()
+            report_dict["backend"] = backend
+            
+            report_path.write_text(
+                json.dumps(report_dict, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
             _release_cuda_cache()
         else:
             raise ValueError(f"Unknown backend: {backend}")
@@ -289,46 +363,128 @@ def run_ordo(
         raise FileNotFoundError(
             f"Ordo binary not found at '{ordo_bin}'. Please install it or verify your PATH.\n"
             f"Error: {e}"
-        )
+        ) from e
     except subprocess.CalledProcessError as e:
         raise RuntimeError(
             f"Ordo failed with exit code {e.returncode}.\n"
             f"stdout: {e.stdout}\n"
             f"stderr: {e.stderr}"
-        )
+        ) from e
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Rank recent training snapshots with Ordo using sparse neighbor pairings."
     )
-    parser.add_argument("checkpoint_dir", type=Path, help="directory containing snapshot .pt files")
-    parser.add_argument("--glob", default="*.pt", help="snapshot filename pattern")
-    parser.add_argument("--recursive", action="store_true", help="recursive scan for snapshots")
-    parser.add_argument("--max-snapshots", type=int, default=25, help="keep latest N snapshots; 0 for all")
-    parser.add_argument("--anchors", type=Path, nargs="*", default=None, help="fixed anchor checkpoints")
+    parser.add_argument(
+        "checkpoint_dir",
+        type=Path,
+        help="directory containing snapshot .pt files",
+    )
+    parser.add_argument(
+        "--glob",
+        default="*.pt",
+        help="snapshot filename pattern",
+    )
+    parser.add_argument(
+        "--recursive",
+        action="store_true",
+        help="recursive scan for snapshots",
+    )
+    parser.add_argument(
+        "--max-snapshots",
+        type=int,
+        default=25,
+        help="keep latest N snapshots; 0 for all",
+    )
+    parser.add_argument(
+        "--anchors",
+        type=Path,
+        nargs="*",
+        default=None,
+        help="fixed anchor checkpoints",
+    )
     parser.add_argument(
         "--pair-offsets",
         default="1,2,4,8",
         help="comma-separated list of time-neighbor offsets to pair",
     )
-    parser.add_argument("--games", type=int, default=8, help="games per normal snapshot pair")
-    parser.add_argument("--anchor-games", type=int, default=16, help="games per snapshot-anchor pair")
-    parser.add_argument("--arena-config", type=Path, default=DEFAULT_ARENA_CONFIG)
-    parser.add_argument("--backend", choices=["onnx", "pytorch"], default="onnx")
-    parser.add_argument("--device", choices=["cpu", "cuda"], default=None)
-    parser.add_argument("--ordo-bin", default="ordo", help="path to ordo binary")
-    parser.add_argument("--ordo-anchor", default=None, help="post-normalize rating relative to this anchor")
-    parser.add_argument("--ordo-anchor-elo", type=float, default=0.0, help="Elo target for anchor normalization")
-    parser.add_argument("--force-arena", action="store_true", help="rerun arena matches even if reports exist")
-    parser.add_argument("--force-ordo", action="store_true", help="rerun Ordo calculation even if no new games")
+    parser.add_argument(
+        "--games",
+        type=int,
+        default=8,
+        help="games per normal snapshot pair",
+    )
+    parser.add_argument(
+        "--anchor-games",
+        type=int,
+        default=16,
+        help="games per snapshot-anchor pair",
+    )
+    parser.add_argument(
+        "--arena-config",
+        type=Path,
+        default=DEFAULT_ARENA_CONFIG,
+    )
+    parser.add_argument(
+        "--backend",
+        choices=["onnx", "pytorch"],
+        default="onnx",
+    )
+    parser.add_argument(
+        "--device",
+        choices=["cpu", "cuda"],
+        default=None,
+    )
+    parser.add_argument(
+        "--ordo-bin",
+        default="ordo",
+        help="path to ordo binary",
+    )
+    parser.add_argument(
+        "--ordo-anchor",
+        default=None,
+        help="post-normalize rating relative to this anchor",
+    )
+    parser.add_argument(
+        "--ordo-anchor-elo",
+        type=float,
+        default=0.0,
+        help="Elo target for anchor normalization",
+    )
+    parser.add_argument(
+        "--force-arena",
+        action="store_true",
+        help="rerun arena matches even if reports exist",
+    )
+    parser.add_argument(
+        "--force-ordo",
+        action="store_true",
+        help="rerun Ordo calculation even if no new games",
+    )
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=None,
         help="report output folder; defaults to CHECKPOINT_DIR/ordo-ranking-reports",
     )
-    parser.add_argument("--sort-by-mtime", action="store_true", help="sort snapshots by mtime instead of filename")
+    parser.add_argument(
+        "--sort-by-mtime",
+        action="store_true",
+        help="sort snapshots by mtime instead of filename",
+    )
+    parser.add_argument(
+        "--onnx-precision",
+        choices=["fp16", "fp32"],
+        default=None,
+        help="ONNX precision (fp16 for CUDA, fp32 for CPU by default)",
+    )
+    parser.add_argument(
+        "--onnx-max-batch-size",
+        type=int,
+        default=8192,
+        help="ONNX max batch size",
+    )
     
     # Gumbel settings overrides
     parser.add_argument("--seed-start", type=int, default=None)
@@ -366,8 +522,12 @@ def main() -> NoReturn:
     # Parse pair offsets
     try:
         offsets = [int(x.strip()) for x in args.pair_offsets.split(",") if x.strip()]
-    except ValueError:
-        raise SystemExit(f"Invalid --pair-offsets format: {args.pair_offsets}. Must be comma-separated integers.")
+        if any(x <= 0 for x in offsets):
+            raise ValueError("All offsets must be positive integers.")
+    except ValueError as e:
+        raise SystemExit(
+            f"Invalid --pair-offsets format: {args.pair_offsets}. {e}"
+        ) from e
         
     # 2. Pairing
     pairs = generate_sparse_pairs(
@@ -391,6 +551,11 @@ def main() -> NoReturn:
         gumbel_max_considered_actions=args.gumbel_max_considered_actions,
     )
     
+    effective_device = arena_config.device
+    onnx_precision = args.onnx_precision
+    if onnx_precision is None:
+        onnx_precision = "fp16" if effective_device == "cuda" else "fp32"
+        
     print(
         json.dumps(
             {
@@ -410,7 +575,10 @@ def main() -> NoReturn:
     # 3. Arena Matches
     matches: list[PairwiseMatchResult] = []
     for match_index, pair in enumerate(pairs, start=1):
-        report_path = pairs_dir / f"pair-{match_index:04d}-{pair.candidate.stem}-vs-{pair.baseline.stem}-arena.json"
+        report_path = (
+            pairs_dir
+            / f"pair-{match_index:04d}-{pair.candidate.stem}-vs-{pair.baseline.stem}-arena.json"
+        )
         
         print(
             json.dumps(
@@ -431,6 +599,8 @@ def main() -> NoReturn:
             arena_config=arena_config,
             backend=args.backend,
             force=args.force_arena,
+            onnx_precision=onnx_precision,
+            onnx_max_batch_size=args.onnx_max_batch_size,
         )
         matches.append(result)
         
@@ -451,7 +621,6 @@ def main() -> NoReturn:
     pgn_path = output_dir / "games.pgn"
     pgn_content = []
     for match in matches:
-        # Load the detailed games from the report
         try:
             report_data = json.loads(match.report_path.read_text(encoding="utf-8"))
             games_list = report_data.get("games", [])
@@ -463,7 +632,10 @@ def main() -> NoReturn:
                 )
                 pgn_content.append(pgn_game)
         except Exception as e:
-            print(f"Warning: Failed to process report {match.report_path}: {e}", flush=True)
+            print(
+                f"Warning: Failed to process report {match.report_path}: {e}",
+                flush=True,
+            )
             
     pgn_path.write_text("\n".join(pgn_content), encoding="utf-8")
     
@@ -502,7 +674,6 @@ def main() -> NoReturn:
         offset = 0.0
         anchor_found = False
         
-        # Determine anchor to normalize against
         target_anchor_name = args.ordo_anchor
         target_anchor_elo = args.ordo_anchor_elo
         
@@ -511,7 +682,6 @@ def main() -> NoReturn:
             offset = target_anchor_elo - anchor_rating
             anchor_found = True
         elif anchors:
-            # Fall back to the first anchor
             first_anchor_name = anchors[0].resolve().stem
             if first_anchor_name in ratings_dict:
                 anchor_rating = ratings_dict[first_anchor_name].elo
@@ -519,7 +689,6 @@ def main() -> NoReturn:
                 anchor_found = True
                 
         if not anchor_found and filtered_snapshots:
-            # Normalize against oldest snapshot
             oldest_snapshot_name = filtered_snapshots[0].resolve().stem
             if oldest_snapshot_name in ratings_dict:
                 anchor_rating = ratings_dict[oldest_snapshot_name].elo
@@ -529,19 +698,16 @@ def main() -> NoReturn:
         for idx, rating in enumerate(parsed_ratings, start=1):
             normalized_elo = rating.elo + offset
             
-            # Map back to model path
             model_path = None
             is_snapshot = False
             is_anchor = False
             
-            # Search in snapshots
             for s in filtered_snapshots:
                 if s.resolve().stem == rating.name:
                     model_path = str(s)
                     is_snapshot = True
                     break
                     
-            # Search in anchors
             if not is_snapshot:
                 for a in anchors:
                     if a.resolve().stem == rating.name:
@@ -562,31 +728,37 @@ def main() -> NoReturn:
                 }
             )
             
-    # Calculate latest snapshot delta vs previous snapshot and best anchor
     latest_summary = None
     if filtered_snapshots and normalized_ratings:
         latest_snapshot = filtered_snapshots[-1]
         latest_name = latest_snapshot.resolve().stem
         
-        # Find latest snapshot in normalized ratings
-        latest_rating = next((r for r in normalized_ratings if r["model"] == latest_name), None)
+        latest_rating = next(
+            (r for r in normalized_ratings if r["model"] == latest_name),
+            None,
+        )
         if latest_rating:
-            # Find previous snapshot
             previous_rating = None
             if len(filtered_snapshots) >= 2:
                 prev_name = filtered_snapshots[-2].resolve().stem
-                previous_rating = next((r for r in normalized_ratings if r["model"] == prev_name), None)
+                previous_rating = next(
+                    (r for r in normalized_ratings if r["model"] == prev_name),
+                    None,
+                )
                 
             delta_vs_previous = None
             if previous_rating:
-                delta_vs_previous = round(latest_rating["elo"] - previous_rating["elo"], 2)
+                delta_vs_previous = round(
+                    latest_rating["elo"] - previous_rating["elo"], 2
+                )
                 
-            # Find best anchor
             delta_vs_best_anchor = None
             anchor_ratings = [r for r in normalized_ratings if r["is_anchor"]]
             if anchor_ratings:
                 best_anchor = max(anchor_ratings, key=lambda r: r["elo"])
-                delta_vs_best_anchor = round(latest_rating["elo"] - best_anchor["elo"], 2)
+                delta_vs_best_anchor = round(
+                    latest_rating["elo"] - best_anchor["elo"], 2
+                )
                 
             latest_summary = {
                 "model": latest_rating["model"],
@@ -608,7 +780,9 @@ def main() -> NoReturn:
         "backend": args.backend,
         "arena_config": asdict(arena_config),
         "pgn_path": str(pgn_path),
-        "ordo_output_path": str(ordo_output_path) if ordo_error_message is None else None,
+        "ordo_output_path": (
+            str(ordo_output_path) if ordo_error_message is None else None
+        ),
         "ranking": normalized_ratings,
         "latest": latest_summary,
     }
@@ -617,7 +791,10 @@ def main() -> NoReturn:
         summary_payload["error"] = ordo_error_message
         
     summary_path = output_dir / "summary.json"
-    summary_path.write_text(json.dumps(summary_payload, indent=2, sort_keys=True), encoding="utf-8")
+    summary_path.write_text(
+        json.dumps(summary_payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
     
     print(json.dumps(summary_payload, sort_keys=True), flush=True)
     raise SystemExit(0 if ordo_error_message is None else 1)
