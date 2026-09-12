@@ -22,6 +22,6 @@
 
 <current-notice>
 
-1. `docs` 폴더 내의 파일들은 최대한 무시한다 (outdated)
+1. `docs` 폴더 내의 문서를 최대한 존중한다.
 
 </current-notice>
