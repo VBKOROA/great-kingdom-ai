@@ -25,8 +25,19 @@ class ModelConfig:
     attention_blocks: int = 0
     attention_heads: int = 4
     attention_ffn_multiplier: int = 4
-    attention_residual_scale_init: float = 1e-3
+    attention_residual_scale_init: float = 1e-2
+    attention_insert_every: int = 0
 
+    def __post_init__(self) -> None:
+        if self.residual_blocks < 0:
+            raise ValueError(f"residual_blocks must be non-negative, got {self.residual_blocks}")
+        if self.attention_blocks < 0:
+            raise ValueError(f"attention_blocks must be non-negative, got {self.attention_blocks}")
+        if self.attention_insert_every < 0:
+            raise ValueError(
+                "attention_insert_every must be non-negative, "
+                f"got {self.attention_insert_every}"
+            )
 
 
 MODEL_PRESETS: dict[str, ModelConfig] = {
@@ -61,6 +72,8 @@ MODEL_PRESETS: dict[str, ModelConfig] = {
         policy_channels=16,
         attention_blocks=2,
         attention_heads=4,
+        attention_insert_every=5,
+        attention_residual_scale_init=1e-2,
         spatial_value_head=True,
     ),
     "large": ModelConfig(channels=128, residual_blocks=8, value_hidden=256),
@@ -81,6 +94,44 @@ MODEL_PRESETS: dict[str, ModelConfig] = {
     ),
 }
 
+RESIDUAL_STAGE = "residual"
+ATTENTION_STAGE = "attention"
+
+
+def build_stage_plan(
+    residual_blocks: int,
+    attention_blocks: int,
+    attention_insert_every: int,
+) -> tuple[tuple[str, int], ...]:
+    """Order residual and attention stages for execution.
+
+    With ``attention_insert_every > 0`` an attention block is interleaved after
+    every N residual blocks, so the CNN can spatially refine the global rela-
+    tions created by attention. With ``0`` all attention blocks run after the
+    full residual backbone (legacy layout).
+    """
+    if residual_blocks < 0 or attention_blocks < 0 or attention_insert_every < 0:
+        raise ValueError("block counts must be non-negative")
+
+    if attention_blocks == 0 or attention_insert_every == 0:
+        ordered = [(RESIDUAL_STAGE, i) for i in range(residual_blocks)]
+        ordered += [(ATTENTION_STAGE, i) for i in range(attention_blocks)]
+        return tuple(ordered)
+
+    plan: list[tuple[str, int]] = []
+    residual_index = 0
+    attention_index = 0
+    while residual_index < residual_blocks or attention_index < attention_blocks:
+        for _ in range(attention_insert_every):
+            if residual_index >= residual_blocks:
+                break
+            plan.append((RESIDUAL_STAGE, residual_index))
+            residual_index += 1
+        if attention_index < attention_blocks:
+            plan.append((ATTENTION_STAGE, attention_index))
+            attention_index += 1
+    return tuple(plan)
+
 
 class ResidualBlock(nn.Module):
     def __init__(self, channels: int) -> None:
@@ -98,41 +149,48 @@ class ResidualBlock(nn.Module):
         return cast(torch.Tensor, self.activation(x + self.block(x)))
 
 
-class Full2DRelativePositionBias(nn.Module):
-    def __init__(self, num_heads: int, board_size: int = 9) -> None:
+class D4RelativePositionBias(nn.Module):
+    """Relative position bias shared across the board's D4 symmetries.
+
+    A displacement ``(dr, dc)`` is keyed by its D4 orbit
+    ``(max(|dr|, |dc|), min(|dr|, |dc|))`` so rotations and reflections of the
+    board use the same learned bias. The game rules have no absolute
+    up/down/left/right, so independent per-direction bias is unnecessary.
+    """
+
+    def __init__(self, num_heads: int, board_size: int = BOARD_SIZE) -> None:
         super().__init__()
+        if board_size < 1:
+            raise ValueError(f"board_size must be at least 1, got {board_size}")
+
         self.num_heads = num_heads
         self.board_size = board_size
         self.num_positions = board_size * board_size
-
-        self.max_relative_position = 2 * board_size - 1
-        self.num_relative_positions = self.max_relative_position * self.max_relative_position
+        self.max_relative_distance = board_size - 1
+        self.num_relative_positions = board_size * (board_size + 1) // 2
 
         self.relative_bias_table = nn.Parameter(
             torch.zeros(self.num_relative_positions, num_heads)
         )
 
-        relative_index = self._compute_relative_index()
-        self.register_buffer("relative_index", relative_index)
+        self.register_buffer("relative_index", self._compute_relative_index())
 
     def _compute_relative_index(self) -> torch.Tensor:
         coords = torch.arange(self.num_positions)
-        r = coords // self.board_size
-        c = coords % self.board_size
+        rows = coords // self.board_size
+        cols = coords % self.board_size
 
-        dr = r.unsqueeze(0) - r.unsqueeze(1)
-        dc = c.unsqueeze(0) - c.unsqueeze(1)
+        dr = rows.unsqueeze(0) - rows.unsqueeze(1)
+        dc = cols.unsqueeze(0) - cols.unsqueeze(1)
 
-        dr_idx = dr + (self.board_size - 1)
-        dc_idx = dc + (self.board_size - 1)
-
-        relative_index = dr_idx * self.max_relative_position + dc_idx
-        return relative_index
+        major = torch.maximum(dr.abs(), dc.abs())
+        minor = torch.minimum(dr.abs(), dc.abs())
+        return major * (major + 1) // 2 + minor
 
     def forward(self) -> torch.Tensor:
-        bias = self.relative_bias_table[self.relative_index]  # [81, 81, num_heads]
-        bias = bias.permute(2, 0, 1).unsqueeze(0)  # [1, num_heads, 81, 81]
-        return bias
+        # [num_positions, num_positions, num_heads] -> [1, num_heads, N, N]
+        bias = self.relative_bias_table[self.relative_index]
+        return bias.permute(2, 0, 1).unsqueeze(0)
 
 
 class BoardSelfAttentionBlock(nn.Module):
@@ -141,7 +199,7 @@ class BoardSelfAttentionBlock(nn.Module):
         channels: int,
         num_heads: int = 4,
         ffn_multiplier: int = 4,
-        residual_scale_init: float = 1e-3,
+        residual_scale_init: float = 1e-2,
         board_size: int = BOARD_SIZE,
     ) -> None:
         super().__init__()
@@ -157,7 +215,7 @@ class BoardSelfAttentionBlock(nn.Module):
         self.qkv_proj = nn.Linear(channels, channels * 3, bias=True)
         self.out_proj = nn.Linear(channels, channels, bias=True)
 
-        self.relative_bias = Full2DRelativePositionBias(num_heads, board_size=board_size)
+        self.relative_bias = D4RelativePositionBias(num_heads, board_size=board_size)
 
         self.norm2 = nn.LayerNorm(channels)
         self.ffn = nn.Sequential(
@@ -232,11 +290,11 @@ class PolicyValueNetwork(nn.Module):
             nn.BatchNorm2d(config.channels),
             nn.ReLU(inplace=True),
         )
-        self.backbone = nn.Sequential(
-            *[ResidualBlock(config.channels) for _ in range(config.residual_blocks)]
+        self.backbone = nn.ModuleList(
+            [ResidualBlock(config.channels) for _ in range(config.residual_blocks)]
         )
-        self.attention = nn.Sequential(
-            *[
+        self.attention = nn.ModuleList(
+            [
                 BoardSelfAttentionBlock(
                     channels=config.channels,
                     num_heads=config.attention_heads,
@@ -245,6 +303,11 @@ class PolicyValueNetwork(nn.Module):
                 )
                 for _ in range(config.attention_blocks)
             ]
+        )
+        self.stage_plan = build_stage_plan(
+            config.residual_blocks,
+            config.attention_blocks,
+            config.attention_insert_every,
         )
         self.policy_spatial = nn.Sequential(
             nn.Conv2d(
@@ -285,13 +348,21 @@ class PolicyValueNetwork(nn.Module):
                 nn.Tanh(),
             )
 
+    def forward_features(self, x: torch.Tensor) -> torch.Tensor:
+        features = cast(torch.Tensor, self.stem(x))
+        for kind, index in self.stage_plan:
+            if kind == ATTENTION_STAGE:
+                features = cast(torch.Tensor, self.attention[index](features))
+            else:
+                features = cast(torch.Tensor, self.backbone[index](features))
+        return features
+
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         is_tracing = cast("Callable[[], bool]", torch.jit.is_tracing)  # type: ignore[attr-defined]
         if not is_tracing():
             self._validate_input_shape(x)
 
-        features = self.backbone(self.stem(x))
-        features = self.attention(features)
+        features = self.forward_features(x)
         board_logits = self.policy_spatial(features).flatten(start_dim=1)
         pass_logits = self.policy_pass(features)
         policy_logits = torch.cat([board_logits, pass_logits], dim=1)
@@ -327,6 +398,7 @@ __all__ = [
     "ModelConfig",
     "PolicyValueNetwork",
     "BoardSelfAttentionBlock",
-    "Full2DRelativePositionBias",
+    "D4RelativePositionBias",
+    "build_stage_plan",
     "create_model",
 ]
