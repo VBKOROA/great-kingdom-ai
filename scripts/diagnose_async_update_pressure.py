@@ -18,8 +18,8 @@ from great_kingdom_ai.self_play_data import value_target_for_player
 from great_kingdom_ai.training import load_checkpoint, load_training_config
 
 DEFAULT_REPLAY = Path("data/runpod/train-v3/replay/trajectory-replay.npz")
-DEFAULT_TRAIN_CONFIG = Path("configs/runpod/train.json")
-DEFAULT_LEARNER_CONFIG = Path("configs/runpod/learner-v2.json")
+DEFAULT_TRAIN_CONFIG = Path("configs/runpod/train.yaml")
+DEFAULT_LEARNER_CONFIG = Path("configs/runpod/learner-v2.yaml")
 
 
 @dataclass(frozen=True)

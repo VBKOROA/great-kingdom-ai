@@ -34,6 +34,7 @@ from great_kingdom_ai.arena_types import (
     other_player,
     validate_arena_config,
 )
+from great_kingdom_ai.config_io import load_config_object
 from great_kingdom_ai.evaluator import (
     evaluate_feature_arrays_logits_values,
     evaluate_feature_batch,
@@ -318,10 +319,7 @@ def load_arena_config(
     randomize_missing_seed_start: bool = True,
     randomize_missing_gumbel_seed: bool = True,
 ) -> ArenaConfig:
-    with Path(path).open("r", encoding="utf-8") as file:
-        data = json.load(file)
-    if not isinstance(data, dict):
-        raise ValueError("arena config must be a JSON object")
+    data = load_config_object(path, "arena config")
     data = _with_random_arena_seed_defaults(
         data,
         randomize_seed_start=randomize_missing_seed_start,
@@ -382,7 +380,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--candidate", type=Path, required=True, help="Candidate checkpoint path")
     parser.add_argument("--best", type=Path, required=True, help="Best checkpoint path")
     parser.add_argument("--report", type=Path, required=True, help="Output arena report JSON")
-    parser.add_argument("--config", type=Path, default=None, help="JSON ArenaConfig override")
+    parser.add_argument("--config", type=Path, default=None, help="YAML ArenaConfig override")
     parser.add_argument("--device", choices=["cpu", "cuda"], default=None)
     parser.add_argument("--games", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)

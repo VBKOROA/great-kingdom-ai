@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
+
+from great_kingdom_ai.config_io import load_config_object
 
 
 @dataclass(frozen=True)
@@ -53,10 +54,7 @@ class TrainingConfig:
 
 
 def load_training_config(path: str | Path) -> TrainingConfig:
-    with Path(path).open("r", encoding="utf-8") as file:
-        data = json.load(file)
-    if not isinstance(data, dict):
-        raise ValueError("training config must be a JSON object")
+    data = load_config_object(path, "training config")
     return TrainingConfig(**data)
 
 

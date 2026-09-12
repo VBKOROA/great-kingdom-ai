@@ -23,7 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Prune candidate snapshots to keep only the best ones."
     )
-    parser.add_argument("--arena-config", type=Path, required=True, help="ArenaConfig json path")
+    parser.add_argument("--arena-config", type=Path, required=True, help="ArenaConfig YAML path")
     parser.add_argument("--top-k", type=int, required=True, help="Maximum number of survivors")
     parser.add_argument("--snapshot-dir", type=Path, required=True, help="Candidate snapshots dir")
     parser.add_argument("--device", choices=["cpu", "cuda"], default=None)

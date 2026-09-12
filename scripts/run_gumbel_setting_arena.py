@@ -28,7 +28,7 @@ from great_kingdom_ai.game_core import (
     import_core,
 )
 
-DEFAULT_ARENA_CONFIG = Path("configs/runpod/arena.json")
+DEFAULT_ARENA_CONFIG = Path("configs/runpod/arena.yaml")
 DEFAULT_SETTINGS = (
     ("c1_p01", "1.0", "0.1"),
     ("c01_p01", "0.1", "0.1"),

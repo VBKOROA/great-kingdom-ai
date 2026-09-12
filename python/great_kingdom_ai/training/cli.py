@@ -8,10 +8,10 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import NoReturn
 
+from great_kingdom_ai.model import MODEL_PRESETS
 from great_kingdom_ai.training.batch import ReplayDataset
 from great_kingdom_ai.training.config import TrainingConfig, load_training_config
 from great_kingdom_ai.training.loop import train_from_replay
-from great_kingdom_ai.model import MODEL_PRESETS
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -25,7 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Checkpoint to load model weights from without optimizer, scheduler, or step state",
     )
-    parser.add_argument("--config", type=Path, default=None, help="JSON TrainingConfig override")
+    parser.add_argument("--config", type=Path, default=None, help="YAML TrainingConfig override")
     parser.add_argument("--device", choices=["cpu", "cuda"], default=None)
     parser.add_argument("--steps", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)

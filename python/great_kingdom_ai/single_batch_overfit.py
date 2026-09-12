@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
 
+from great_kingdom_ai.model import MODEL_PRESETS
 from great_kingdom_ai.replay import TrajectoryReplayDataset, TrajectoryReplayStore
 from great_kingdom_ai.training import (
     ReplayDataset,
@@ -23,7 +24,6 @@ from great_kingdom_ai.training import (
     save_checkpoint,
     train_step,
 )
-from great_kingdom_ai.model import MODEL_PRESETS
 
 if TYPE_CHECKING:
     import torch
@@ -128,7 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Overfit one fixed replay batch to diagnose training/loss wiring"
     )
     parser.add_argument("--replay", type=Path, required=True, help="Path to replay .npz file")
-    parser.add_argument("--config", type=Path, default=None, help="JSON TrainingConfig override")
+    parser.add_argument("--config", type=Path, default=None, help="YAML TrainingConfig override")
     parser.add_argument(
         "--checkpoint",
         type=Path,

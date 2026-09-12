@@ -18,7 +18,7 @@ from great_kingdom_ai.priority_sampling import legal_masks_from_features
 from great_kingdom_ai.replay.sample import ReplaySample
 from great_kingdom_ai.training.batch import TrainingArrays
 
-DEFAULT_CONFIG = Path("configs/m8-train-smoke.json")
+DEFAULT_CONFIG = Path("configs/m8-train-smoke.yaml")
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -19,7 +19,7 @@ from great_kingdom_ai.evaluate import (
 )
 
 DEFAULT_WORK_DIR = Path("data/runpod/pure-gumbel-medium-plus")
-DEFAULT_ARENA_CONFIG = Path("configs/runpod/arena.json")
+DEFAULT_ARENA_CONFIG = Path("configs/runpod/arena.yaml")
 _CANDIDATE_RE = re.compile(r"candidate-(\d+)\.pt$")
 
 

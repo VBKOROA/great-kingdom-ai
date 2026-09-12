@@ -108,7 +108,7 @@ training-latest.onnx
 
 ```bash
 great-kingdom-init-async-v2 \
-  --train-config configs/runpod/train.json \
+  --train-config configs/runpod/train.yaml \
   --work-dir data/runpod/train-strong-attn \
   --model-preset strong_attn \
   --overwrite
@@ -134,7 +134,7 @@ source .venv/bin/activate
 RAYON_NUM_THREADS=4 \
 GKA_ONNX_BATCH_BUCKETING=1 \
 great-kingdom-actor-v2 \
-  --actor-config configs/runpod/actor-v2.json \
+  --actor-config configs/runpod/actor-v2.yaml \
   --loop 
 ```
 
@@ -147,8 +147,8 @@ actor는 재시작 시 `shards/metadata.jsonl`을 보고 같은 `model_version`�
 ```bash
 source .venv/bin/activate
 great-kingdom-learner-v2 \
-  --learner-config configs/runpod/learner-v2.json \
-  --train-config configs/runpod/train.json \
+  --learner-config configs/runpod/learner-v2.yaml \
+  --train-config configs/runpod/train.yaml \
   --loop \
   --sleep-seconds 3
 ```
@@ -187,14 +187,14 @@ cp data/runpod/train-strong-attn/checkpoints/training-latest.pt \
 
 ```bash
 nohup great-kingdom-actor-v2 \
-  --actor-config configs/runpod/actor-v2.json \
+  --actor-config configs/runpod/actor-v2.yaml \
   --loop \
   --sleep-seconds 1 \
   > actor.log 2>&1 &
 
 nohup great-kingdom-learner-v2 \
-  --learner-config configs/runpod/learner-v2.json \
-  --train-config configs/runpod/train.json \
+  --learner-config configs/runpod/learner-v2.yaml \
+  --train-config configs/runpod/train.yaml \
   --loop \
   --sleep-seconds 5 \
   > learner.log 2>&1 &
@@ -326,7 +326,7 @@ great-kingdom-evaluate \
   --candidate data/runpod/train-strong-attn/checkpoints/onnx/training-latest.onnx \
   --best data/runpod/train-strong-attn/checkpoints/snapshots/baseline.onnx \
   --report data/runpod/train-strong-attn/reports/arena-quick-latest-vs-baseline.json \
-  --config configs/runpod/arena.json \
+  --config configs/runpod/arena.yaml \
   --games 20 \
   --batch-size 20 \
   --gumbel-simulations 16 \
@@ -343,7 +343,7 @@ great-kingdom-evaluate \
   --candidate data/runpod/train-strong-attn/checkpoints/onnx/training-latest.onnx \
   --best data/runpod/train-strong-attn/checkpoints/snapshots/baseline.onnx \
   --report data/runpod/train-strong-attn/reports/arena-40-latest-vs-baseline.json \
-  --config configs/runpod/arena.json \
+  --config configs/runpod/arena.yaml \
   --games 40 \
   --batch-size 40 \
   --gumbel-simulations 32 \
@@ -360,7 +360,7 @@ great-kingdom-evaluate \
   --candidate data/runpod/train-strong-attn/checkpoints/onnx/training-latest.onnx \
   --best data/runpod/train-strong-attn/checkpoints/snapshots/baseline.onnx \
   --report data/runpod/train-strong-attn/reports/arena-full-latest-vs-baseline.json \
-  --config configs/runpod/arena.json \
+  --config configs/runpod/arena.yaml \
   --games 80 \
   --batch-size 80 \
   --device cuda
@@ -423,7 +423,7 @@ great-kingdom-train \
   --replay data/runpod/train-strong-attn/replay/trajectory-replay.npz \
   --checkpoint data/runpod/train-strong-attn/checkpoints/candidate.pt \
   --resume data/runpod/train-strong-attn/checkpoints/training-latest.pt \
-  --config configs/runpod/train.json \
+  --config configs/runpod/train.yaml \
   --device cuda
 ```
 
@@ -432,7 +432,7 @@ great-kingdom-train \
 ```bash
 great-kingdom-single-batch-overfit \
   --replay data/runpod/train-strong-attn/replay/trajectory-replay.npz \
-  --config configs/runpod/train.json \
+  --config configs/runpod/train.yaml \
   --device cuda \
   --steps 1000 \
   --batch-size 512 \

@@ -1,0 +1,27 @@
+# Evaluation workload
+games: 200
+batch_size: 200
+max_turns: 112
+device: cuda
+leaf_batch_size: 1024
+
+# Gumbel search
+gumbel_simulations: 64
+gumbel_max_considered_actions: 8
+gumbel_c_visit: 50.0
+gumbel_c_scale: 0.1
+gumbel_scale: 0.0
+
+# Opening exploration
+opening_gumbel_turns: 8
+opening_gumbel_scale: 1.0
+
+# Policy target
+policy_target_c_visit: 50.0
+policy_target_c_scale: 0.1
+policy_target_temperature: 1.0
+
+# Fairness and promotion
+paired_seeds: true
+promotion_threshold: 0.5
+require_side_win_rates_for_promotion: true

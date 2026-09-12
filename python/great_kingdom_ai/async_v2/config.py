@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from great_kingdom_ai.config_io import load_config_object
 from great_kingdom_ai.self_play import SelfPlayConfig
 
 if TYPE_CHECKING:
@@ -131,7 +131,7 @@ class FactoryInitV2Summary:
         }
 
 def load_actor_v2_config(path: str | Path) -> ActorV2Config:
-    data = _load_json_object(path, "actor v2 config")
+    data = load_config_object(path, "actor v2 config")
     for key in ("work_dir", "onnx_model_path", "ema_onnx_model_path"):
         if data.get(key) is not None:
             data[key] = Path(data[key])
@@ -141,7 +141,7 @@ def load_actor_v2_config(path: str | Path) -> ActorV2Config:
     return ActorV2Config(**data)
 
 def load_learner_v2_config(path: str | Path) -> LearnerV2Config:
-    data = _load_json_object(path, "learner v2 config")
+    data = load_config_object(path, "learner v2 config")
     for key in (
         "work_dir",
         "source_checkpoint",
@@ -156,9 +156,7 @@ def load_learner_v2_config(path: str | Path) -> LearnerV2Config:
             data[key] = Path(data[key])
     return LearnerV2Config(**data)
 
+
 def _load_json_object(path: str | Path, label: str) -> dict[str, Any]:
-    with Path(path).open("r", encoding="utf-8") as file:
-        data = json.load(file)
-    if not isinstance(data, dict):
-        raise ValueError(f"{label} must be a JSON object")
-    return data
+    """Load internal JSON state retained outside the user configuration format."""
+    return load_config_object(path, label)

@@ -85,7 +85,7 @@ def build_learner_v2_parser() -> argparse.ArgumentParser:
         description="Import v2 trajectory shards and train continuously.",
     )
     parser.add_argument("--learner-config", type=Path, default=None)
-    parser.add_argument("--train-config", type=Path, default=Path("configs/runpod/train.json"))
+    parser.add_argument("--train-config", type=Path, default=Path("configs/runpod/train.yaml"))
     parser.add_argument("--work-dir", type=Path, default=None)
     parser.add_argument("--replay-capacity", type=int, default=None)
     parser.add_argument("--min-replay-transitions", type=int, default=None)
@@ -141,7 +141,7 @@ def build_factory_init_v2_parser() -> argparse.ArgumentParser:
         prog="great-kingdom-init-async-v2",
         description="Create factory checkpoint and ONNX artifacts for async v2.",
     )
-    parser.add_argument("--train-config", type=Path, default=Path("configs/runpod/train.json"))
+    parser.add_argument("--train-config", type=Path, default=Path("configs/runpod/train.yaml"))
     parser.add_argument("--work-dir", type=Path, default=None)
     parser.add_argument("--checkpoint", type=Path, default=None)
     parser.add_argument("--onnx-output", type=Path, default=None)
