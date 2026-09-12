@@ -187,6 +187,42 @@ def test_attention_block_keeps_input_shape() -> None:
     assert outputs.shape == inputs.shape
 
 
+def test_attention_block_is_d4_equivariant_for_non_contiguous_inputs() -> None:
+    from great_kingdom_ai.model import BoardSelfAttentionBlock
+
+    torch.manual_seed(0)
+    block = BoardSelfAttentionBlock(
+        channels=16, num_heads=4, residual_scale_init=1.0
+    )
+    block.eval()
+    # Randomize the relative bias so the test exercises the D4 weight sharing
+    # (a zero table would be trivially symmetric).
+    with torch.no_grad():
+        block.relative_bias.relative_bias_table.normal_()
+
+    # A transposed tensor is non-contiguous, which used to crash the internal view().
+    base = torch.randn(2, 16, BOARD_SIZE, BOARD_SIZE)
+    inputs = base.transpose(2, 3)
+    assert not inputs.is_contiguous()
+
+    with torch.no_grad():
+        reference = block(inputs)
+
+    for k in (1, 2, 3):
+        with torch.no_grad():
+            rotated = block(torch.rot90(inputs, k, dims=(2, 3)))
+        assert torch.allclose(
+            rotated, torch.rot90(reference, k, dims=(2, 3)), atol=1e-5, rtol=1e-4
+        )
+
+    for dim in (2, 3):
+        with torch.no_grad():
+            flipped = block(torch.flip(inputs, dims=(dim,)))
+        assert torch.allclose(
+            flipped, torch.flip(reference, dims=(dim,)), atol=1e-5, rtol=1e-4
+        )
+
+
 def test_d4_relative_position_bias_shapes_and_values() -> None:
     from great_kingdom_ai.model import D4RelativePositionBias
 

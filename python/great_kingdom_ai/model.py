@@ -238,7 +238,8 @@ class BoardSelfAttentionBlock(nn.Module):
         N = H * W
 
         # Flatten spatial dimensions: [B, C, H, W] -> [B, N, C]
-        x_flat = x.permute(0, 2, 3, 1).view(B, N, C)
+        # reshape (not view) so non-contiguous inputs are accepted
+        x_flat = x.permute(0, 2, 3, 1).reshape(B, N, C)
 
         # Self-Attention Branch
         norm_x = self.norm1(x_flat)
@@ -277,7 +278,7 @@ class BoardSelfAttentionBlock(nn.Module):
         x_flat = x_flat + self.ffn_scale * ffn_out
 
         # Reshape back to [B, C, H, W]
-        x_out = x_flat.view(B, H, W, C).permute(0, 3, 1, 2).contiguous()
+        x_out = x_flat.reshape(B, H, W, C).permute(0, 3, 1, 2).contiguous()
         return x_out
 
 
