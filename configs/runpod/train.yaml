@@ -33,16 +33,16 @@ lr_cosine_steps: 200000
 
 # Data augmentation and recency sampling
 symmetry_augmentation: true
-recent_sample_fraction: 0.20
+recent_sample_fraction: 0.0
 recent_sample_window: 262144
 
 # Value target bootstrap
-bootstrap_td_steps: 5
+bootstrap_td_steps: 0
 gamma: 1.0
-value_bootstrap_source: mcts_root
+value_bootstrap_source: terminal
 
 # Prioritized replay
-priority_enabled: true
+priority_enabled: false
 priority_alpha: 0.4
 priority_beta: 0.4
 priority_value_error_weight: 0.5
