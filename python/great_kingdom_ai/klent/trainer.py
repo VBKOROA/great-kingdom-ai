@@ -97,6 +97,11 @@ class KlentTrainConfig:
             raise ValueError("onnx_precision must be one of: fp32, fp16")
         if self.rust_self_play_batch_size <= 0:
             raise ValueError("rust_self_play_batch_size must be positive")
+        if self.export_onnx and self.onnx_precision == "fp16" and self.check_onnx_parity:
+            raise ValueError(
+                "CPU parity checks only support fp32 ONNX; "
+                "disable check_onnx_parity for fp16 publication"
+            )
 
 
 @dataclass(frozen=True)
@@ -328,7 +333,7 @@ def _collect_with_rust_actor(
             actor_path,
             kind="actor",
             device=config.onnx_device,
-            precision="fp32",
+            precision=config.onnx_precision,
         )
     elif not actor_path.exists():
         raise FileNotFoundError(f"actor ONNX model is missing: {actor_path}")
@@ -357,6 +362,7 @@ def _collect_with_rust_actor(
                 gamma=config.klent.gamma,
                 max_turns=config.max_turns,
                 onnx_device=config.onnx_device,
+                onnx_max_batch_size=batch_size,
                 rust_self_play_batch_size=batch_size,
                 model_version=iteration,
                 created_iteration=iteration,

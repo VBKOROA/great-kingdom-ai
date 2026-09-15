@@ -27,6 +27,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-turns", type=int, default=200)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--no-resume", action="store_true")
+    parser.add_argument(
+        "--rust-actor",
+        action="store_true",
+        help="collect games with the Rust zero-search actor (requires actor ONNX export)",
+    )
     return parser
 
 
@@ -45,6 +50,9 @@ def main() -> NoReturn:
         fit_epochs=args.fit_epochs,
         batch_size=args.batch_size,
         max_turns=args.max_turns,
+        use_rust_actor=args.rust_actor,
+        export_onnx=False,
+        rust_self_play_batch_size=args.max_games,
     )
     summaries = run_klent_training(
         config,

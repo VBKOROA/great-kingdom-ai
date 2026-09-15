@@ -152,6 +152,10 @@ def publish_klent_onnx_artifacts(
     """
     if model_version < 0:
         raise ValueError("model_version must be non-negative")
+    if precision == "fp16" and check_parity:
+        raise ValueError(
+            "CPU parity checks only support fp32 ONNX; export fp16 with check_parity=False"
+        )
     root = Path(work_dir) / "onnx"
     version_dir = root / f"version-{model_version:05d}"
     manifest_path = version_dir / KLENT_ONNX_MANIFEST_NAME

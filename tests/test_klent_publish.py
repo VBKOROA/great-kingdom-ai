@@ -93,6 +93,34 @@ def test_publish_writes_version_dir_manifest_and_pointer(tmp_path: Path) -> None
     assert loaded_manifest.klent_config == KlentConfig()
 
 
+def test_publish_rejects_fp16_with_cpu_parity(tmp_path: Path) -> None:
+    checkpoint = _save_checkpoint(tmp_path)
+
+    with pytest.raises(ValueError, match="fp32"):
+        publish_klent_onnx_artifacts(
+            checkpoint,
+            tmp_path / "work",
+            model_version=1,
+            iteration=0,
+            klent_config=KlentConfig(),
+            model_preset="small_klent",
+            precision="fp16",
+            check_parity=True,
+        )
+
+    manifest = publish_klent_onnx_artifacts(
+        checkpoint,
+        tmp_path / "work",
+        model_version=1,
+        iteration=0,
+        klent_config=KlentConfig(),
+        model_preset="small_klent",
+        precision="fp32",
+        check_parity=False,
+    )
+    assert not any(record.parity_passed for record in manifest.exports)
+
+
 def test_publish_requires_new_version_or_overwrite(tmp_path: Path) -> None:
     checkpoint = _save_checkpoint(tmp_path)
     _publish(tmp_path, checkpoint, model_version=1)

@@ -226,6 +226,30 @@ def test_klent_loss_decreases_with_optimizer_steps() -> None:
     assert np.isfinite(first) and np.isfinite(last)
 
 
+def test_klent_soft_target_ce_stays_above_target_entropy() -> None:
+    logits = torch.tensor([[1.0, 0.0, -1.0, 0.5]], dtype=torch.float32)
+    q_values = torch.tensor([[0.2, -0.3, 0.4, 0.1]], dtype=torch.float32)
+    model = _ConstantQModel(logits, q_values)
+    batch = _make_batch(4, batch_size=2, values=[0.5, -0.5], actions=[0, 2])
+    policy = torch.tensor(
+        [[0.4, 0.3, 0.2, 0.1], [0.25, 0.25, 0.25, 0.25]],
+        dtype=torch.float32,
+    )
+    batch = TrainingBatch(
+        features=batch.features,
+        policy=policy,
+        value=batch.value,
+        legal_mask=batch.legal_mask,
+        sample_weight=batch.sample_weight,
+        action=batch.action,
+    )
+
+    losses = compute_klent_losses(model, batch, KlentConfig())
+
+    entropy = -(policy * torch.log(policy.clamp_min(1e-45))).sum(dim=1).mean()
+    assert float(losses.policy) >= float(entropy) - 1e-6
+
+
 def test_klent_loss_backpropagates_without_target_gradients() -> None:
     model = _TinyQModel(action_space=3)
     batch = _make_batch(3, batch_size=2, values=[0.5, -0.5], actions=[0, 1])
