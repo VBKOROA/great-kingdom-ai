@@ -169,6 +169,8 @@ def _validate_action_tensors(
     q_values: Tensor,
     legal_mask: Tensor,
 ) -> None:
+    if _is_tracing(torch):
+        return
     if policy_logits.ndim != 2 or q_values.ndim != 2 or legal_mask.ndim != 2:
         raise ValueError("policy_logits, q_values, and legal_mask must be rank 2 [batch, actions]")
     if policy_logits.shape != q_values.shape or policy_logits.shape != legal_mask.shape:
@@ -177,7 +179,7 @@ def _validate_action_tensors(
             f"{tuple(policy_logits.shape)}, {tuple(q_values.shape)}, "
             f"{tuple(legal_mask.shape)}"
         )
-    if not _is_tracing(torch) and policy_logits.shape[1] == 0:
+    if policy_logits.shape[1] == 0:
         raise ValueError("action dimension must be non-empty")
     del torch
 

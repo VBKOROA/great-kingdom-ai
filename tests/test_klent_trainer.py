@@ -17,6 +17,10 @@ from great_kingdom_ai.klent.checkpoint import (  # noqa: E402
     load_klent_checkpoint,
     warm_start_klent_model,
 )
+from great_kingdom_ai.klent.publish import (  # noqa: E402
+    load_klent_onnx_manifest,
+    load_klent_onnx_pointer,
+)
 from great_kingdom_ai.klent.shards import load_klent_shard  # noqa: E402
 from great_kingdom_ai.klent.trainer import (  # noqa: E402
     KlentTrainConfig,
@@ -28,6 +32,14 @@ _rust_core_available = importlib.util.find_spec("great_kingdom_core") is not Non
 requires_core = pytest.mark.skipif(
     not _rust_core_available,
     reason="great_kingdom_core extension is not installed",
+)
+_onnx_ready = (
+    importlib.util.find_spec("onnx") is not None
+    and importlib.util.find_spec("onnxruntime") is not None
+)
+requires_onnx = pytest.mark.skipif(
+    not _onnx_ready,
+    reason="onnx and onnxruntime are required for ONNX publication",
 )
 
 
@@ -44,6 +56,7 @@ def make_config(tmp_path: Path, **overrides: object) -> KlentTrainConfig:
         "max_turns": 200,
         "symmetry_augmentation": False,
         "learning_rate": 1e-2,
+        "export_onnx": False,
     }
     return KlentTrainConfig(**{**defaults, **overrides})  # type: ignore[arg-type]
 
@@ -118,6 +131,23 @@ def test_klent_fit_reduces_loss_over_epochs(tmp_path: Path) -> None:
     epoch_losses = summaries[0].epoch_losses
     assert len(epoch_losses) == 8
     assert epoch_losses[-1] < epoch_losses[0]
+
+
+@requires_core
+@requires_onnx
+def test_run_klent_training_publishes_onnx_pointer(tmp_path: Path) -> None:
+    config = make_config(tmp_path, export_onnx=True, onnx_precision="fp32")
+
+    summaries = run_klent_training(config, iterations=1)
+
+    pointer = load_klent_onnx_pointer(config.work_dir)
+    manifest = load_klent_onnx_manifest(pointer.manifest_path)
+    assert pointer.model_version == 1
+    assert summaries[0].onnx_version_dir is not None
+    assert Path(pointer.actor_path).exists()
+    assert Path(pointer.eval_path).exists()
+    assert {record.kind for record in manifest.exports} == {"eval", "actor"}
+    assert all(record.parity_passed for record in manifest.exports)
 
 
 def test_load_klent_checkpoint_rejects_state_value_checkpoint(tmp_path: Path) -> None:

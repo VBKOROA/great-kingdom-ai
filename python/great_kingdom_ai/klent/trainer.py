@@ -25,6 +25,7 @@ from great_kingdom_ai.klent.checkpoint import (
 )
 from great_kingdom_ai.klent.dataset import KlentReplayDataset
 from great_kingdom_ai.klent.loss import KlentLossBreakdown, compute_klent_losses
+from great_kingdom_ai.klent.publish import publish_klent_onnx_artifacts
 from great_kingdom_ai.klent.self_play import KlentSelfPlayConfig, play_klent_game
 from great_kingdom_ai.klent.shards import (
     KlentShardMetadata,
@@ -62,6 +63,10 @@ class KlentTrainConfig:
     symmetry_augmentation: bool = True
     amp: bool = False
     keep_shards: bool = True
+    export_onnx: bool = True
+    onnx_device: str = "cpu"
+    onnx_precision: str = "fp32"
+    check_onnx_parity: bool = True
     warm_start_checkpoint: Path | None = None
 
     def __post_init__(self) -> None:
@@ -83,6 +88,10 @@ class KlentTrainConfig:
             not np.isfinite(self.gradient_clip_norm) or self.gradient_clip_norm <= 0.0
         ):
             raise ValueError("gradient_clip_norm must be finite and positive")
+        if self.onnx_device not in {"cpu", "cuda"}:
+            raise ValueError("onnx_device must be one of: cpu, cuda")
+        if self.onnx_precision not in {"fp32", "fp16"}:
+            raise ValueError("onnx_precision must be one of: fp32, fp16")
 
 
 @dataclass(frozen=True)
@@ -93,6 +102,7 @@ class KlentIterationSummary:
     shard_path: Path
     checkpoint_path: Path
     epoch_losses: list[float]
+    onnx_version_dir: Path | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -102,6 +112,9 @@ class KlentIterationSummary:
             "shard_path": str(self.shard_path),
             "checkpoint_path": str(self.checkpoint_path),
             "epoch_losses": self.epoch_losses,
+            "onnx_version_dir": (
+                None if self.onnx_version_dir is None else str(self.onnx_version_dir)
+            ),
         }
 
 
@@ -194,6 +207,21 @@ def run_klent_iteration(
     checkpoint_path = _iteration_checkpoint_path(config.work_dir, next_iteration)
     save_klent_checkpoint(next_state, checkpoint_path)
     copy_file_atomic(checkpoint_path, _latest_checkpoint_path(config.work_dir))
+    onnx_version_dir: Path | None = None
+    if config.export_onnx:
+        manifest = publish_klent_onnx_artifacts(
+            checkpoint_path,
+            config.work_dir,
+            model_version=next_iteration,
+            iteration=iteration,
+            klent_config=config.klent,
+            model_preset=config.model_preset,
+            device=config.onnx_device,
+            precision=config.onnx_precision,
+            check_parity=config.check_onnx_parity,
+            overwrite=True,
+        )
+        onnx_version_dir = _onnx_version_dir(config.work_dir, manifest.model_version)
     if not config.keep_shards:
         metadata_path = shard_metadata_path(shard_path)
         if metadata_path.exists():
@@ -209,6 +237,7 @@ def run_klent_iteration(
         shard_path=shard_path,
         checkpoint_path=checkpoint_path,
         epoch_losses=epoch_losses,
+        onnx_version_dir=onnx_version_dir,
     )
 
 
@@ -361,6 +390,10 @@ def _iteration_checkpoint_path(work_dir: Path, iteration: int) -> Path:
 
 def _latest_checkpoint_path(work_dir: Path) -> Path:
     return work_dir / "checkpoints" / "latest.pt"
+
+
+def _onnx_version_dir(work_dir: Path, model_version: int) -> Path:
+    return work_dir / "onnx" / f"version-{model_version:05d}"
 
 
 __all__ = [
