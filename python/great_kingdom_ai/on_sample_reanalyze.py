@@ -28,6 +28,7 @@ from great_kingdom_ai.reanalyze_evaluator import (
 from great_kingdom_ai.reanalyze_sampling import sample_indexes
 from great_kingdom_ai.reanalyze_targets import effective_bootstrap_td_steps
 from great_kingdom_ai.replay import TrajectoryReplayStore
+from great_kingdom_ai.replay.dataset import terminal_board_targets_for_rows
 from great_kingdom_ai.replay.sample import ReplaySample
 from great_kingdom_ai.search_reanalyze import refresh_sampled_policies_with_search
 from great_kingdom_ai.self_play_data import value_target_for_player
@@ -42,6 +43,8 @@ class OnSampleReanalyzeBatch:
     sample_weights: np.ndarray
     legal_masks: np.ndarray
     search_reanalyzed: np.ndarray
+    terminal_board_targets: np.ndarray | None = None
+    terminal_board_valid: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -189,6 +192,13 @@ class OnSampleReanalyzeDataset:
                 policy=batch.policies[row],
                 value=float(batch.values[row]),
                 sample_weight=float(batch.sample_weights[row]),
+                terminal_board_target=(
+                    None
+                    if batch.terminal_board_targets is None
+                    or batch.terminal_board_valid is None
+                    or not bool(batch.terminal_board_valid[row])
+                    else batch.terminal_board_targets[row]
+                ),
             )
             for row in range(batch.features.shape[0])
         ]
@@ -247,6 +257,10 @@ class OnSampleReanalyzeDataset:
         self._sampled_batches += 1
         self._sampled_rows += len(indexes)
         self._policy_reanalyzed += int(np.count_nonzero(search_reanalyzed))
+        terminal_board_targets, terminal_board_valid = terminal_board_targets_for_rows(
+            self._replay,
+            np.asarray(indexes, dtype=np.int64),
+        )
         return OnSampleReanalyzeBatch(
             indexes=np.asarray(indexes, dtype=np.int64),
             features=features,
@@ -255,6 +269,8 @@ class OnSampleReanalyzeDataset:
             sample_weights=sample_weights,
             legal_masks=legal_masks,
             search_reanalyzed=search_reanalyzed,
+            terminal_board_targets=terminal_board_targets,
+            terminal_board_valid=terminal_board_valid,
         )
 
     def _sample_indexes(

@@ -4,6 +4,7 @@ import importlib
 import importlib.util
 import random
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 import great_kingdom_ai.on_sample_reanalyze as on_sample_reanalyze_module
@@ -854,3 +855,46 @@ def test_on_sample_value_targets_match_snapshot_for_mixed_episode_edges(
     assert sorted(batch.indexes.tolist()) == list(range(len(store)))
     for replay_index, value in zip(batch.indexes.tolist(), batch.values.tolist(), strict=True):
         assert value == pytest.approx(float(snapshot.values[replay_index]))
+
+
+@pytest.mark.skipif(_torch_spec is None, reason="torch is not installed")
+def test_on_sample_reanalyze_carries_terminal_board_targets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    board = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.uint8)
+    board[0, 0] = 1
+    board[1, 1] = 2
+    episode_with_board = replace(make_episode(), terminal_board=board)
+    episode_without_board = make_custom_episode(
+        episode_id=1,
+        actions=(4, 5, PASS_ACTION),
+        players=(2, 1, 2),
+        winner=2,
+    )
+    store = TrajectoryReplayStore.from_episodes(
+        16,
+        (episode_with_board, episode_without_board),
+    )
+    dataset = OnSampleReanalyzeDataset(
+        store,
+        checkpoint_path=make_checkpoint(tmp_path),
+        config=ReanalyzeConfig(batch_size=2, model_version=10),
+    )
+    monkeypatch.setattr(
+        dataset,
+        "_sample_indexes",
+        lambda *args, **kwargs: ([0, 3], np.ones(2, dtype=np.float32)),
+    )
+
+    batch = dataset.sample_arrays(2, random.Random(0))
+
+    assert batch.terminal_board_targets is not None
+    assert batch.terminal_board_valid is not None
+    assert batch.terminal_board_valid.tolist() == [True, False]
+    assert batch.terminal_board_targets[0, 0, 0] == 1
+    assert batch.terminal_board_targets[0, 1, 1] == 2
+
+    samples = dataset.sample(2, random.Random(0))
+    assert samples[0].terminal_board_target is not None
+    assert samples[1].terminal_board_target is None
