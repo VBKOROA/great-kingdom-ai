@@ -150,6 +150,34 @@ def test_run_klent_training_publishes_onnx_pointer(tmp_path: Path) -> None:
     assert all(record.parity_passed for record in manifest.exports)
 
 
+@requires_core
+@requires_onnx
+def test_run_klent_training_with_rust_actor_two_iterations(tmp_path: Path) -> None:
+    config = make_config(
+        tmp_path,
+        use_rust_actor=True,
+        export_onnx=False,
+        min_transitions=1,
+        max_games_per_iteration=1,
+        rust_self_play_batch_size=1,
+        fit_epochs=1,
+        batch_size=8,
+    )
+
+    summaries = run_klent_training(config, iterations=2)
+
+    assert [summary.iteration for summary in summaries] == [0, 1]
+    for summary in summaries:
+        store, metadata = load_klent_shard(summary.shard_path)
+        assert metadata.iteration == summary.iteration
+        assert metadata.model_version == summary.iteration
+        assert store.lambda_returns_present is not None
+        assert bool(store.lambda_returns_present.all())
+        assert store.model_versions.tolist() == [summary.iteration] * len(store)
+    latest = load_klent_checkpoint(config.work_dir / "checkpoints" / "latest.pt")
+    assert latest.iteration == 2
+
+
 def test_load_klent_checkpoint_rejects_state_value_checkpoint(tmp_path: Path) -> None:
     from great_kingdom_ai.klent.shards import KLENT_ALGORITHM
     from great_kingdom_ai.model import ModelConfig

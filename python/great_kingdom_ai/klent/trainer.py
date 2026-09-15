@@ -32,7 +32,7 @@ from great_kingdom_ai.klent.shards import (
     save_klent_shard,
     shard_metadata_path,
 )
-from great_kingdom_ai.klent.types import KlentConfig
+from great_kingdom_ai.klent.types import KlentConfig, KlentPolicyValueModel
 from great_kingdom_ai.replay.persistence import copy_file_atomic
 from great_kingdom_ai.replay.trajectory import TrajectoryReplayStore
 from great_kingdom_ai.training.batch import TrainingArrays, TrainingBatch, arrays_to_batch
@@ -67,6 +67,9 @@ class KlentTrainConfig:
     onnx_device: str = "cpu"
     onnx_precision: str = "fp32"
     check_onnx_parity: bool = True
+    use_rust_actor: bool = False
+    actor_onnx_path: Path | None = None
+    rust_self_play_batch_size: int = 64
     warm_start_checkpoint: Path | None = None
 
     def __post_init__(self) -> None:
@@ -92,6 +95,8 @@ class KlentTrainConfig:
             raise ValueError("onnx_device must be one of: cpu, cuda")
         if self.onnx_precision not in {"fp32", "fp16"}:
             raise ValueError("onnx_precision must be one of: fp32, fp16")
+        if self.rust_self_play_batch_size <= 0:
+            raise ValueError("rust_self_play_batch_size must be positive")
 
 
 @dataclass(frozen=True)
@@ -148,26 +153,11 @@ def run_klent_iteration(
     iteration = state.iteration
     model = state.model
     model.eval()
-    episodes: list[TrajectoryEpisode] = []
-    transition_count = 0
-    seed_base = config.seed + iteration * 1_000_003
-    while (
-        transition_count < config.min_transitions
-        and len(episodes) < config.max_games_per_iteration
-    ):
-        _log, episode = play_klent_game(
-            model,
-            seed=seed_base + len(episodes),
-            config=config.klent,
-            self_play=KlentSelfPlayConfig(
-                max_turns=config.max_turns,
-                episode_id=len(episodes),
-                model_version=iteration,
-                created_iteration=iteration,
-            ),
-        )
-        episodes.append(episode)
-        transition_count += len(episode.transitions)
+    if config.use_rust_actor:
+        episodes = _collect_with_rust_actor(state, config, iteration)
+    else:
+        episodes = _collect_with_python_actor(model, config, iteration)
+    transition_count = sum(len(episode.transitions) for episode in episodes)
     if not episodes:
         raise RuntimeError("KLENT collection produced no episodes")
 
@@ -285,6 +275,98 @@ def compute_iteration_loss(
     indexes = np.arange(len(dataset), dtype=np.int64)
     batch = _klent_batch_from_indexes(dataset, indexes, config, random.Random(0))
     return compute_klent_losses(model, batch, config.klent)
+
+
+def _collect_with_python_actor(
+    model: KlentPolicyValueModel,
+    config: KlentTrainConfig,
+    iteration: int,
+) -> list[TrajectoryEpisode]:
+    episodes: list[TrajectoryEpisode] = []
+    transition_count = 0
+    seed_base = config.seed + iteration * 1_000_003
+    while (
+        transition_count < config.min_transitions
+        and len(episodes) < config.max_games_per_iteration
+    ):
+        _log, episode = play_klent_game(
+            model,
+            seed=seed_base + len(episodes),
+            config=config.klent,
+            self_play=KlentSelfPlayConfig(
+                max_turns=config.max_turns,
+                episode_id=len(episodes),
+                model_version=iteration,
+                created_iteration=iteration,
+            ),
+        )
+        episodes.append(episode)
+        transition_count += len(episode.transitions)
+    return episodes
+
+
+def _collect_with_rust_actor(
+    state: KlentTrainState,
+    config: KlentTrainConfig,
+    iteration: int,
+) -> list[TrajectoryEpisode]:
+    from great_kingdom_ai.klent.export import export_klent_checkpoint_to_onnx
+    from great_kingdom_ai.klent.rust_actor import (
+        RustKlentActorConfig,
+        play_rust_klent_zero_search,
+    )
+
+    actor_path: Path | None = config.actor_onnx_path
+    if actor_path is None:
+        source_checkpoint = (
+            config.work_dir / "checkpoints" / f"actor-source-{iteration:04d}.pt"
+        )
+        save_klent_checkpoint(state, source_checkpoint)
+        actor_path = config.work_dir / "onnx" / f"actor-source-{iteration:04d}.onnx"
+        export_klent_checkpoint_to_onnx(
+            source_checkpoint,
+            actor_path,
+            kind="actor",
+            device=config.onnx_device,
+            precision="fp32",
+        )
+    elif not actor_path.exists():
+        raise FileNotFoundError(f"actor ONNX model is missing: {actor_path}")
+
+    episodes: list[TrajectoryEpisode] = []
+    transition_count = 0
+    seed_base = config.seed + iteration * 1_000_003
+    game_offset = 0
+    while (
+        transition_count < config.min_transitions
+        and game_offset < config.max_games_per_iteration
+    ):
+        batch_size = min(
+            config.rust_self_play_batch_size,
+            config.max_games_per_iteration - game_offset,
+        )
+        summary = play_rust_klent_zero_search(
+            RustKlentActorConfig(
+                actor_onnx_path=actor_path,
+                output_dir=config.work_dir,
+                games=batch_size,
+                seed_start=seed_base + game_offset,
+                alpha=config.klent.alpha,
+                beta=config.klent.beta,
+                lambda_param=config.klent.lambda_param,
+                gamma=config.klent.gamma,
+                max_turns=config.max_turns,
+                onnx_device=config.onnx_device,
+                rust_self_play_batch_size=batch_size,
+                model_version=iteration,
+                created_iteration=iteration,
+                episode_id_offset=game_offset,
+            )
+        )
+        episodes.extend(summary.trajectory_episodes)
+        transition_count += summary.transitions
+        game_offset += batch_size
+    return episodes
 
 
 def _klent_batch_from_indexes(

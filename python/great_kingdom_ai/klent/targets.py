@@ -128,13 +128,19 @@ def legal_mask_from_features(features: Tensor) -> Tensor:
     torch = _import_torch()
     if features.ndim != 4:
         raise ValueError(f"expected features rank 4 [batch, channels, 9, 9], got {features.ndim}")
-    if features.shape[2:] != (BOARD_SIZE, BOARD_SIZE):
-        raise ValueError(
-            f"expected features spatial shape {(BOARD_SIZE, BOARD_SIZE)}, "
-            f"got {tuple(features.shape[2:])}"
-        )
+    if not _is_tracing(torch):
+        if features.shape[2:] != (BOARD_SIZE, BOARD_SIZE):
+            raise ValueError(
+                f"expected features spatial shape {(BOARD_SIZE, BOARD_SIZE)}, "
+                f"got {tuple(features.shape[2:])}"
+            )
+        if features.shape[1] <= LEGAL_PLACE_FEATURE_CHANNEL:
+            raise ValueError(
+                f"expected at least {LEGAL_PLACE_FEATURE_CHANNEL + 1} feature channels, "
+                f"got {features.shape[1]}"
+            )
     legal_place = features[:, LEGAL_PLACE_FEATURE_CHANNEL].flatten(start_dim=1) > 0.5
-    if legal_place.shape[1] != BOARD_CELLS:
+    if not _is_tracing(torch) and legal_place.shape[1] != BOARD_CELLS:
         raise ValueError(
             f"expected {BOARD_CELLS} board cells in feature channel "
             f"{LEGAL_PLACE_FEATURE_CHANNEL}, got {legal_place.shape[1]}"

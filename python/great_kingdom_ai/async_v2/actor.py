@@ -61,8 +61,15 @@ def run_actor_v2_once(
     printer.metric("onnx device", config.onnx_device)
     printer.metric("onnx max batch", config.onnx_max_batch_size)
     printer.metric("self-play batch", config.rust_self_play_batch_size)
-    printer.metric("gumbel sims", config.self_play.gumbel_simulations)
-    printer.metric("leaf batch", config.self_play.leaf_batch_size)
+    if config.zero_search:
+        printer.metric("zero search", True)
+        printer.metric("alpha", config.alpha)
+        printer.metric("beta", config.beta)
+        printer.metric("lambda", config.lambda_param)
+        printer.metric("gamma", config.gamma)
+    else:
+        printer.metric("gumbel sims", config.self_play.gumbel_simulations)
+        printer.metric("leaf batch", config.self_play.leaf_batch_size)
     printer.step(f"generating trajectory shard {shard_id}")
     summary = run_self_play(
         RustOnnxSelfPlayConfig(
@@ -78,6 +85,12 @@ def run_actor_v2_once(
             onnx_max_batch_size=config.onnx_max_batch_size,
             rust_self_play_batch_size=config.rust_self_play_batch_size,
             self_play=config.self_play,
+            zero_search=config.zero_search,
+            alpha=config.alpha,
+            beta=config.beta,
+            lambda_param=config.lambda_param,
+            gamma=config.gamma,
+            max_turns=config.max_turns,
         )
     )
     if not summary.trajectory_episodes:
@@ -91,6 +104,8 @@ def run_actor_v2_once(
         episodes=_with_transition_model_metadata(summary.trajectory_episodes, config),
         logs=summary.game_logs,
     )
+    if config.zero_search:
+        _write_klent_metadata(config, replay_path, transitions=transitions, games=summary.games)
     record = V2ShardRecord(
         shard_id=shard_id,
         status="completed",
@@ -134,6 +149,34 @@ def _save_trajectory_shard(
 def _drop_async_unused_replay_arrays(replay: TrajectoryReplayStore) -> None:
     replay.next_features = None
     replay.next_features_present = None
+
+
+def _write_klent_metadata(
+    config: ActorV2Config,
+    replay_path: Path,
+    *,
+    transitions: int,
+    games: int,
+) -> None:
+    from great_kingdom_ai.klent.shards import (
+        KlentShardMetadata,
+        write_klent_shard_metadata,
+    )
+    from great_kingdom_ai.klent.types import KlentConfig
+
+    metadata = KlentShardMetadata.from_config(
+        KlentConfig(
+            alpha=config.alpha,
+            beta=config.beta,
+            lambda_param=config.lambda_param,
+            gamma=config.gamma,
+        ),
+        iteration=_transition_created_iteration(config),
+        model_version=_transition_model_version(config),
+        transitions=transitions,
+        games=games,
+    )
+    write_klent_shard_metadata(metadata, replay_path)
 
 def _with_transition_model_metadata(
     episodes: tuple[TrajectoryEpisode, ...],
@@ -228,3 +271,14 @@ def _validate_actor_config(config: ActorV2Config) -> None:
         raise ValueError("ema_opponent_fraction must be in [0, 1]")
     if config.ema_opponent_fraction > 0.0 and config.ema_onnx_model_path is None:
         raise ValueError("ema_onnx_model_path is required when ema_opponent_fraction > 0")
+    if config.zero_search and config.ema_opponent_fraction > 0.0:
+        raise ValueError("zero_search does not support EMA opponent mixing")
+    if config.zero_search:
+        from great_kingdom_ai.klent.types import KlentConfig
+
+        KlentConfig(
+            alpha=config.alpha,
+            beta=config.beta,
+            lambda_param=config.lambda_param,
+            gamma=config.gamma,
+        )

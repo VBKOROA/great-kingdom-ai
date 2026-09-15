@@ -27,6 +27,12 @@ class ActorV2Config:
     onnx_max_batch_size: int = 4096
     rust_self_play_batch_size: int = 512
     self_play: SelfPlayConfig = SelfPlayConfig()
+    zero_search: bool = False
+    alpha: float = 0.03
+    beta: float = 0.1
+    lambda_param: float = 0.8825
+    gamma: float = 1.0
+    max_turns: int = 200
 
 @dataclass(frozen=True)
 class LearnerV2Config:

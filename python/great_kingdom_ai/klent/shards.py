@@ -132,6 +132,26 @@ def klent_config_hash(config: KlentConfig) -> str:
     )
 
 
+def write_klent_shard_metadata(
+    metadata: KlentShardMetadata,
+    replay_path: str | Path,
+) -> Path:
+    """Atomically write only the shard metadata marker."""
+    metadata_path = shard_metadata_path(replay_path)
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = metadata_path.with_name(f"{metadata_path.name}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(metadata.to_dict(), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(metadata_path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return metadata_path
+
+
 def save_klent_shard(
     replay: TrajectoryReplayStore,
     replay_path: str | Path,
@@ -147,18 +167,7 @@ def save_klent_shard(
             f"replay length {len(replay)}"
         )
     replay.save(path, compressed=compressed)
-    metadata_path = shard_metadata_path(path)
-    temporary = metadata_path.with_name(f"{metadata_path.name}.tmp")
-    try:
-        temporary.write_text(
-            json.dumps(metadata.to_dict(), indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        temporary.replace(metadata_path)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
-    return metadata_path
+    return write_klent_shard_metadata(metadata, path)
 
 
 def load_klent_shard(
@@ -189,4 +198,5 @@ __all__ = [
     "load_klent_shard",
     "save_klent_shard",
     "shard_metadata_path",
+    "write_klent_shard_metadata",
 ]

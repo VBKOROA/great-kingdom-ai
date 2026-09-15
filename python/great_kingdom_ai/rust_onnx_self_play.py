@@ -37,6 +37,12 @@ class RustOnnxSelfPlayConfig:
     onnx_max_batch_size: int = 128
     rust_self_play_batch_size: int = 2
     self_play: SelfPlayConfig = SelfPlayConfig()
+    zero_search: bool = False
+    alpha: float = 0.03
+    beta: float = 0.1
+    lambda_param: float = 0.8825
+    gamma: float = 1.0
+    max_turns: int = 200
 
 
 @dataclass(frozen=True)
@@ -61,6 +67,8 @@ class RustSelfPlayRunSummary:
 
 
 def run_rust_onnx_self_play(config: RustOnnxSelfPlayConfig) -> RustSelfPlayRunSummary:
+    if config.zero_search:
+        return _run_rust_zero_search(config)
     if not 0.0 <= config.ema_opponent_fraction <= 1.0:
         raise ValueError("ema_opponent_fraction must be in [0, 1]")
     if config.ema_opponent_fraction > 0.0 and config.ema_onnx_model_path is None:
@@ -132,6 +140,44 @@ def run_rust_onnx_self_play(config: RustOnnxSelfPlayConfig) -> RustSelfPlayRunSu
         replay_samples=tuple(samples),
         game_logs=tuple(logs),
         trajectory_episodes=tuple(episodes),
+    )
+
+
+def _run_rust_zero_search(config: RustOnnxSelfPlayConfig) -> RustSelfPlayRunSummary:
+    """Run the Rust zero-search KLENT actor and return its trajectory episodes."""
+    from great_kingdom_ai.klent.rust_actor import (
+        RustKlentActorConfig,
+        play_rust_klent_zero_search,
+    )
+
+    if config.ema_opponent_fraction > 0.0:
+        raise ValueError("zero-search actor does not support EMA opponent mixing")
+    summary = play_rust_klent_zero_search(
+        RustKlentActorConfig(
+            actor_onnx_path=config.onnx_model_path,
+            output_dir=config.output_dir,
+            games=config.games,
+            seed_start=config.seed_start,
+            alpha=config.alpha,
+            beta=config.beta,
+            lambda_param=config.lambda_param,
+            gamma=config.gamma,
+            max_turns=config.max_turns,
+            onnx_device=config.onnx_device,
+            onnx_max_batch_size=config.onnx_max_batch_size,
+            rust_self_play_batch_size=config.rust_self_play_batch_size,
+            model_version=config.model_version,
+            created_iteration=config.created_iteration,
+        )
+    )
+    return RustSelfPlayRunSummary(
+        artifact_dir=config.output_dir,
+        games=summary.games,
+        samples=summary.transitions,
+        onnx_model_path=config.onnx_model_path,
+        onnx_device=config.onnx_device,
+        game_logs=summary.game_logs,
+        trajectory_episodes=summary.trajectory_episodes,
     )
 
 
@@ -303,8 +349,7 @@ def _run_one_batch(
         )
         transitions: list[TrajectoryTransition] = []
         rows = trajectory_rows[game_index]
-        for index, (_turn, player, features, action, policy, root_policy_logits) in enumerate(rows):
-            next_features = rows[index + 1][2] if index + 1 < len(rows) else None
+        for _turn, player, _features, action, policy, root_policy_logits in rows:
             transitions.append(
                 TrajectoryTransition(
                     episode_id=seed,
