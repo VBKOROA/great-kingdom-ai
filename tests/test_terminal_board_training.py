@@ -262,8 +262,8 @@ def test_aux_loss_decreases_on_fixed_batch() -> None:
         losses.total.backward()
         optimizer.step()
         if first is None:
-            first = float(losses.terminal_board_loss)
-        last = float(losses.terminal_board_loss)
+            first = float(losses.terminal_board_loss.detach())
+        last = float(losses.terminal_board_loss.detach())
     assert first is not None and last is not None
     assert last < first
 
