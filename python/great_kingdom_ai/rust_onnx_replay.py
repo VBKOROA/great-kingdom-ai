@@ -114,8 +114,8 @@ def _episodes_from_logs_and_samples(
     return episodes
 
 
-def _log_terminal_board(log: Any) -> np.ndarray | None:
-    flat = getattr(log, "terminal_board", None)
+def _log_terminal_board(log: GameLog) -> np.ndarray | None:
+    flat = log.terminal_board
     if flat is None:
         return None
     return terminal_board_from_flat(np.asarray(flat, dtype=np.uint8))

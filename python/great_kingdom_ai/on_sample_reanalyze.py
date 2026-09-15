@@ -102,10 +102,14 @@ class OnSampleReanalyzeDataset:
 
         if len(replay) == 0:
             raise ValueError("trajectory replay must contain at least one transition")
+        if replay.features is None or replay.legal_masks is None:
+            raise ValueError("on-sample reanalyze requires stored features and legal masks")
         checkpoint_device = "cpu" if config.onnx_model_path is not None else config.device
         state = load_checkpoint(checkpoint_path, device=checkpoint_device, prefer_ema=True)
         state.model.eval()
 
+        self._features = replay.features
+        self._legal_masks = replay.legal_masks
         self._replay = replay
         self._config = config
         self._checkpoint_path = Path(checkpoint_path)
@@ -219,7 +223,7 @@ class OnSampleReanalyzeDataset:
             recent_window=recent_window,
             priority_config=priority_config,
         )
-        features = np.ascontiguousarray(self._replay.features[indexes], dtype=np.float32)
+        features = np.ascontiguousarray(self._features[indexes], dtype=np.float32)
         legal_masks = self._legal_masks_for_rows(indexes, features)
         policies = np.ascontiguousarray(
             self._replay.policy_targets[indexes].astype(np.float32, copy=True),
@@ -387,7 +391,7 @@ class OnSampleReanalyzeDataset:
             return np.ascontiguousarray(targets, dtype=np.float32)
 
         bootstrap_features = np.ascontiguousarray(
-            self._replay.features[bootstrap_rows],
+            self._features[bootstrap_rows],
             dtype=np.float32,
         )
         bootstrap_values = self._bootstrap_values_for_rows(
@@ -594,7 +598,7 @@ class OnSampleReanalyzeDataset:
             self._search_seconds += time.perf_counter() - start
 
     def _legal_masks_for_rows(self, indexes: list[int], features: np.ndarray) -> np.ndarray:
-        replay_legal_masks = np.ascontiguousarray(self._replay.legal_masks[indexes], dtype=np.bool_)
+        replay_legal_masks = np.ascontiguousarray(self._legal_masks[indexes], dtype=np.bool_)
         feature_legal_masks = legal_masks_from_features(features)
         if not np.array_equal(replay_legal_masks, feature_legal_masks):
             raise ValueError("replay legal masks do not match feature-derived legal masks")

@@ -103,9 +103,11 @@ def compute_losses(
             "terminal_board_loss_weight > 0 requires a model with a terminal board head"
         )
     if aux_active:
-        policy_logits, value, aux_logits = cast("Any", model).forward_with_aux(
-            batch.features
+        forward_with_aux = cast(
+            "Callable[[Tensor], tuple[Tensor, Tensor, Tensor]]",
+            model.forward_with_aux,
         )
+        policy_logits, value, aux_logits = forward_with_aux(batch.features)
     else:
         policy_logits, value = model(batch.features)
         aux_logits = None
@@ -387,7 +389,10 @@ def _policy_target_entropy(policy: torch.Tensor, sample_weight: torch.Tensor) ->
 def _policy_target_entropy_rows(policy: torch.Tensor) -> torch.Tensor:
     torch = _import_torch()
     positive = policy > 0.0
-    return -(torch.where(positive, policy * torch.log(policy.clamp_min(1e-45)), 0.0)).sum(dim=1)
+    log_terms = cast("Tensor", torch.where(
+        positive, policy * torch.log(policy.clamp_min(1e-45)), 0.0
+    ))
+    return -log_terms.sum(dim=1)
 
 
 def _weighted_mean(values: torch.Tensor, sample_weight: torch.Tensor) -> torch.Tensor:

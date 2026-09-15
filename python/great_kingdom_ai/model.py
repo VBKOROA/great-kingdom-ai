@@ -186,6 +186,7 @@ class D4RelativePositionBias(nn.Module):
             torch.zeros(self.num_relative_positions, num_heads)
         )
 
+        self.relative_index: torch.Tensor
         self.register_buffer("relative_index", self._compute_relative_index())
 
     def _compute_relative_index(self) -> torch.Tensor:
@@ -281,13 +282,13 @@ class BoardSelfAttentionBlock(nn.Module):
         # Reshape back to [B, N, C]
         context = context.transpose(1, 2).contiguous().view(B, N, C)
 
-        attn_out = self.out_proj(context)
+        attn_out = cast(torch.Tensor, self.out_proj(context))
 
         # Apply LayerScale and residual connection
         x_flat = x_flat + self.attn_scale * attn_out
 
         # FFN Branch
-        ffn_out = self.ffn(self.norm2(x_flat))
+        ffn_out = cast(torch.Tensor, self.ffn(self.norm2(x_flat)))
         x_flat = x_flat + self.ffn_scale * ffn_out
 
         # Reshape back to [B, C, H, W]
@@ -342,11 +343,15 @@ class PolicyValueNetwork(nn.Module):
         )
         if config.spatial_value_head:
             self.value_head = nn.Sequential(
-                nn.Conv2d(config.channels, config.value_spatial_channels, kernel_size=1, bias=False),
+                nn.Conv2d(
+                    config.channels, config.value_spatial_channels, kernel_size=1, bias=False
+                ),
                 nn.BatchNorm2d(config.value_spatial_channels),
                 nn.ReLU(inplace=True),
                 nn.Flatten(),
-                nn.Linear(config.value_spatial_channels * BOARD_SIZE * BOARD_SIZE, config.value_hidden),
+                nn.Linear(
+                    config.value_spatial_channels * BOARD_SIZE * BOARD_SIZE, config.value_hidden
+                ),
                 nn.ReLU(inplace=True),
                 nn.Linear(config.value_hidden, 1),
                 nn.Tanh(),

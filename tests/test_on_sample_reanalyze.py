@@ -898,3 +898,17 @@ def test_on_sample_reanalyze_carries_terminal_board_targets(
     samples = dataset.sample(2, random.Random(0))
     assert samples[0].terminal_board_target is not None
     assert samples[1].terminal_board_target is None
+
+
+@pytest.mark.parametrize("missing_field", ["features", "legal_masks"])
+def test_on_sample_reanalyze_rejects_missing_arrays_before_loading_checkpoint(
+    tmp_path: Path, missing_field: str,
+) -> None:
+    store = TrajectoryReplayStore.from_episodes(16, (make_episode(),))
+    store = replace(store, **{missing_field: None})
+    with pytest.raises(ValueError, match="requires stored features and legal masks"):
+        OnSampleReanalyzeDataset(
+            store,
+            checkpoint_path=tmp_path / "missing.pt",
+            config=ReanalyzeConfig(),
+        )

@@ -310,13 +310,19 @@ def select_search_reanalyze_indexes(
     refs = _transition_refs(episodes)
     if len(refs) != row_count:
         raise ValueError("episode transition count must match policy row count")
+    legal_masks = []
+    for ref in refs:
+        legal_mask = ref.episode.transitions[ref.transition_index].legal_mask
+        if legal_mask is None:
+            raise ValueError("search reanalyze priority selection requires stored legal masks")
+        legal_masks.append(legal_mask)
     scores = priority_scores(
         values=np.asarray(values, dtype=np.float32),
         value_predictions=np.asarray(refreshed_values, dtype=np.float32),
         policies=np.asarray(policies, dtype=np.float32),
         policy_logits=np.asarray(policy_logits, dtype=np.float32),
         legal_masks=np.stack(
-            [ref.episode.transitions[ref.transition_index].legal_mask for ref in refs],
+            legal_masks,
             axis=0,
         ).astype(np.bool_),
         target_ages=np.asarray(target_ages, dtype=np.int64),
@@ -438,6 +444,8 @@ def _validate_reconstructed_batch(batch: Any, refs: Sequence[_TransitionRef]) ->
             )
         transition = ref.episode.transitions[ref.transition_index]
         features = features.reshape(FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
+        if transition.features is None:
+            raise ValueError("reconstructed state validation requires stored features")
         if not np.allclose(features, transition.features, atol=1e-6):
             raise ValueError("reconstructed state features do not match trajectory transition")
 
@@ -463,6 +471,8 @@ def _validate_reconstructed_state(state: Any, transition: TrajectoryTransition) 
             f"expected reconstructed feature shape {(expected,)}, got {features.shape}"
         )
     features = features.reshape(FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
+    if transition.features is None:
+        raise ValueError("reconstructed state validation requires stored features")
     if not np.allclose(features, transition.features, atol=1e-6):
         raise ValueError("reconstructed state features do not match trajectory transition")
 

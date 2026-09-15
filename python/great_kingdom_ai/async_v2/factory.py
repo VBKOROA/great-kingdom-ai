@@ -17,6 +17,7 @@ from great_kingdom_ai.onnx_export import export_checkpoint_to_onnx
 from great_kingdom_ai.pipeline_printer import PipelinePrinter
 from great_kingdom_ai.training import (
     TrainingConfig,
+    TrainState,
     create_train_state,
     save_checkpoint,
     warm_start_terminal_board_head,
@@ -27,9 +28,9 @@ def run_factory_init_v2_once(
     config: FactoryInitV2Config,
     train_config: TrainingConfig,
     *,
-    state_factory: Callable[[TrainingConfig], Any] | None = None,
-    warm_start_factory: Callable[[str | Path, TrainingConfig], Any] | None = None,
-    checkpoint_saver: Callable[[Any, str | Path], Path] | None = None,
+    state_factory: Callable[[TrainingConfig], TrainState] | None = None,
+    warm_start_factory: Callable[[str | Path, TrainingConfig], TrainState] | None = None,
+    checkpoint_saver: Callable[[TrainState, str | Path], Path] | None = None,
     onnx_exporter: Callable[..., Any] | None = None,
     printer: PipelinePrinter | None = None,
 ) -> FactoryInitV2Summary:
