@@ -12,6 +12,7 @@ from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.game_core import import_core, request_feature_rows_and_masks
 from great_kingdom_ai.priority_sampling import PrioritySamplingConfig, sample_priority_indexes
 from great_kingdom_ai.replay.sample import ReplaySample
+from great_kingdom_ai.replay.terminal_board import absolute_terminal_boards_to_perspective
 from great_kingdom_ai.replay.trajectory import TrajectoryReplayStore
 from great_kingdom_ai.self_play_data import value_target_for_player
 
@@ -24,6 +25,8 @@ class TrajectoryArrayBatch:
     values: np.ndarray
     sample_weights: np.ndarray
     legal_masks: np.ndarray
+    terminal_board_targets: np.ndarray | None = None
+    terminal_board_valid: np.ndarray | None = None
 
 
 class TrajectoryReplayDataset:
@@ -76,6 +79,11 @@ class TrajectoryReplayDataset:
                 policy=batch.policies[index],
                 value=float(batch.values[index]),
                 sample_weight=float(batch.sample_weights[index]),
+                terminal_board_target=(
+                    None
+                    if batch.terminal_board_targets is None
+                    else batch.terminal_board_targets[index]
+                ),
             )
             for index in range(batch_size)
         ]
@@ -123,6 +131,10 @@ class TrajectoryReplayDataset:
 
         index_array = np.asarray(indexes, dtype=np.int64)
         features, legal_masks = _features_and_masks_for_rows(self._replay, index_array)
+        terminal_board_targets, terminal_board_valid = _terminal_board_targets_for_rows(
+            self._replay,
+            index_array,
+        )
         return TrajectoryArrayBatch(
             indexes=index_array,
             features=features,
@@ -137,6 +149,8 @@ class TrajectoryReplayDataset:
                 dtype=np.float32,
             ),
             legal_masks=legal_masks,
+            terminal_board_targets=terminal_board_targets,
+            terminal_board_valid=terminal_board_valid,
         )
 
     def update_sampling_priorities(
@@ -215,6 +229,27 @@ def _features_and_masks_for_rows(
             np.ascontiguousarray(replay.legal_masks[indexes], dtype=np.bool_),
         )
     return _reconstruct_features_and_masks(replay, indexes)
+
+
+def _terminal_board_targets_for_rows(
+    replay: TrajectoryReplayStore,
+    indexes: np.ndarray,
+) -> tuple[np.ndarray | None, np.ndarray]:
+    if replay.terminal_boards is None or replay.terminal_board_present is None:
+        return None, np.zeros((indexes.shape[0],), dtype=np.bool_)
+    episode_indexes = np.searchsorted(
+        replay.episode_offsets,
+        indexes,
+        side="right",
+    ) - 1
+    boards = replay.terminal_boards[episode_indexes]
+    players = replay.players[indexes]
+    targets = absolute_terminal_boards_to_perspective(boards, players)
+    valid = np.ascontiguousarray(
+        replay.terminal_board_present[episode_indexes],
+        dtype=np.bool_,
+    )
+    return np.ascontiguousarray(targets, dtype=np.int64), valid
 
 
 def _reconstruct_features_and_masks(

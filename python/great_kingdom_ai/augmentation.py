@@ -60,6 +60,14 @@ def augment_sample(sample: ReplaySample, symmetry: Symmetry) -> ReplaySample:
             "root_policy_logits",
         )
     )
+    transformed_terminal_board = (
+        None
+        if sample.terminal_board_target is None
+        else _transform_spatial(
+            np.asarray(sample.terminal_board_target),
+            symmetry,
+        ).astype(np.int64, copy=True)
+    )
 
     return ReplaySample(
         features=_transform_spatial(features, symmetry).copy(),
@@ -67,6 +75,7 @@ def augment_sample(sample: ReplaySample, symmetry: Symmetry) -> ReplaySample:
         value=sample.value,
         root_policy_logits=transformed_root_logits,
         sample_weight=sample.sample_weight,
+        terminal_board_target=transformed_terminal_board,
     )
 
 
@@ -98,12 +107,14 @@ def augment_policy_training_arrays_randomly(
     symmetries: Iterable[Symmetry] = ALL_SYMMETRIES,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Apply random board symmetries to feature and policy training arrays."""
-    transformed_features, transformed_policies, _legal_masks = augment_training_arrays_randomly(
-        features,
-        policies,
-        None,
-        rng,
-        symmetries=symmetries,
+    transformed_features, transformed_policies, _legal_masks, _terminal = (
+        augment_training_arrays_randomly(
+            features,
+            policies,
+            None,
+            rng,
+            symmetries=symmetries,
+        )
     )
     return transformed_features, transformed_policies
 
@@ -115,8 +126,14 @@ def augment_training_arrays_randomly(
     rng: random.Random,
     *,
     symmetries: Iterable[Symmetry] = ALL_SYMMETRIES,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
-    """Apply random board symmetries to features, policies, and legal masks."""
+    terminal_board_targets: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
+    """Apply random board symmetries to features, policies, and legal masks.
+
+    When ``terminal_board_targets`` is provided the same per-row symmetry is
+    applied to the terminal board target so the auxiliary target stays aligned
+    with the augmented features and policy.
+    """
     choices = tuple(symmetries)
     if not choices:
         raise ValueError("symmetries must contain at least one transform")
@@ -131,11 +148,25 @@ def augment_training_arrays_randomly(
             f"expected legal_masks shape {(features.shape[0], ACTION_SPACE)}, "
             f"got {legal_masks.shape}"
         )
+    if terminal_board_targets is not None and terminal_board_targets.shape != (
+        features.shape[0],
+        BOARD_SIZE,
+        BOARD_SIZE,
+    ):
+        raise ValueError(
+            "expected terminal_board_targets shape "
+            f"{(features.shape[0], BOARD_SIZE, BOARD_SIZE)}, got {terminal_board_targets.shape}"
+        )
 
     transformed_features = np.empty_like(features, dtype=np.float32)
     transformed_policies = np.empty_like(policies, dtype=np.float32)
     transformed_legal_masks = (
         None if legal_masks is None else np.empty_like(legal_masks, dtype=np.bool_)
+    )
+    transformed_terminal_boards = (
+        None
+        if terminal_board_targets is None
+        else np.empty_like(terminal_board_targets)
     )
     selected = [rng.choice(choices) for _ in range(features.shape[0])]
     for symmetry in choices:
@@ -168,7 +199,17 @@ def augment_training_arrays_randomly(
                 symmetry,
             ).reshape(len(indexes), BOARD_SIZE * BOARD_SIZE)
             transformed_legal_masks[index_array, -1] = legal_masks[index_array, -1]
-    return transformed_features, transformed_policies, transformed_legal_masks
+        if transformed_terminal_boards is not None and terminal_board_targets is not None:
+            transformed_terminal_boards[index_array] = _transform_spatial(
+                terminal_board_targets[index_array],
+                symmetry,
+            )
+    return (
+        transformed_features,
+        transformed_policies,
+        transformed_legal_masks,
+        transformed_terminal_boards,
+    )
 
 
 def _transform_spatial(array: np.ndarray, symmetry: Symmetry) -> np.ndarray:

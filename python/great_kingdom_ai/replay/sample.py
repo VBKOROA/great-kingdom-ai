@@ -8,6 +8,10 @@ import numpy as np
 
 from great_kingdom_ai.features import ACTION_SPACE
 from great_kingdom_ai.replay.schema import FEATURE_SHAPE
+from great_kingdom_ai.replay.terminal_board import (
+    TERMINAL_BOARD_CLASSES,
+    TERMINAL_BOARD_SHAPE,
+)
 
 
 @dataclass(frozen=True)
@@ -17,6 +21,7 @@ class ReplaySample:
     value: float
     root_policy_logits: np.ndarray | None = None
     sample_weight: float = 1.0
+    terminal_board_target: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -43,6 +48,26 @@ def validate_replay_sample(sample: ReplaySample) -> ReplaySample:
         if sample.root_policy_logits is None
         else np.asarray(sample.root_policy_logits, dtype=np.float32)
     )
+    terminal_board_target = (
+        None
+        if sample.terminal_board_target is None
+        else np.asarray(sample.terminal_board_target)
+    )
+    if terminal_board_target is not None:
+        if terminal_board_target.shape != TERMINAL_BOARD_SHAPE:
+            raise ValueError(
+                "expected terminal_board_target shape "
+                f"{TERMINAL_BOARD_SHAPE}, got {terminal_board_target.shape}"
+            )
+        if not np.issubdtype(terminal_board_target.dtype, np.integer):
+            raise ValueError("terminal_board_target must be an integer array")
+        if np.any(terminal_board_target < 0) or np.any(
+            terminal_board_target >= TERMINAL_BOARD_CLASSES
+        ):
+            raise ValueError(
+                f"terminal_board_target classes must be in [0, {TERMINAL_BOARD_CLASSES})"
+            )
+        terminal_board_target = terminal_board_target.astype(np.int64, copy=True)
     if root_policy_logits is not None:
         if root_policy_logits.shape != (ACTION_SPACE,):
             raise ValueError(
@@ -68,6 +93,7 @@ def validate_replay_sample(sample: ReplaySample) -> ReplaySample:
             None if root_policy_logits is None else root_policy_logits.copy()
         ),
         sample_weight=sample_weight,
+        terminal_board_target=terminal_board_target,
     )
 
 

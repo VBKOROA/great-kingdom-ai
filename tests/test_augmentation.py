@@ -90,12 +90,14 @@ def test_augment_training_arrays_transforms_legal_masks_with_policies() -> None:
     legal_masks[0, 1 * BOARD_SIZE + 2] = True
     legal_masks[0, 81] = True
 
-    features, policies, transformed_legal_masks = augment_training_arrays_randomly(
-        sample.features[np.newaxis],
-        sample.policy[np.newaxis],
-        legal_masks,
-        random.Random(1),
-        symmetries=("rot90",),
+    features, policies, transformed_legal_masks, _terminal = (
+        augment_training_arrays_randomly(
+            sample.features[np.newaxis],
+            sample.policy[np.newaxis],
+            legal_masks,
+            random.Random(1),
+            symmetries=("rot90",),
+        )
     )
 
     assert features[0, 0, 6, 1] == 1.0

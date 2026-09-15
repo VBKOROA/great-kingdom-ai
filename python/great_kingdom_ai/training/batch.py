@@ -17,6 +17,7 @@ from great_kingdom_ai.features import BOARD_CELLS, LEGAL_PLACE_FEATURE_CHANNEL, 
 from great_kingdom_ai.learner_prefetch import PrefetchIterator
 from great_kingdom_ai.priority_sampling import PrioritySamplingConfig
 from great_kingdom_ai.replay.sample import ReplaySample
+from great_kingdom_ai.replay.terminal_board import TERMINAL_BOARD_SHAPE
 from great_kingdom_ai.training.config import TrainingConfig
 from great_kingdom_ai.training.torch_utils import _import_torch
 
@@ -32,6 +33,8 @@ class TrainingBatch:
     legal_mask: torch.Tensor
     sample_weight: torch.Tensor
     replay_indexes: np.ndarray | None = None
+    terminal_board_target: torch.Tensor | None = None
+    terminal_board_valid: torch.Tensor | None = None
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,8 @@ class TrainingArrays:
     sample_weights: np.ndarray
     legal_masks: np.ndarray | None = None
     indexes: np.ndarray | None = None
+    terminal_board_targets: np.ndarray | None = None
+    terminal_board_valid: np.ndarray | None = None
 
 
 
@@ -67,6 +72,7 @@ def samples_to_batch(
     values = np.asarray([sample.value for sample in samples], dtype=np.float32)
     sample_weights = np.asarray([sample.sample_weight for sample in samples], dtype=np.float32)
     legal_masks = _legal_masks_from_features(features)
+    terminal_targets, terminal_valid = _terminal_targets_from_samples(samples)
 
     return TrainingBatch(
         features=_tensor_from_numpy(torch, features, pin_memory=pin_memory).to(device=device),
@@ -79,6 +85,20 @@ def samples_to_batch(
             device=device
         ),
         replay_indexes=None,
+        terminal_board_target=(
+            None
+            if terminal_targets is None
+            else _tensor_from_numpy(torch, terminal_targets, pin_memory=pin_memory).to(
+                device=device
+            )
+        ),
+        terminal_board_valid=(
+            None
+            if terminal_valid is None
+            else _tensor_from_numpy(torch, terminal_valid, pin_memory=pin_memory).to(
+                device=device
+            )
+        ),
     )
 
 
@@ -102,6 +122,7 @@ def arrays_to_batch(
     )
     if legal_masks.shape != policies.shape:
         raise ValueError("legal_masks shape must match policies shape")
+    terminal_targets, terminal_valid = _terminal_targets_from_arrays(arrays)
     return TrainingBatch(
         features=_tensor_from_numpy(torch, features, pin_memory=pin_memory).to(device=device),
         policy=_tensor_from_numpy(torch, policies, pin_memory=pin_memory).to(device=device),
@@ -116,6 +137,20 @@ def arrays_to_batch(
             None
             if arrays.indexes is None
             else np.ascontiguousarray(arrays.indexes, dtype=np.int64)
+        ),
+        terminal_board_target=(
+            None
+            if terminal_targets is None
+            else _tensor_from_numpy(torch, terminal_targets, pin_memory=pin_memory).to(
+                device=device
+            )
+        ),
+        terminal_board_valid=(
+            None
+            if terminal_valid is None
+            else _tensor_from_numpy(torch, terminal_valid, pin_memory=pin_memory).to(
+                device=device
+            )
         ),
     )
 
@@ -231,13 +266,26 @@ def _sample_training_batch(
                 if getattr(raw_arrays, "indexes", None) is None
                 else np.asarray(raw_arrays.indexes, dtype=np.int64)
             ),
+            terminal_board_targets=(
+                None
+                if getattr(raw_arrays, "terminal_board_targets", None) is None
+                else np.asarray(raw_arrays.terminal_board_targets, dtype=np.int64)
+            ),
+            terminal_board_valid=(
+                None
+                if getattr(raw_arrays, "terminal_board_valid", None) is None
+                else np.asarray(raw_arrays.terminal_board_valid, dtype=np.bool_)
+            ),
         )
         if config.symmetry_augmentation:
-            features, policies, legal_masks = augment_training_arrays_randomly(
-                arrays.features,
-                arrays.policies,
-                arrays.legal_masks,
-                rng,
+            features, policies, legal_masks, terminal_targets = (
+                augment_training_arrays_randomly(
+                    arrays.features,
+                    arrays.policies,
+                    arrays.legal_masks,
+                    rng,
+                    terminal_board_targets=arrays.terminal_board_targets,
+                )
             )
             arrays = TrainingArrays(
                 features=features,
@@ -246,6 +294,8 @@ def _sample_training_batch(
                 sample_weights=arrays.sample_weights,
                 legal_masks=legal_masks,
                 indexes=arrays.indexes,
+                terminal_board_targets=terminal_targets,
+                terminal_board_valid=arrays.terminal_board_valid,
             )
         return arrays_to_batch(arrays, device=device, pin_memory=pin_memory)
 
@@ -283,6 +333,16 @@ def _batch_to_device(
         legal_mask=batch.legal_mask.to(device=device, non_blocking=non_blocking),
         sample_weight=batch.sample_weight.to(device=device, non_blocking=non_blocking),
         replay_indexes=batch.replay_indexes,
+        terminal_board_target=(
+            None
+            if batch.terminal_board_target is None
+            else batch.terminal_board_target.to(device=device, non_blocking=non_blocking)
+        ),
+        terminal_board_valid=(
+            None
+            if batch.terminal_board_valid is None
+            else batch.terminal_board_valid.to(device=device, non_blocking=non_blocking)
+        ),
     )
 
 
@@ -305,6 +365,41 @@ def _use_cuda_prefetch(torch: Any, config: TrainingConfig) -> bool:
         and str(config.device).startswith("cuda")
         and torch.cuda.is_available()
     )
+
+
+def _terminal_targets_from_samples(
+    samples: Sequence[ReplaySample],
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    present = [sample.terminal_board_target is not None for sample in samples]
+    if not any(present):
+        return None, None
+    targets = np.zeros((len(samples), *TERMINAL_BOARD_SHAPE), dtype=np.int64)
+    valid = np.asarray(present, dtype=np.bool_)
+    for index, sample in enumerate(samples):
+        if sample.terminal_board_target is not None:
+            targets[index] = np.asarray(sample.terminal_board_target, dtype=np.int64)
+    return targets, valid
+
+
+def _terminal_targets_from_arrays(
+    arrays: TrainingArrays,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    if arrays.terminal_board_targets is None:
+        return None, None
+    targets = np.ascontiguousarray(arrays.terminal_board_targets, dtype=np.int64)
+    if targets.ndim != 3 or targets.shape[1:] != TERMINAL_BOARD_SHAPE:
+        raise ValueError(
+            f"expected terminal_board_targets shape [N, {TERMINAL_BOARD_SHAPE}], "
+            f"got {targets.shape}"
+        )
+    if arrays.terminal_board_valid is None:
+        raise ValueError(
+            "terminal_board_valid is required when terminal_board_targets are provided"
+        )
+    valid = np.ascontiguousarray(arrays.terminal_board_valid, dtype=np.bool_)
+    if valid.shape != (targets.shape[0],):
+        raise ValueError("terminal_board_valid shape must match terminal_board_targets batch")
+    return targets, valid
 
 
 def _legal_masks_from_features(features: np.ndarray) -> np.ndarray:
