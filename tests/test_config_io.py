@@ -25,7 +25,7 @@ def test_runpod_yaml_configs_load_with_existing_values() -> None:
 
     assert training.model_preset == "strong_attn"
     assert training.batch_size == 512
-    assert training.priority_enabled is True
+    assert training.priority_enabled is False
     assert training.ema_decay == 0.999
 
 
