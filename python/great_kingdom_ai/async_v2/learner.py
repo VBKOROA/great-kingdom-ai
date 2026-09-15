@@ -549,6 +549,12 @@ def _format_train_loss_detail(loss: dict[str, float]) -> str:
             f" value={loss['value']:.4f}"
             f" kl={loss['policy_kl']:.4f}"
         )
+    if "terminal_board_loss" in loss:
+        detail += (
+            f" aux={loss['terminal_board_loss']:.4f}"
+            f" aux_cov={loss['terminal_board_valid_ratio']:.2f}"
+            f" aux_acc={loss['terminal_board_accuracy']:.3f}"
+        )
     return detail
 
 def _prune_learner_artifacts(

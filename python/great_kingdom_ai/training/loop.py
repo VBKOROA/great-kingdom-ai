@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import math
 import random
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from great_kingdom_ai.training.batch import (
     ReplayDataset,
@@ -43,9 +44,15 @@ class LossBreakdown:
     total: torch.Tensor
     per_sample_policy_kl: torch.Tensor
     per_sample_value_abs_error: torch.Tensor
+    terminal_board_loss: torch.Tensor | None = None
+    terminal_board_valid_ratio: float = 0.0
+    terminal_board_valid_count: int = 0
+    terminal_board_accuracy: float = 0.0
+    terminal_board_blank_accuracy: float = 0.0
+    terminal_board_blank_count: int = 0
 
     def to_float_dict(self) -> dict[str, float]:
-        return {
+        values = {
             "policy": float(self.policy.detach().cpu()),
             "value": float(self.value.detach().cpu()),
             "regularization": float(self.regularization.detach().cpu()),
@@ -53,6 +60,14 @@ class LossBreakdown:
             "policy_kl": float(self.policy_kl.detach().cpu()),
             "total": float(self.total.detach().cpu()),
         }
+        if self.terminal_board_loss is not None:
+            values["terminal_board_loss"] = float(self.terminal_board_loss.detach().cpu())
+            values["terminal_board_valid_ratio"] = self.terminal_board_valid_ratio
+            values["terminal_board_valid_count"] = float(self.terminal_board_valid_count)
+            values["terminal_board_accuracy"] = self.terminal_board_accuracy
+            values["terminal_board_blank_accuracy"] = self.terminal_board_blank_accuracy
+            values["terminal_board_blank_count"] = float(self.terminal_board_blank_count)
+        return values
 
 
 @dataclass(frozen=True)
@@ -70,14 +85,26 @@ def compute_losses(
     policy_loss_weight: float = 1.0,
     value_loss_weight: float = 1.0,
     l2_loss_weight: float = 0.0,
+    terminal_board_loss_weight: float = 0.0,
     mask_policy_loss: bool = True,
 ) -> LossBreakdown:
     """Compute AlphaZero policy cross-entropy, value MSE, and optional L2 loss."""
     torch = _import_torch()
     if policy_loss_weight < 0.0 or value_loss_weight < 0.0 or l2_loss_weight < 0.0:
         raise ValueError("loss weights must be non-negative")
+    if not math.isfinite(terminal_board_loss_weight) or terminal_board_loss_weight < 0.0:
+        raise ValueError("terminal_board_loss_weight must be finite and non-negative")
 
-    policy_logits, value = model(batch.features)
+    aux_active = terminal_board_loss_weight > 0.0
+    if aux_active and not getattr(model, "has_terminal_board_head", False):
+        raise ValueError(
+            "terminal_board_loss_weight > 0 requires a model with a terminal board head"
+        )
+    if aux_active:
+        policy_logits, value, aux_logits = model.forward_with_aux(batch.features)
+    else:
+        policy_logits, value = model(batch.features)
+        aux_logits = None
     if mask_policy_loss:
         policy_logits = policy_logits.masked_fill(
             ~batch.legal_mask,
@@ -99,6 +126,14 @@ def compute_losses(
     value_loss = _weighted_mean(per_sample_value_error.pow(2), batch.sample_weight)
     regularization = _l2_regularization(model) * l2_loss_weight
     total = policy_loss_weight * policy_loss + value_loss_weight * value_loss + regularization
+    terminal_loss, terminal_stats = _terminal_board_aux_loss(
+        torch,
+        aux_logits=aux_logits,
+        batch=batch,
+        enabled=aux_active,
+    )
+    if terminal_loss is not None:
+        total = total + terminal_board_loss_weight * terminal_loss
     return LossBreakdown(
         policy=policy_loss,
         value=value_loss,
@@ -108,6 +143,8 @@ def compute_losses(
         total=total,
         per_sample_policy_kl=per_sample_policy_kl,
         per_sample_value_abs_error=per_sample_value_error.abs(),
+        terminal_board_loss=terminal_loss,
+        **terminal_stats,
     )
 
 def train_step(state: TrainState, batch: TrainingBatch, config: TrainingConfig) -> LossBreakdown:
@@ -122,6 +159,7 @@ def train_step(state: TrainState, batch: TrainingBatch, config: TrainingConfig) 
             policy_loss_weight=config.policy_loss_weight,
             value_loss_weight=config.value_loss_weight,
             l2_loss_weight=config.l2_loss_weight,
+            terminal_board_loss_weight=config.terminal_board_loss_weight,
             mask_policy_loss=config.mask_policy_loss,
         )
     optimizer_stepped = True
@@ -232,6 +270,61 @@ def train_from_replay(
         checkpoint_path=saved_path,
         losses=losses,
     )
+
+def _terminal_board_aux_loss(
+    torch: Any,
+    *,
+    aux_logits: torch.Tensor | None,
+    batch: TrainingBatch,
+    enabled: bool,
+) -> tuple[torch.Tensor | None, dict[str, float | int]]:
+    if not enabled:
+        return None, {}
+    stats: dict[str, float | int] = {
+        "terminal_board_valid_ratio": 0.0,
+        "terminal_board_valid_count": 0,
+        "terminal_board_accuracy": 0.0,
+        "terminal_board_blank_accuracy": 0.0,
+        "terminal_board_blank_count": 0,
+    }
+    target = batch.terminal_board_target
+    valid = batch.terminal_board_valid
+    device = batch.features.device
+    dtype = aux_logits.dtype if aux_logits is not None else torch.float32
+    zero = torch.zeros((), device=device, dtype=dtype)
+    if aux_logits is None or target is None or valid is None:
+        return zero, stats
+
+    batch_size = int(valid.shape[0])
+    valid_count = int(valid.sum().detach().cpu())
+    stats["terminal_board_valid_count"] = valid_count
+    if batch_size > 0:
+        stats["terminal_board_valid_ratio"] = valid_count / batch_size
+    if valid_count == 0:
+        return zero, stats
+
+    valid_indexes = valid.nonzero(as_tuple=False).squeeze(1)
+    logits = aux_logits.index_select(0, valid_indexes)
+    targets = target.index_select(0, valid_indexes).long()
+    weights = batch.sample_weight.index_select(0, valid_indexes).to(dtype=logits.dtype)
+    per_cell_loss = torch.nn.functional.cross_entropy(logits, targets, reduction="none")
+    board_loss = per_cell_loss.reshape(valid_count, -1).mean(dim=1)
+    loss = (board_loss * weights).sum() / weights.sum()
+    with torch.no_grad():
+        predictions = logits.argmax(dim=1)
+        correct = predictions == targets
+        total_cells = int(correct.numel())
+        if total_cells > 0:
+            stats["terminal_board_accuracy"] = float(correct.sum().cpu()) / total_cells
+        blank_mask = targets == 0
+        blank_count = int(blank_mask.sum().cpu())
+        stats["terminal_board_blank_count"] = blank_count
+        if blank_count > 0:
+            stats["terminal_board_blank_accuracy"] = (
+                float((correct & blank_mask).sum().cpu()) / blank_count
+            )
+    return loss, stats
+
 
 def _l2_regularization(model: nn.Module) -> torch.Tensor:
     torch = _import_torch()

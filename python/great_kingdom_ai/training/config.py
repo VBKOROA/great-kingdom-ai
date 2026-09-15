@@ -21,6 +21,7 @@ class TrainingConfig:
     value_loss_weight: float = 1.0
     policy_loss_weight: float = 1.0
     l2_loss_weight: float = 0.0
+    terminal_board_loss_weight: float = 0.0
     lr_schedule: str = "step"
     lr_decay_gamma: float = 0.99
     lr_decay_steps: int = 100
