@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from great_kingdom_ai.features import EMPTY_FEATURE_CHANNEL
 from great_kingdom_ai.training.batch import (
     ReplayDataset,
     TrainingBatch,
@@ -102,11 +103,9 @@ def compute_losses(
             "terminal_board_loss_weight > 0 requires a model with a terminal board head"
         )
     if aux_active:
-        forward_with_aux = cast(
-            "Callable[[Tensor], tuple[Tensor, Tensor, Tensor]]",
-            getattr(model, "forward_with_aux"),
+        policy_logits, value, aux_logits = cast("Any", model).forward_with_aux(
+            batch.features
         )
-        policy_logits, value, aux_logits = forward_with_aux(batch.features)
     else:
         policy_logits, value = model(batch.features)
         aux_logits = None
@@ -339,7 +338,8 @@ def _terminal_board_aux_loss(
         total_cells = int(correct.numel())
         if total_cells > 0:
             accuracy = float(correct.sum().cpu()) / total_cells
-        blank_mask = targets == 0
+        valid_features = batch.features.index_select(0, valid_indexes)
+        blank_mask = valid_features[:, EMPTY_FEATURE_CHANNEL] > 0.5
         blank_count = int(blank_mask.sum().cpu())
         if blank_count > 0:
             blank_accuracy = float((correct & blank_mask).sum().cpu()) / blank_count

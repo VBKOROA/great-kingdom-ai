@@ -6,7 +6,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
-from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
+from great_kingdom_ai.features import (
+    ACTION_SPACE,
+    BOARD_SIZE,
+    EMPTY_FEATURE_CHANNEL,
+    FEATURE_CHANNELS,
+)
 from great_kingdom_ai.model import MODEL_PRESETS, ModelConfig, create_model
 from great_kingdom_ai.onnx_export import export_checkpoint_to_onnx
 from great_kingdom_ai.training.batch import TrainingBatch
@@ -338,3 +343,32 @@ def test_aux_model_onnx_export_excludes_head(tmp_path: Path) -> None:
 
 def test_model_config_defaults_disable_head() -> None:
     assert ModelConfig().terminal_board_head is False
+
+
+def test_blank_accuracy_uses_input_empty_cells() -> None:
+    features = torch.zeros(1, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)
+    features[0, EMPTY_FEATURE_CHANNEL, 0, 0] = 1.0
+    features[0, EMPTY_FEATURE_CHANNEL, 0, 1] = 1.0
+    batch = TrainingBatch(
+        features=features,
+        policy=torch.softmax(torch.randn(1, ACTION_SPACE), dim=1),
+        value=torch.zeros(1),
+        legal_mask=torch.ones(1, ACTION_SPACE, dtype=torch.bool),
+        sample_weight=torch.ones(1),
+        terminal_board_target=torch.zeros(1, BOARD_SIZE, BOARD_SIZE, dtype=torch.long),
+        terminal_board_valid=torch.ones(1, dtype=torch.bool),
+    )
+    aux_logits = torch.full((1, 4, BOARD_SIZE, BOARD_SIZE), -20.0)
+    aux_logits[:, 0] = 20.0
+
+    loss, stats = _terminal_board_aux_loss(
+        torch,
+        aux_logits=aux_logits,
+        batch=batch,
+        enabled=True,
+    )
+
+    assert stats.blank_count == 2
+    assert stats.blank_accuracy == pytest.approx(1.0)
+    assert stats.accuracy == pytest.approx(1.0)
+    assert loss is not None and float(loss) < 1e-3
