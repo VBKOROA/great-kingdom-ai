@@ -1,8 +1,9 @@
 # 종국 보드 예측 auxiliary loss 실험 안내
 
 이 문서는 `docs/terminal-board-aux-loss-plan.md` 구현의 실행 방법과 검증 상태를 기록한다.
-운영 설정(`configs/runpod/*`)과 운영 work directory(`data/runpod/train-strong-attn`)는
-건드리지 않는다.
+이 안내의 명령은 별도 실험 설정과 work directory를 사용한다. 현재 Runpod 기본 설정에도
+보조 loss를 활성화했으며, 최신 초기값과 기존 checkpoint 전환 주의점은
+[Runpod 초기 설정](runpod-initial-training-config.md)을 따른다.
 
 ## 구현 요약
 

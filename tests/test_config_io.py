@@ -23,7 +23,8 @@ def test_runpod_yaml_configs_load_with_existing_values() -> None:
     assert learner.replay_capacity == 262_144
     assert learner.train_reuse_factor == 4.0
 
-    assert training.model_preset == "strong_attn"
+    assert training.model_preset == "strong_attn_terminal_board"
+    assert training.terminal_board_loss_weight == 0.1
     assert training.batch_size == 512
     assert training.priority_enabled is False
     assert training.ema_decay == 0.999

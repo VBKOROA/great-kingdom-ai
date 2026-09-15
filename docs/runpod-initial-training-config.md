@@ -11,12 +11,13 @@
 - GPU: Runpod RTX 3090 24GB 한 장, CPU: AMD EPYC 7C13. Pod에 할당된 CPU/RAM은 별도 확인한다.
 - Pod template: `runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04` (+Jupyter).
 - actor 1개와 learner 1개가 GPU를 공유한다. actor 내부에서 여러 게임을 병렬 처리한다.
-- 모델: `strong_attn`, ONNX 추론 FP16, learner AMP 사용.
+- 모델: `strong_attn_terminal_board`, 종국 보드 보조 loss 0.1, ONNX 추론 FP16, learner AMP 사용.
 - 운영 경로: `data/runpod/train-strong-attn`.
 - 로컬 검증: GPU 없는 노트북, `.venv/bin/python` 사용.
 - 규칙: [rule-spec.md](rule-spec.md). 9×9 보드이며 상대 포획·자살로 즉시 승패가 결정된다.
-- 종국 보드 보조 loss 실험은 [별도 안내](terminal-board-aux-loss-experiment.md)와
-  `configs/experiments/terminal-board`를 따른다. 본 설정은 보조 head 없는 기본 모델이다.
+- 종국 보드 보조 loss를 Runpod 기본 설정에도 활성화했다. 구현·warm-start 설명은
+  [별도 안내](terminal-board-aux-loss-experiment.md)를 참고한다. 별도 실험 YAML은 최초 실험
+  시점의 설정이므로 최신 Runpod 초기값과 학습 스케줄 등이 다르다.
 
 ## 2. Actor 초기값
 
@@ -101,7 +102,7 @@ replay가 가득 찬 정상 상태에서, 예산을 모두 소비한다는 가�
 | | `gradient_clip_norm` | 5.0 |
 | Loss | `policy_loss_weight` / `value_loss_weight` | 1.0 / 1.0 |
 | | `l2_loss_weight` | 0.0 |
-| | `terminal_board_loss_weight` | 0.0 |
+| | `terminal_board_loss_weight` | 0.1 |
 | | `mask_policy_loss` | true |
 | Learning-rate schedule | `lr_schedule` | constant_with_warmup |
 | | `lr_warmup_steps` | 512 |
@@ -114,7 +115,8 @@ replay가 가득 찬 정상 상태에서, 예산을 모두 소비한다는 가�
 - AdamW와 학습률 3e-4, weight decay 0.01, gradient clipping 5.0은 기존 값을 유지한다.
   별도 L2 loss는 추가하지 않는다. `momentum`과 `nesterov`는 현재 구현에서 SGD 전용이다.
 - Policy/value는 1:1로 시작한다. 두 loss의 숫자가 같다는 뜻은 아니며, 이후 지표와 arena로
-  조정 필요성을 판단한다. 기본 모델에는 보조 head가 없으므로 보조 loss는 0이다.
+  조정 필요성을 판단한다. 종국 보드 보조 head를 활성화하고 칸 평균 CE에 0.1을 곱해
+  추가한다. 이는 실험 시작값이며 검증된 최적 가중치가 아니다.
 - 학습 종료 시점이 정해지지 않은 지속 self-play이므로 512 optimizer step 동안 워밍업한
   뒤 LR 3e-4를 유지한다. 성능 정체 시 감쇠 여부를 별도로 판단한다. StepLR/cosine 전용
   옵션은 현재 schedule에 적용되지 않는다.
@@ -123,6 +125,19 @@ replay가 가득 찬 정상 상태에서, 예산을 모두 소비한다는 가�
 - D4 augmentation 사용, recency/priority sampling 비활성, terminal value target을 유지한다.
 
 ### 초기화와 resume 구분
+
+새 학습은 현재 train YAML로 `great-kingdom-init-async-v2`를 실행하면 보조 head가 포함된다.
+기존 head 없는 `strong_attn` checkpoint는 YAML만 바꾸고 resume할 수 없다. 로더는 저장된
+모델 구조를 복원하므로 보조 loss를 계산할 때 head 누락 오류가 난다. 원본 checkpoint를
+출력 경로와 다른 위치에 보관하고, 초기화 CLI의 `--warm-start-terminal-board`에 그 경로를
+전달해야 한다. Warm-start는 backbone/policy/value를 복원하고 보조 head를 새로 만들며,
+optimizer/scheduler/scaler/EMA와 step을 초기화한다. 기존 출력이 있는 운영 경로를 사용할
+때는 actor/learner를 멈추고 원본을 보관한 뒤 명시적으로 `--overwrite`를 사용한다.
+이미 보조 head가 있는 checkpoint는 warm-start 대신 기존 resume 경로를 사용한다.
+
+Actor는 재빌드한 최신 Rust 확장을 사용해야 종국 보드를 수집한다. 기존 replay에 타깃이
+없어도 읽을 수 있지만 그 행은 보조 loss에서 제외되며 자동 backfill은 없다. 새 shard가
+들어온 뒤 `aux_cov`가 0보다 큰지 확인한다. ONNX 출력은 policy/value 두 개를 유지한다.
 
 위 값은 새 학습의 초기 설정이다. `train_checkpoint_mode: resume`에서는 checkpoint의
 optimizer·scheduler 상태와 누적 step을 복원하므로 YAML 변경만으로 모든 상태가 초기화되지
@@ -159,6 +174,8 @@ AMP 학습 안정성, 처리량과 arena 성능은 미검증이다.
 
 문서화 시점에 Python 전체 테스트 393개, mypy 63개 소스 파일 검사, 변경 테스트 파일의
 Ruff 검사와 `git diff --check`가 통과했다. 기존 설정 로딩 테스트의 기대값도 갱신했다.
+Runpod 보조 loss 활성화 후에는 실제 `strong_attn_terminal_board` 프리셋으로 CPU 학습
+한 step을 실행해 유효 타깃 집계, 유한 loss, 보조 head gradient와 EMA head 존재를 확인했다.
 
 - [ONNX Runtime 성능 튜닝](https://onnxruntime.ai/docs/performance/tune-performance/):
   지연·처리량·메모리를 함께 측정하는 관점의 참고 자료.

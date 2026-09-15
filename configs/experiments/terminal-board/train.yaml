@@ -1,5 +1,5 @@
 # Experiment: strong_attn + terminal board auxiliary loss
-# Copy of configs/runpod/train.yaml with only the auxiliary loss fields changed.
+# Snapshot of the original experiment; current Runpod tuning differs.
 # This file intentionally does not overwrite the operating train.yaml.
 
 # Model and runtime
