@@ -22,6 +22,8 @@ use super::profile::{
 const FEATURE_INPUT: &str = "features";
 const POLICY_OUTPUT: &str = "policy_logits";
 const VALUE_OUTPUT: &str = "value";
+const Q_VALUES_OUTPUT: &str = "q_values";
+type EvaluatedWithQ = (Vec<Vec<f32>>, Vec<f32>, Vec<Vec<f32>>);
 const FEATURE_VALUES_PER_POSITION: usize = FEATURE_CHANNELS * BOARD_SIZE * BOARD_SIZE;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -49,6 +51,7 @@ impl Default for OnnxEvaluatorConfig {
 pub struct NetworkOutput {
     pub policy_logits: Vec<[f32; ACTION_SPACE]>,
     pub values: Vec<f32>,
+    pub q_values: Option<Vec<[f32; ACTION_SPACE]>>,
 }
 
 #[pyclass(unsendable)]
@@ -58,6 +61,7 @@ pub struct OnnxEvaluator {
     batch_buckets: BatchBucketConfig,
     profile: OnnxEvalProfile,
     profile_context: Option<OnnxEvalProfileContext>,
+    has_q_values_output: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -131,9 +135,41 @@ impl OnnxEvaluator {
             output.values,
         ))
     }
+
+    fn evaluate_with_q(&mut self, request: &EvalRequest) -> PyResult<EvaluatedWithQ> {
+        let output = self
+            .evaluate_request_with_q(request)
+            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+        let q_values = output
+            .q_values
+            .expect("evaluate_request_with_q always returns q values");
+        Ok((
+            output.policy_logits.into_iter().map(Vec::from).collect(),
+            output.values,
+            q_values.into_iter().map(Vec::from).collect(),
+        ))
+    }
+
+    #[must_use]
+    fn has_q_values_output(&self) -> bool {
+        self.has_q_values_output
+    }
+
+    #[must_use]
+    fn output_names(&self) -> Vec<String> {
+        self.session
+            .outputs
+            .iter()
+            .map(|output| output.name.clone())
+            .collect()
+    }
 }
 
 impl OnnxEvaluator {
+    pub(crate) fn supports_q_values_output(&self) -> bool {
+        self.has_q_values_output
+    }
+
     pub fn load(path: impl AsRef<Path>, config: OnnxEvaluatorConfig) -> Result<Self, OnnxError> {
         validate_config(config)?;
 
@@ -150,6 +186,10 @@ impl OnnxEvaluator {
 
         let session = builder.commit_from_file(path)?;
         validate_session_contract(&session)?;
+        let has_q_values_output = session
+            .outputs
+            .iter()
+            .any(|output| output.name == Q_VALUES_OUTPUT);
         let batch_buckets = BatchBucketConfig::from_env(config.max_batch_size)?;
         let mut evaluator = Self {
             session,
@@ -157,6 +197,7 @@ impl OnnxEvaluator {
             batch_buckets,
             profile: OnnxEvalProfile::new(),
             profile_context: None,
+            has_q_values_output,
         };
         evaluator.warm_up_bucket_batches()?;
         Ok(evaluator)
@@ -180,6 +221,7 @@ impl OnnxEvaluator {
             return Ok(NetworkOutput {
                 policy_logits: Vec::new(),
                 values: Vec::new(),
+                q_values: self.has_q_values_output.then(Vec::new),
             });
         }
 
@@ -200,6 +242,9 @@ impl OnnxEvaluator {
 
         let mut policy_logits = Vec::with_capacity(request.len());
         let mut values = Vec::with_capacity(request.len());
+        let mut q_values = self
+            .has_q_values_output
+            .then(|| Vec::with_capacity(request.len()));
         let mut chunk_batches = Vec::new();
         for start_row in (0..request.len()).step_by(self.config.max_batch_size) {
             let end_row = (start_row + self.config.max_batch_size).min(request.len());
@@ -220,6 +265,9 @@ impl OnnxEvaluator {
             timing += chunk_timing;
             policy_logits.extend(output.policy_logits);
             values.extend(output.values);
+            if let (Some(target), Some(chunk_q_values)) = (&mut q_values, output.q_values) {
+                target.extend(chunk_q_values);
+            }
         }
 
         self.profile.log(OnnxEvalProfileLog {
@@ -236,7 +284,26 @@ impl OnnxEvaluator {
         Ok(NetworkOutput {
             policy_logits,
             values,
+            q_values,
         })
+    }
+
+    pub fn evaluate_request_with_q(
+        &mut self,
+        request: &EvalRequest,
+    ) -> Result<NetworkOutput, OnnxError> {
+        if !self.has_q_values_output {
+            return Err(OnnxError::InvalidOutput(format!(
+                "ONNX model must have an output named {Q_VALUES_OUTPUT:?} for zero-search actors"
+            )));
+        }
+        let output = self.evaluate_request(request)?;
+        if output.q_values.is_none() {
+            return Err(OnnxError::InvalidOutput(format!(
+                "ONNX model did not return {Q_VALUES_OUTPUT:?}"
+            )));
+        }
+        Ok(output)
     }
 
     pub(crate) fn set_gumbel_root_profile_context(&mut self, active_games: usize) {
@@ -285,10 +352,16 @@ impl OnnxEvaluator {
         let output_parse_start = profile_enabled.then(Instant::now);
         let (_, policy_values) = outputs[POLICY_OUTPUT].try_extract_tensor::<f32>()?;
         let (_, value_values) = outputs[VALUE_OUTPUT].try_extract_tensor::<f32>()?;
+        let q_values_values = if self.has_q_values_output {
+            Some(outputs[Q_VALUES_OUTPUT].try_extract_tensor::<f32>()?.1)
+        } else {
+            None
+        };
 
         let output = parse_network_output(
             policy_values,
             value_values,
+            q_values_values,
             actual_batch_size,
             tensor_batch_size,
         )?;
@@ -355,7 +428,7 @@ impl BatchBucketConfig {
     }
 }
 
-fn parse_device(device: &str) -> PyResult<OnnxDevice> {
+pub(crate) fn parse_device(device: &str) -> PyResult<OnnxDevice> {
     match device {
         "cpu" => Ok(OnnxDevice::Cpu),
         "cuda" => Ok(OnnxDevice::Cuda),
@@ -430,6 +503,7 @@ fn tensor_features_with_padding(
 fn parse_network_output(
     policy_values: &[f32],
     value_values: &[f32],
+    q_values_values: Option<&[f32]>,
     actual_batch_size: usize,
     tensor_batch_size: usize,
 ) -> Result<NetworkOutput, OnnxError> {
@@ -464,19 +538,42 @@ fn parse_network_output(
         ));
     }
 
-    let policy_logits = actual_policy_values
-        .chunks_exact(ACTION_SPACE)
-        .map(|row| {
-            let mut logits = [0.0; ACTION_SPACE];
-            logits.copy_from_slice(row);
-            logits
-        })
-        .collect();
+    let policy_logits = collect_action_rows(actual_policy_values);
+    let q_values = match q_values_values {
+        None => None,
+        Some(values) => {
+            if values.len() != expected_policy_len {
+                return Err(OnnxError::InvalidOutput(format!(
+                    "expected {expected_policy_len} q values, got {}",
+                    values.len()
+                )));
+            }
+            let actual_q_values = &values[..actual_batch_size * ACTION_SPACE];
+            if actual_q_values.iter().any(|value| !value.is_finite()) {
+                return Err(OnnxError::InvalidOutput(
+                    "q values must be finite".to_string(),
+                ));
+            }
+            Some(collect_action_rows(actual_q_values))
+        }
+    };
 
     Ok(NetworkOutput {
         policy_logits,
         values: actual_value_values.to_vec(),
+        q_values,
     })
+}
+
+fn collect_action_rows(values: &[f32]) -> Vec<[f32; ACTION_SPACE]> {
+    values
+        .chunks_exact(ACTION_SPACE)
+        .map(|row| {
+            let mut output = [0.0; ACTION_SPACE];
+            output.copy_from_slice(row);
+            output
+        })
+        .collect()
 }
 
 fn default_batch_buckets(max_batch_size: usize) -> Vec<usize> {
@@ -578,7 +675,7 @@ mod tests {
 
     #[test]
     fn parse_network_output_accepts_valid_batch() {
-        let output = parse_network_output(&vec![0.25; ACTION_SPACE * 2], &[0.5, -0.5], 2, 2)
+        let output = parse_network_output(&vec![0.25; ACTION_SPACE * 2], &[0.5, -0.5], None, 2, 2)
             .expect("valid output should parse");
 
         assert_eq!(output.policy_logits.len(), 2);
@@ -590,7 +687,7 @@ mod tests {
     fn parse_network_output_ignores_padded_rows() {
         let mut policy = vec![0.25; ACTION_SPACE * 4];
         policy[ACTION_SPACE * 2] = f32::NAN;
-        let output = parse_network_output(&policy, &[0.5, -0.5, f32::NAN, f32::NAN], 2, 4)
+        let output = parse_network_output(&policy, &[0.5, -0.5, f32::NAN, f32::NAN], None, 2, 4)
             .expect("padded rows should be ignored");
 
         assert_eq!(output.policy_logits.len(), 2);
@@ -599,7 +696,8 @@ mod tests {
 
     #[test]
     fn parse_network_output_rejects_bad_policy_shape() {
-        let error = parse_network_output(&vec![0.0; ACTION_SPACE - 1], &[0.0], 1, 1).unwrap_err();
+        let error =
+            parse_network_output(&vec![0.0; ACTION_SPACE - 1], &[0.0], None, 1, 1).unwrap_err();
 
         assert_eq!(
             error.to_string(),
@@ -612,9 +710,40 @@ mod tests {
 
     #[test]
     fn parse_network_output_rejects_non_finite_values() {
-        let error = parse_network_output(&vec![0.0; ACTION_SPACE], &[f32::NAN], 1, 1).unwrap_err();
+        let error =
+            parse_network_output(&vec![0.0; ACTION_SPACE], &[f32::NAN], None, 1, 1).unwrap_err();
 
         assert_eq!(error.to_string(), "values must be finite");
+    }
+
+    #[test]
+    fn parse_network_output_parses_q_values_when_present() {
+        let q_values = vec![0.125; ACTION_SPACE * 2];
+
+        let output = parse_network_output(
+            &vec![0.25; ACTION_SPACE * 2],
+            &[0.5, -0.5],
+            Some(&q_values),
+            2,
+            2,
+        )
+        .expect("valid output should parse");
+
+        let parsed = output.q_values.expect("q values should be parsed");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0][0], 0.125);
+        assert_eq!(parsed[1][ACTION_SPACE - 1], 0.125);
+    }
+
+    #[test]
+    fn parse_network_output_rejects_non_finite_q_values() {
+        let mut q_values = vec![0.0; ACTION_SPACE];
+        q_values[3] = f32::NAN;
+
+        let error = parse_network_output(&vec![0.0; ACTION_SPACE], &[0.0], Some(&q_values), 1, 1)
+            .unwrap_err();
+
+        assert_eq!(error.to_string(), "q values must be finite");
     }
 
     #[test]

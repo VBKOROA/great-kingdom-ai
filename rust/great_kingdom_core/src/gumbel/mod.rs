@@ -11,7 +11,7 @@ mod debug;
 mod node;
 mod policy;
 mod profile;
-mod rng;
+pub(crate) mod rng;
 mod sampling;
 mod selection;
 mod sequential_halving;
