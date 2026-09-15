@@ -22,6 +22,7 @@ from great_kingdom_ai.training.checkpoint import (
     load_checkpoint,
     load_checkpoint_weights,
     save_checkpoint,
+    warm_start_terminal_board_head,
 )
 from great_kingdom_ai.training.config import TrainingConfig
 from great_kingdom_ai.training.torch_utils import (
@@ -189,6 +190,7 @@ def train_from_replay(
     checkpoint_path: str | Path | None = None,
     resume_path: str | Path | None = None,
     bootstrap_weights_path: str | Path | None = None,
+    warm_start_terminal_board_path: str | Path | None = None,
     resume_optimizer_lr_override: float | None = None,
     log_every: int = 0,
     progress_callback: Callable[[int, int, dict[str, float]], None] | None = None,
@@ -197,8 +199,16 @@ def train_from_replay(
         raise ValueError("replay buffer must contain at least batch_size samples")
     if config.prefetch_batches < 0:
         raise ValueError("prefetch_batches must be non-negative")
-    if resume_path is not None and bootstrap_weights_path is not None:
-        raise ValueError("resume_path and bootstrap_weights_path are mutually exclusive")
+    load_sources = [
+        resume_path,
+        bootstrap_weights_path,
+        warm_start_terminal_board_path,
+    ]
+    if sum(source is not None for source in load_sources) > 1:
+        raise ValueError(
+            "resume_path, bootstrap_weights_path, and warm_start_terminal_board_path "
+            "are mutually exclusive"
+        )
     if resume_optimizer_lr_override is not None and resume_path is None:
         raise ValueError("resume_optimizer_lr_override requires resume_path")
 
@@ -206,7 +216,9 @@ def train_from_replay(
     torch.manual_seed(config.seed)
     rng = random.Random(config.seed)
 
-    if bootstrap_weights_path is not None:
+    if warm_start_terminal_board_path is not None:
+        state = warm_start_terminal_board_head(warm_start_terminal_board_path, config)
+    elif bootstrap_weights_path is not None:
         state = load_checkpoint_weights(bootstrap_weights_path, config)
     elif resume_path is None:
         state = create_train_state(config)

@@ -253,6 +253,71 @@ def _is_torch_tensor(value: Any) -> bool:
     return hasattr(value, "detach") and hasattr(value, "numel")
 
 
+def warm_start_terminal_board_head(
+    path: str | Path,
+    config: TrainingConfig,
+    *,
+    terminal_board_hidden_channels: int | None = None,
+) -> TrainState:
+    """Load backbone/policy/value weights into a new terminal-board-head model.
+
+    This is an explicit warm start, not a resume. Every source weight must match
+    a target weight except for the freshly initialized terminal board head, and
+    optimizer/scheduler/scaler/EMA state is reset rather than restored.
+    """
+    torch = _import_torch()
+    from great_kingdom_ai.model import ModelConfig, PolicyValueNetwork
+
+    _validate_ema_decay(config.ema_decay)
+    checkpoint = torch.load(Path(path), map_location=config.device, weights_only=False)
+    base_config = checkpoint["model_config"]
+    overrides: dict[str, Any] = {"terminal_board_head": True}
+    if terminal_board_hidden_channels is not None:
+        overrides["terminal_board_hidden_channels"] = terminal_board_hidden_channels
+    model_config = ModelConfig(**{**base_config, **overrides})
+    if not model_config.terminal_board_head:
+        raise ValueError("warm start requires terminal_board_head=True")
+
+    model = PolicyValueNetwork(model_config).to(device=config.device)
+    source_state = checkpoint["model_state"]
+    if not isinstance(source_state, Mapping):
+        raise ValueError("checkpoint model_state must be a mapping")
+
+    target_keys = set(model.state_dict())
+    source_keys = set(source_state)
+    aux_keys = {key for key in target_keys if key.startswith("terminal_board_head.")}
+    missing = target_keys - aux_keys - source_keys
+    unexpected = source_keys - target_keys
+    if missing or unexpected:
+        raise ValueError(
+            "warm-start weight mismatch: "
+            f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
+        )
+
+    incompatible = model.load_state_dict(source_state, strict=False)
+    if set(incompatible.unexpected_keys) or set(incompatible.missing_keys) != aux_keys:
+        raise ValueError(
+            "warm-start only the terminal board head may be missing: "
+            f"missing={sorted(incompatible.missing_keys)}, "
+            f"unexpected={sorted(incompatible.unexpected_keys)}"
+        )
+
+    optimizer = create_optimizer(torch, model, config)
+    scheduler = create_lr_scheduler(torch, optimizer, config)
+    ema_model = _create_ema_model(model) if config.ema_decay is not None else None
+    base_preset = str(checkpoint.get("model_preset", "custom"))
+    return TrainState(
+        model=model,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        scaler=_create_grad_scaler(config),
+        ema_model=ema_model,
+        ema_decay=config.ema_decay,
+        step=0,
+        model_preset=f"{base_preset}+terminal_board_head",
+    )
+
+
 def load_checkpoint_weights(
     path: str | Path,
     config: TrainingConfig,
@@ -477,4 +542,5 @@ __all__ = [
     "save_checkpoint",
     "summarize_checkpoint_optimizer_state",
     "summarize_optimizer_state_dict",
+    "warm_start_terminal_board_head",
 ]

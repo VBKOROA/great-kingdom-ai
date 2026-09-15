@@ -25,6 +25,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Checkpoint to load model weights from without optimizer, scheduler, or step state",
     )
+    parser.add_argument(
+        "--warm-start-terminal-board",
+        type=Path,
+        default=None,
+        help=(
+            "Checkpoint whose backbone/policy/value weights warm-start a new terminal "
+            "board head model; optimizer/scheduler/scaler/EMA are reset"
+        ),
+    )
     parser.add_argument("--config", type=Path, default=None, help="YAML TrainingConfig override")
     parser.add_argument("--device", choices=["cpu", "cuda"], default=None)
     parser.add_argument("--steps", type=int, default=None)
@@ -84,6 +93,7 @@ def print_training_startup_config(
     checkpoint_path: Path,
     resume_path: Path | None,
     bootstrap_weights_path: Path | None = None,
+    warm_start_terminal_board_path: Path | None = None,
 ) -> None:
     print(
         json.dumps(
@@ -100,6 +110,11 @@ def print_training_startup_config(
                 "resume": str(resume_path) if resume_path is not None else None,
                 "bootstrap_weights": (
                     str(bootstrap_weights_path) if bootstrap_weights_path is not None else None
+                ),
+                "warm_start_terminal_board": (
+                    str(warm_start_terminal_board_path)
+                    if warm_start_terminal_board_path is not None
+                    else None
                 ),
             },
             sort_keys=True,
@@ -124,6 +139,7 @@ def main() -> NoReturn:
         checkpoint_path=args.checkpoint,
         resume_path=args.resume,
         bootstrap_weights_path=args.bootstrap_weights,
+        warm_start_terminal_board_path=args.warm_start_terminal_board,
     )
     summary = train_from_replay(
         replay,
@@ -131,6 +147,7 @@ def main() -> NoReturn:
         checkpoint_path=args.checkpoint,
         resume_path=args.resume,
         bootstrap_weights_path=args.bootstrap_weights,
+        warm_start_terminal_board_path=args.warm_start_terminal_board,
         log_every=_log_every_from_args(args, config),
     )
     print(
