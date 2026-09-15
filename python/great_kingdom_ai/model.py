@@ -10,6 +10,7 @@ import torch
 from torch import nn
 
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
+from great_kingdom_ai.klent.targets import legal_mask_from_features, masked_state_value
 from great_kingdom_ai.replay.terminal_board import TERMINAL_BOARD_CLASSES
 
 
@@ -31,6 +32,7 @@ class ModelConfig:
     terminal_board_head: bool = False
     terminal_board_hidden_channels: int = 32
     terminal_board_classes: int = TERMINAL_BOARD_CLASSES
+    action_value_head: bool = False
 
     def __post_init__(self) -> None:
         if self.residual_blocks < 0:
@@ -105,6 +107,11 @@ MODEL_PRESETS: dict[str, ModelConfig] = {
 MODEL_PRESETS["strong_attn_terminal_board"] = replace(
     MODEL_PRESETS["strong_attn"],
     terminal_board_head=True,
+)
+
+MODEL_PRESETS["strong_attn_klent"] = replace(
+    MODEL_PRESETS["strong_attn"],
+    action_value_head=True,
 )
 
 RESIDUAL_STAGE = "residual"
@@ -341,31 +348,56 @@ class PolicyValueNetwork(nn.Module):
             nn.Flatten(),
             nn.Linear(config.channels, 1),
         )
-        if config.spatial_value_head:
-            self.value_head = nn.Sequential(
+        self.q_spatial: nn.Sequential | None = None
+        self.q_pass: nn.Sequential | None = None
+        if config.action_value_head:
+            self.q_spatial = nn.Sequential(
                 nn.Conv2d(
-                    config.channels, config.value_spatial_channels, kernel_size=1, bias=False
+                    config.channels,
+                    config.policy_channels,
+                    kernel_size=config.policy_kernel_size,
+                    padding=config.policy_kernel_size // 2,
+                    bias=False,
                 ),
-                nn.BatchNorm2d(config.value_spatial_channels),
+                nn.BatchNorm2d(config.policy_channels),
                 nn.ReLU(inplace=True),
+                nn.Conv2d(config.policy_channels, 1, kernel_size=1),
+                nn.Tanh(),
+            )
+            self.q_pass = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
                 nn.Flatten(),
-                nn.Linear(
-                    config.value_spatial_channels * BOARD_SIZE * BOARD_SIZE, config.value_hidden
-                ),
-                nn.ReLU(inplace=True),
-                nn.Linear(config.value_hidden, 1),
+                nn.Linear(config.channels, 1),
                 nn.Tanh(),
             )
 
-        else:
-            self.value_head = nn.Sequential(
-                nn.AdaptiveAvgPool2d(1),
-                nn.Flatten(),
-                nn.Linear(config.channels, config.value_hidden),
-                nn.ReLU(inplace=True),
-                nn.Linear(config.value_hidden, 1),
-                nn.Tanh(),
-            )
+        self.value_head: nn.Module | None = None
+        if not config.action_value_head:
+            if config.spatial_value_head:
+                self.value_head = nn.Sequential(
+                    nn.Conv2d(
+                        config.channels, config.value_spatial_channels, kernel_size=1, bias=False
+                    ),
+                    nn.BatchNorm2d(config.value_spatial_channels),
+                    nn.ReLU(inplace=True),
+                    nn.Flatten(),
+                    nn.Linear(
+                        config.value_spatial_channels * BOARD_SIZE * BOARD_SIZE, config.value_hidden
+                    ),
+                    nn.ReLU(inplace=True),
+                    nn.Linear(config.value_hidden, 1),
+                    nn.Tanh(),
+                )
+
+            else:
+                self.value_head = nn.Sequential(
+                    nn.AdaptiveAvgPool2d(1),
+                    nn.Flatten(),
+                    nn.Linear(config.channels, config.value_hidden),
+                    nn.ReLU(inplace=True),
+                    nn.Linear(config.value_hidden, 1),
+                    nn.Tanh(),
+                )
         self.terminal_board_head: nn.Module | None = None
         if config.terminal_board_head:
             self.terminal_board_head = nn.Sequential(
@@ -382,6 +414,10 @@ class PolicyValueNetwork(nn.Module):
     def has_terminal_board_head(self) -> bool:
         return self.terminal_board_head is not None
 
+    @property
+    def has_action_value_head(self) -> bool:
+        return self.config.action_value_head
+
     def forward_features(self, x: torch.Tensor) -> torch.Tensor:
         features = cast(torch.Tensor, self.stem(x))
         for kind, index in self.stage_plan:
@@ -391,13 +427,33 @@ class PolicyValueNetwork(nn.Module):
                 features = cast(torch.Tensor, self.backbone[index](features))
         return features
 
+    def _policy_logits(self, features: torch.Tensor) -> torch.Tensor:
+        board_logits = self.policy_spatial(features).flatten(start_dim=1)
+        pass_logits = self.policy_pass(features)
+        return torch.cat([board_logits, pass_logits], dim=1)
+
+    def _action_values(self, features: torch.Tensor) -> torch.Tensor:
+        if self.q_spatial is None or self.q_pass is None:
+            raise ValueError("model does not have an action value head")
+        board_values = self.q_spatial(features).flatten(start_dim=1)
+        pass_values = self.q_pass(features)
+        return torch.cat([board_values, pass_values], dim=1)
+
     def _policy_and_value(
         self,
         features: torch.Tensor,
+        inputs: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        board_logits = self.policy_spatial(features).flatten(start_dim=1)
-        pass_logits = self.policy_pass(features)
-        policy_logits = torch.cat([board_logits, pass_logits], dim=1)
+        policy_logits = self._policy_logits(features)
+        if self.config.action_value_head:
+            if inputs is None:
+                raise ValueError("action value head requires the input features for legal masking")
+            q_values = self._action_values(features)
+            legal_mask = legal_mask_from_features(inputs)
+            value = masked_state_value(policy_logits, q_values, legal_mask)
+            return policy_logits, value
+        if self.value_head is None:
+            raise ValueError("model does not have a value head")
         value = self.value_head(features).squeeze(-1)
         return policy_logits, value
 
@@ -407,7 +463,18 @@ class PolicyValueNetwork(nn.Module):
             self._validate_input_shape(x)
 
         features = self.forward_features(x)
-        return self._policy_and_value(features)
+        return self._policy_and_value(features, x)
+
+    def forward_q(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return policy logits and per-action Q values with one backbone pass."""
+        if not self.config.action_value_head:
+            raise ValueError("model does not have an action value head")
+        is_tracing = cast("Callable[[], bool]", torch.jit.is_tracing)  # type: ignore[attr-defined]
+        if not is_tracing():
+            self._validate_input_shape(x)
+
+        features = self.forward_features(x)
+        return self._policy_logits(features), self._action_values(features)
 
     def forward_with_aux(
         self,
@@ -421,7 +488,7 @@ class PolicyValueNetwork(nn.Module):
             self._validate_input_shape(x)
 
         features = self.forward_features(x)
-        policy_logits, value = self._policy_and_value(features)
+        policy_logits, value = self._policy_and_value(features, x)
         aux_logits = cast(torch.Tensor, self.terminal_board_head(features))
         return policy_logits, value, aux_logits
 

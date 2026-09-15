@@ -15,8 +15,8 @@ from great_kingdom_ai.features import (
     BOARD_SIZE,
     LEGAL_PLACE_FEATURE_CHANNEL,
 )
+from great_kingdom_ai.klent._torch import _import_torch
 from great_kingdom_ai.klent.types import validate_alpha_beta, validate_lambda_gamma
-from great_kingdom_ai.training.torch_utils import _import_torch
 
 if TYPE_CHECKING:
     from torch import Tensor

@@ -6,12 +6,13 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
+from great_kingdom_ai.klent._torch import _import_torch
 from great_kingdom_ai.klent.types import KlentConfig
-from great_kingdom_ai.training.batch import TrainingBatch
-from great_kingdom_ai.training.torch_utils import _import_torch
 
 if TYPE_CHECKING:
     from torch import Tensor, nn
+
+    from great_kingdom_ai.training.batch import TrainingBatch
 
 
 @dataclass(frozen=True)

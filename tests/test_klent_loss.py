@@ -202,8 +202,10 @@ def test_klent_loss_rejects_illegal_policy_target_mass() -> None:
 
 
 def test_klent_loss_decreases_with_optimizer_steps() -> None:
-    torch.manual_seed(0)
     model = _TinyQModel(action_space=4)
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.zero_()
     batch = _make_batch(
         4,
         batch_size=8,
@@ -225,7 +227,6 @@ def test_klent_loss_decreases_with_optimizer_steps() -> None:
 
 
 def test_klent_loss_backpropagates_without_target_gradients() -> None:
-    torch.manual_seed(0)
     model = _TinyQModel(action_space=3)
     batch = _make_batch(3, batch_size=2, values=[0.5, -0.5], actions=[0, 1])
 

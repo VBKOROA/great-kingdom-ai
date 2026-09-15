@@ -509,3 +509,82 @@ def test_attention_block_rejects_wrong_spatial_dimensions() -> None:
     inputs_wrong_dims = torch.randn(2, 64, 3, 27)
     with pytest.raises(ValueError, match="expected spatial shape"):
         block(inputs_wrong_dims)
+
+
+def test_action_value_head_is_off_by_default() -> None:
+    from great_kingdom_ai.model import ModelConfig, create_model
+
+    assert ModelConfig().action_value_head is False
+    model = create_model("small")
+    assert model.has_action_value_head is False
+    assert not hasattr(model, "q_spatial") or model.q_spatial is None
+    assert model.value_head is not None
+
+    with pytest.raises(ValueError, match="action value head"):
+        model.forward_q(torch.zeros((1, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE)))
+
+
+def test_strong_attn_klent_preset_replaces_state_value_head_with_q_head() -> None:
+    from great_kingdom_ai.model import create_model
+
+    model = create_model("strong_attn_klent")
+
+    assert model.config.action_value_head is True
+    assert model.config.spatial_value_head is True
+    assert model.has_action_value_head is True
+    assert model.value_head is None
+    assert model.q_spatial is not None
+    assert model.q_pass is not None
+    assert any(isinstance(module, torch.nn.Tanh) for module in model.q_spatial)
+    assert any(isinstance(module, torch.nn.Tanh) for module in model.q_pass)
+
+
+def test_action_value_head_returns_policy_logits_and_masked_value() -> None:
+    from great_kingdom_ai.features import LEGAL_PLACE_FEATURE_CHANNEL
+    from great_kingdom_ai.klent.targets import legal_mask_from_features, masked_state_value
+    from great_kingdom_ai.model import ModelConfig, PolicyValueNetwork
+
+    model = PolicyValueNetwork(ModelConfig(channels=16, residual_blocks=1, action_value_head=True))
+    model.eval()
+    features = torch.zeros((2, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=torch.float32)
+    features[:, LEGAL_PLACE_FEATURE_CHANNEL] = 0.0
+    features[0, LEGAL_PLACE_FEATURE_CHANNEL, 0, 0] = 1.0
+    features[1, LEGAL_PLACE_FEATURE_CHANNEL, :, :] = 1.0
+
+    with torch.no_grad():
+        policy_logits, value = model(features)
+        q_policy_logits, q_values = model.forward_q(features)
+
+    assert value.shape == (2,)
+    assert q_values.shape == (2, ACTION_SPACE)
+    assert torch.equal(policy_logits, q_policy_logits)
+    assert torch.all(q_values <= 1.0)
+    assert torch.all(q_values >= -1.0)
+    legal_mask = legal_mask_from_features(features)
+    expected = masked_state_value(q_policy_logits, q_values, legal_mask)
+    assert torch.allclose(value, expected, atol=1e-6)
+
+    unmasked = (torch.softmax(q_policy_logits, dim=1) * q_values).sum(dim=1)
+    assert not torch.allclose(value, unmasked, atol=1e-6)
+
+
+def test_action_value_head_forward_with_aux_uses_masked_value() -> None:
+    from great_kingdom_ai.model import ModelConfig, PolicyValueNetwork
+
+    model = PolicyValueNetwork(
+        ModelConfig(
+            channels=16,
+            residual_blocks=1,
+            action_value_head=True,
+            terminal_board_head=True,
+        )
+    )
+    model.eval()
+    features = torch.zeros((1, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=torch.float32)
+
+    with torch.no_grad():
+        policy_logits, value, aux_logits = model.forward_with_aux(features)
+
+    assert policy_logits.shape == (1, ACTION_SPACE)
+    assert value.shape == (1,)
+    assert aux_logits.shape[0] == 1
