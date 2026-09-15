@@ -10,7 +10,7 @@ from great_kingdom_ai.klent.shards import KLENT_ALGORITHM
 from great_kingdom_ai.klent.types import KlentConfig
 from great_kingdom_ai.training.checkpoint import create_optimizer
 from great_kingdom_ai.training.config import TrainingConfig
-from great_kingdom_ai.training.torch_utils import _import_torch
+from great_kingdom_ai.training.torch_utils import _cuda_amp_enabled, _import_torch
 
 if TYPE_CHECKING:
     from torch.optim import Optimizer
@@ -27,6 +27,7 @@ class KlentTrainState:
     klent_config: KlentConfig
     model_preset: str
     last_shard: str | None = None
+    scaler: Any | None = None
 
 
 def save_klent_checkpoint(state: KlentTrainState, path: str | Path) -> Path:
@@ -44,6 +45,7 @@ def save_klent_checkpoint(state: KlentTrainState, path: str | Path) -> Path:
             "model_state": state.model.state_dict(),
             "optimizer": _optimizer_type(state.optimizer),
             "optimizer_state": state.optimizer.state_dict(),
+            "scaler_state": None if state.scaler is None else state.scaler.state_dict(),
             "last_shard": state.last_shard,
         },
         destination,
@@ -58,6 +60,7 @@ def load_klent_checkpoint(
     learning_rate: float = 1e-3,
     weight_decay: float = 1e-4,
     optimizer: str = "adamw",
+    amp: bool = False,
 ) -> KlentTrainState:
     torch = _import_torch()
     from great_kingdom_ai.model import ModelConfig, PolicyValueNetwork
@@ -82,6 +85,13 @@ def load_klent_checkpoint(
     optimizer_instance = create_optimizer(torch, model, train_config)
     if _optimizer_type(optimizer_instance) == str(checkpoint.get("optimizer", "")).lower():
         optimizer_instance.load_state_dict(checkpoint["optimizer_state"])
+
+    scaler: Any | None = None
+    if _cuda_amp_enabled(torch, device, enabled=amp):
+        scaler = torch.amp.GradScaler("cuda", enabled=True)
+        scaler_state = checkpoint.get("scaler_state")
+        if scaler_state is not None:
+            scaler.load_state_dict(scaler_state)
     return KlentTrainState(
         model=model,
         optimizer=optimizer_instance,
@@ -92,6 +102,7 @@ def load_klent_checkpoint(
         last_shard=(
             None if checkpoint.get("last_shard") is None else str(checkpoint["last_shard"])
         ),
+        scaler=scaler,
     )
 
 

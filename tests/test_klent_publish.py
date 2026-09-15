@@ -121,6 +121,39 @@ def test_publish_rejects_fp16_with_cpu_parity(tmp_path: Path) -> None:
     assert not any(record.parity_passed for record in manifest.exports)
 
 
+def test_publish_blocks_pointer_when_parity_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from great_kingdom_ai.features import ACTION_SPACE
+    from great_kingdom_ai.klent import publish as publish_module
+    from great_kingdom_ai.klent.export import KlentOnnxParitySummary
+
+    checkpoint = _save_checkpoint(tmp_path)
+    failed = KlentOnnxParitySummary(
+        kind="eval",
+        policy_shape=(1, ACTION_SPACE),
+        value_shape=(1,),
+        q_values_shape=None,
+        max_policy_abs_diff=1.0,
+        max_value_abs_diff=0.0,
+        max_q_values_abs_diff=None,
+        tolerance=1e-5,
+    )
+    monkeypatch.setattr(
+        publish_module,
+        "compare_klent_checkpoint_to_onnx",
+        lambda *args, **kwargs: failed,
+    )
+
+    with pytest.raises(RuntimeError, match="parity check failed"):
+        _publish(tmp_path, checkpoint)
+
+    with pytest.raises(ValueError, match="pointer is missing"):
+        load_klent_onnx_pointer(tmp_path / "work")
+    assert not (tmp_path / "work" / "onnx" / "version-00001").exists()
+
+
 def test_publish_requires_new_version_or_overwrite(tmp_path: Path) -> None:
     checkpoint = _save_checkpoint(tmp_path)
     _publish(tmp_path, checkpoint, model_version=1)

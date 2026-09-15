@@ -1,17 +1,19 @@
 """Synchronous KLENT collect/train iteration loop (paper Algorithm 1).
 
 Each iteration freezes theta_k, collects a fresh whole-game buffer with
-zero-search self-play, fits only on that buffer, and publishes theta_{k+1}
-with an iteration checkpoint. Resume restarts the unfinished iteration from
-the last published checkpoint instead of mixing partial state.
+zero-search self-play, fits only on that buffer, writes the iteration
+checkpoint, publishes actor/eval ONNX, and only then advances the latest
+pointer. Resume recovers iterations whose training finished but whose ONNX
+publication did not, instead of retraining or mixing partial state.
 """
 
 from __future__ import annotations
 
 import random
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -25,7 +27,10 @@ from great_kingdom_ai.klent.checkpoint import (
 )
 from great_kingdom_ai.klent.dataset import KlentReplayDataset
 from great_kingdom_ai.klent.loss import KlentLossBreakdown, compute_klent_losses
-from great_kingdom_ai.klent.publish import publish_klent_onnx_artifacts
+from great_kingdom_ai.klent.publish import (
+    load_klent_onnx_pointer,
+    publish_klent_onnx_artifacts,
+)
 from great_kingdom_ai.klent.self_play import KlentSelfPlayConfig, play_klent_game
 from great_kingdom_ai.klent.shards import (
     KlentShardMetadata,
@@ -36,6 +41,7 @@ from great_kingdom_ai.klent.types import KlentConfig, KlentPolicyValueModel
 from great_kingdom_ai.replay.persistence import copy_file_atomic
 from great_kingdom_ai.replay.trajectory import TrajectoryReplayStore
 from great_kingdom_ai.training.batch import TrainingArrays, TrainingBatch, arrays_to_batch
+from great_kingdom_ai.training.torch_utils import _autocast_context, _cuda_amp_enabled
 
 if TYPE_CHECKING:
     from torch import nn
@@ -52,7 +58,7 @@ class KlentTrainConfig:
     device: str = "cpu"
     seed: int = 0
     min_transitions: int = 4096
-    max_games_per_iteration: int = 64
+    max_games_per_iteration: int = 256
     fit_epochs: int = 1
     batch_size: int = 32
     learning_rate: float = 1e-3
@@ -186,6 +192,7 @@ def run_klent_iteration(
         state.optimizer,
         start_steps=state.total_steps,
         iteration=iteration,
+        scaler=state.scaler,
     )
     model.eval()
 
@@ -198,10 +205,10 @@ def run_klent_iteration(
         klent_config=config.klent,
         model_preset=config.model_preset,
         last_shard=str(shard_path),
+        scaler=state.scaler,
     )
     checkpoint_path = _iteration_checkpoint_path(config.work_dir, next_iteration)
     save_klent_checkpoint(next_state, checkpoint_path)
-    copy_file_atomic(checkpoint_path, _latest_checkpoint_path(config.work_dir))
     onnx_version_dir: Path | None = None
     if config.export_onnx:
         manifest = publish_klent_onnx_artifacts(
@@ -217,6 +224,7 @@ def run_klent_iteration(
             overwrite=True,
         )
         onnx_version_dir = _onnx_version_dir(config.work_dir, manifest.model_version)
+    _publish_latest_checkpoint(config.work_dir, next_iteration)
     if not config.keep_shards:
         metadata_path = shard_metadata_path(shard_path)
         if metadata_path.exists():
@@ -244,9 +252,12 @@ def fit_klent_model(
     *,
     start_steps: int,
     iteration: int,
+    scaler: Any | None = None,
 ) -> tuple[list[float], int]:
     """Fit for ``fit_epochs`` shuffled passes over the frozen iteration buffer."""
     torch = _import_torch()
+    amp_enabled = _cuda_amp_enabled(torch, config.device, enabled=config.amp)
+    scaler = scaler if amp_enabled else None
     permutation_rng = np.random.default_rng(config.seed + iteration)
     augment_rng = random.Random(config.seed + iteration)
     steps = start_steps
@@ -259,11 +270,24 @@ def fit_klent_model(
             indexes = np.asarray(order[start : start + config.batch_size], dtype=np.int64)
             batch = _klent_batch_from_indexes(dataset, indexes, config, augment_rng)
             optimizer.zero_grad(set_to_none=True)
-            losses = compute_klent_losses(model, batch, config.klent)
-            losses.total.backward()  # type: ignore[no-untyped-call]
-            if config.gradient_clip_norm is not None:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), config.gradient_clip_norm)
-            optimizer.step()
+            with _autocast_context(torch, enabled=amp_enabled):
+                losses = compute_klent_losses(model, batch, config.klent)
+            if scaler is not None:
+                scaler.scale(losses.total).backward()
+                if config.gradient_clip_norm is not None:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), config.gradient_clip_norm
+                    )
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                losses.total.backward()  # type: ignore[no-untyped-call]
+                if config.gradient_clip_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), config.gradient_clip_norm
+                    )
+                optimizer.step()
             steps += 1
             batch_total += float(losses.total.detach().cpu())
             batch_count += 1
@@ -290,10 +314,13 @@ def _collect_with_python_actor(
     episodes: list[TrajectoryEpisode] = []
     transition_count = 0
     seed_base = config.seed + iteration * 1_000_003
-    while (
-        transition_count < config.min_transitions
-        and len(episodes) < config.max_games_per_iteration
-    ):
+    while transition_count < config.min_transitions:
+        if len(episodes) >= config.max_games_per_iteration:
+            raise RuntimeError(
+                f"collected {transition_count} transitions in {len(episodes)} games "
+                f"before reaching min_transitions={config.min_transitions}; "
+                "increase max_games_per_iteration or lower min_transitions"
+            )
         _log, episode = play_klent_game(
             model,
             seed=seed_base + len(episodes),
@@ -321,31 +348,24 @@ def _collect_with_rust_actor(
         play_rust_klent_zero_search,
     )
 
-    actor_path: Path | None = config.actor_onnx_path
-    if actor_path is None:
-        source_checkpoint = (
-            config.work_dir / "checkpoints" / f"actor-source-{iteration:04d}.pt"
-        )
-        save_klent_checkpoint(state, source_checkpoint)
-        actor_path = config.work_dir / "onnx" / f"actor-source-{iteration:04d}.onnx"
-        export_klent_checkpoint_to_onnx(
-            source_checkpoint,
-            actor_path,
-            kind="actor",
-            device=config.onnx_device,
-            precision=config.onnx_precision,
-        )
-    elif not actor_path.exists():
-        raise FileNotFoundError(f"actor ONNX model is missing: {actor_path}")
+    actor_path = _actor_onnx_for_iteration(
+        state,
+        config,
+        iteration,
+        export_klent_checkpoint_to_onnx,
+    )
 
     episodes: list[TrajectoryEpisode] = []
     transition_count = 0
     seed_base = config.seed + iteration * 1_000_003
     game_offset = 0
-    while (
-        transition_count < config.min_transitions
-        and game_offset < config.max_games_per_iteration
-    ):
+    while transition_count < config.min_transitions:
+        if game_offset >= config.max_games_per_iteration:
+            raise RuntimeError(
+                f"collected {transition_count} transitions in {game_offset} games "
+                f"before reaching min_transitions={config.min_transitions}; "
+                "increase max_games_per_iteration or lower min_transitions"
+            )
         batch_size = min(
             config.rust_self_play_batch_size,
             config.max_games_per_iteration - game_offset,
@@ -373,6 +393,36 @@ def _collect_with_rust_actor(
         transition_count += summary.transitions
         game_offset += batch_size
     return episodes
+
+
+def _actor_onnx_for_iteration(
+    state: KlentTrainState,
+    config: KlentTrainConfig,
+    iteration: int,
+    export_checkpoint_to_onnx: Callable[..., Any],
+) -> Path:
+    """Return the actor model that matches the frozen iteration model.
+
+    ``actor_onnx_path`` is only an initial (iteration 0) override. Later
+    iterations always export an actor from their own frozen checkpoint so the
+    shard records and the collected behavior cannot diverge.
+    """
+    if config.actor_onnx_path is not None and iteration == 0:
+        if not config.actor_onnx_path.exists():
+            raise FileNotFoundError(f"actor ONNX model is missing: {config.actor_onnx_path}")
+        return config.actor_onnx_path
+
+    source_checkpoint = config.work_dir / "checkpoints" / f"actor-source-{iteration:04d}.pt"
+    save_klent_checkpoint(state, source_checkpoint)
+    actor_path = config.work_dir / "onnx" / f"actor-source-{iteration:04d}.onnx"
+    export_checkpoint_to_onnx(
+        source_checkpoint,
+        actor_path,
+        kind="actor",
+        device=config.onnx_device,
+        precision=config.onnx_precision,
+    )
+    return actor_path
 
 
 def _klent_batch_from_indexes(
@@ -419,18 +469,16 @@ def _initial_state(config: KlentTrainConfig, *, resume: bool) -> KlentTrainState
     from great_kingdom_ai.training.checkpoint import create_optimizer
     from great_kingdom_ai.training.config import TrainingConfig
 
-    latest = _latest_checkpoint_path(config.work_dir)
-    if resume and latest.exists():
-        state = load_klent_checkpoint(
-            latest,
-            device=config.device,
-            learning_rate=config.learning_rate,
-            weight_decay=config.weight_decay,
-            optimizer=config.optimizer,
-        )
-        if state.klent_config != config.klent:
-            raise ValueError("resume KLENT config does not match the checkpoint")
-        return state
+    if resume:
+        recovered = _resume_from_iteration_checkpoint(config)
+        if recovered is not None:
+            return recovered
+        latest = _latest_checkpoint_path(config.work_dir)
+        if latest.exists():
+            state = _load_state(latest, config)
+            _ensure_published(config, state)
+            _publish_latest_checkpoint(config.work_dir, state.iteration)
+            return state
 
     if config.warm_start_checkpoint is not None:
         model = warm_start_klent_model(
@@ -458,6 +506,9 @@ def _initial_state(config: KlentTrainConfig, *, resume: bool) -> KlentTrainState
             device=config.device,
         ),
     )
+    scaler: Any | None = None
+    if _cuda_amp_enabled(torch, config.device, enabled=config.amp):
+        scaler = torch.amp.GradScaler("cuda", enabled=True)
     return KlentTrainState(
         model=model,
         optimizer=optimizer,
@@ -465,7 +516,91 @@ def _initial_state(config: KlentTrainConfig, *, resume: bool) -> KlentTrainState
         total_steps=0,
         klent_config=config.klent,
         model_preset=config.model_preset,
+        scaler=scaler,
     )
+
+
+def _load_state(path: Path, config: KlentTrainConfig) -> KlentTrainState:
+    state = load_klent_checkpoint(
+        path,
+        device=config.device,
+        learning_rate=config.learning_rate,
+        weight_decay=config.weight_decay,
+        optimizer=config.optimizer,
+        amp=config.amp,
+    )
+    if state.klent_config != config.klent:
+        raise ValueError("resume KLENT config does not match the checkpoint")
+    return state
+
+
+def _resume_from_iteration_checkpoint(
+    config: KlentTrainConfig,
+) -> KlentTrainState | None:
+    """Resume from the newest iteration checkpoint, completing pending publication.
+
+    Iteration checkpoints are written before ONNX publication, so a crash
+    between training and publication is recovered by publishing from the
+    existing checkpoint instead of retraining the iteration.
+    """
+    checkpoints = _iteration_checkpoints(config.work_dir)
+    if not checkpoints:
+        return None
+    iteration, path = checkpoints[-1]
+    state = _load_state(path, config)
+    if state.iteration != iteration:
+        raise ValueError(
+            f"iteration checkpoint {path} stores iteration {state.iteration} "
+            f"but is named for {iteration}"
+        )
+    _ensure_published(config, state)
+    _publish_latest_checkpoint(config.work_dir, state.iteration)
+    return state
+
+
+def _ensure_published(config: KlentTrainConfig, state: KlentTrainState) -> None:
+    if not config.export_onnx:
+        return
+    try:
+        pointer = load_klent_onnx_pointer(config.work_dir)
+    except ValueError:
+        pointer = None
+    if pointer is not None and pointer.model_version >= state.iteration:
+        return
+    checkpoint_path = _iteration_checkpoint_path(config.work_dir, state.iteration)
+    publish_klent_onnx_artifacts(
+        checkpoint_path,
+        config.work_dir,
+        model_version=state.iteration,
+        iteration=state.iteration - 1,
+        klent_config=config.klent,
+        model_preset=config.model_preset,
+        device=config.onnx_device,
+        precision=config.onnx_precision,
+        check_parity=config.check_onnx_parity,
+        overwrite=True,
+    )
+
+
+def _publish_latest_checkpoint(work_dir: Path, iteration: int) -> None:
+    checkpoint_path = _iteration_checkpoint_path(work_dir, iteration)
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"iteration checkpoint is missing: {checkpoint_path}")
+    copy_file_atomic(checkpoint_path, _latest_checkpoint_path(work_dir))
+
+
+def _iteration_checkpoints(work_dir: Path) -> list[tuple[int, Path]]:
+    directory = work_dir / "checkpoints"
+    if not directory.exists():
+        return []
+    checkpoints: list[tuple[int, Path]] = []
+    for path in directory.glob("iteration-*.pt"):
+        suffix = path.stem.removeprefix("iteration-")
+        if not suffix.isdigit():
+            continue
+        checkpoints.append((int(suffix), path))
+    checkpoints.sort()
+    return checkpoints
 
 
 def _iteration_shard_path(work_dir: Path, iteration: int) -> Path:

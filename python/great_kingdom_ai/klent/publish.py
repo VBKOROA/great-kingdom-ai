@@ -187,12 +187,18 @@ def publish_klent_onnx_artifacts(
                     checkpoint_path,
                     temporary_dir / file_name,
                     kind=kind,
-                    device=device,
                 )
                 if check_parity
                 else None
             )
             records.append(_export_record(summary.output_names, kind, file_name, parity))
+
+        failed_parity = [record.kind for record in records if not record.parity_passed]
+        if check_parity and failed_parity:
+            raise RuntimeError(
+                "KLENT ONNX parity check failed; keeping the previous published pointer "
+                f"for: {', '.join(failed_parity)}"
+            )
 
         manifest = KlentOnnxManifest(
             model_version=model_version,

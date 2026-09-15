@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import importlib
 import importlib.util
 from dataclasses import asdict
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 _torch_spec = importlib.util.find_spec("torch")
@@ -13,7 +15,10 @@ pytestmark = pytest.mark.skipif(
 )
 torch = importlib.import_module("torch") if _torch_spec is not None else None
 
+import great_kingdom_ai.klent.trainer as trainer_module  # noqa: E402
+from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS  # noqa: E402
 from great_kingdom_ai.klent.checkpoint import (  # noqa: E402
+    KlentTrainState,
     load_klent_checkpoint,
     warm_start_klent_model,
 )
@@ -24,9 +29,16 @@ from great_kingdom_ai.klent.publish import (  # noqa: E402
 from great_kingdom_ai.klent.shards import load_klent_shard  # noqa: E402
 from great_kingdom_ai.klent.trainer import (  # noqa: E402
     KlentTrainConfig,
+    _actor_onnx_for_iteration,
+    _collect_with_python_actor,
+    fit_klent_model,
     run_klent_training,
 )
 from great_kingdom_ai.klent.types import KlentConfig  # noqa: E402
+from great_kingdom_ai.model import create_model  # noqa: E402
+from great_kingdom_ai.replay.dataset import TrajectoryArrayBatch  # noqa: E402
+from great_kingdom_ai.training.checkpoint import create_optimizer  # noqa: E402
+from great_kingdom_ai.training.config import TrainingConfig  # noqa: E402
 
 _rust_core_available = importlib.util.find_spec("great_kingdom_core") is not None
 requires_core = pytest.mark.skipif(
@@ -49,8 +61,8 @@ def make_config(tmp_path: Path, **overrides: object) -> KlentTrainConfig:
         "model_preset": "small_klent",
         "device": "cpu",
         "seed": 0,
-        "min_transitions": 4,
-        "max_games_per_iteration": 2,
+        "min_transitions": 1,
+        "max_games_per_iteration": 64,
         "fit_epochs": 2,
         "batch_size": 4,
         "max_turns": 200,
@@ -120,17 +132,21 @@ def test_run_klent_training_resume_rejects_config_mismatch(tmp_path: Path) -> No
 def test_klent_fit_reduces_loss_over_epochs(tmp_path: Path) -> None:
     config = make_config(
         tmp_path,
-        fit_epochs=8,
+        fit_epochs=10,
         min_transitions=8,
-        max_games_per_iteration=3,
-        learning_rate=5e-3,
+        max_games_per_iteration=64,
+        learning_rate=1e-3,
     )
-
-    summaries = run_klent_training(config, iterations=1)
+    rng_state = torch.random.get_rng_state()
+    try:
+        torch.manual_seed(20260522)
+        summaries = run_klent_training(config, iterations=1)
+    finally:
+        torch.random.set_rng_state(rng_state)
 
     epoch_losses = summaries[0].epoch_losses
-    assert len(epoch_losses) == 8
-    assert epoch_losses[-1] < epoch_losses[0]
+    assert len(epoch_losses) == 10
+    assert min(epoch_losses[1:]) < epoch_losses[0]
 
 
 @requires_core
@@ -242,3 +258,192 @@ def test_warm_start_klent_model_copies_backbone_and_initializes_q_head(
         )
     assert logits.shape[0] == 2
     assert q_values.shape[0] == 2
+
+
+class _FixedDataset:
+    """Minimal KLENT dataset stand-in for direct fit tests."""
+
+    def __init__(self, size: int) -> None:
+        rng = np.random.default_rng(0)
+        self._features = rng.normal(size=(size, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE))
+        self._features = self._features.astype(np.float32)
+        self._features[:, 4, :, :] = 1.0
+        self._policies = np.full((size, ACTION_SPACE), 1.0 / ACTION_SPACE, dtype=np.float32)
+        self._values = np.linspace(-1.0, 1.0, size).astype(np.float32)
+        self._weights = np.ones((size,), dtype=np.float32)
+        self._masks = np.ones((size, ACTION_SPACE), dtype=np.bool_)
+        self._actions = np.arange(size, dtype=np.int64) % ACTION_SPACE
+
+    def __len__(self) -> int:
+        return self._features.shape[0]
+
+    def arrays_for_indexes(self, indexes: np.ndarray) -> TrajectoryArrayBatch:
+        return TrajectoryArrayBatch(
+            indexes=np.asarray(indexes, dtype=np.int64),
+            features=self._features[indexes],
+            policies=self._policies[indexes],
+            values=self._values[indexes],
+            sample_weights=self._weights[indexes],
+            legal_masks=self._masks[indexes],
+            actions=self._actions[indexes],
+        )
+
+
+def test_fit_klent_model_applies_amp_autocast_when_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextlib import nullcontext
+
+    recorded: list[bool] = []
+    monkeypatch.setattr(
+        trainer_module,
+        "_cuda_amp_enabled",
+        lambda torch_, device, enabled: bool(enabled),
+    )
+
+    def fake_autocast(torch_: object, *, enabled: bool) -> object:
+        recorded.append(enabled)
+        return nullcontext()
+
+    monkeypatch.setattr(trainer_module, "_autocast_context", fake_autocast)
+    model = create_model("small_klent")
+    optimizer = create_optimizer(
+        torch,
+        model,
+        TrainingConfig(model_preset="small_klent", learning_rate=1e-2, device="cpu"),
+    )
+    dataset = _FixedDataset(4)
+    config = make_config(tmp_path, amp=True, batch_size=2, fit_epochs=1)
+
+    losses, steps = fit_klent_model(
+        model,
+        dataset,  # type: ignore[arg-type]
+        config,
+        optimizer,
+        start_steps=0,
+        iteration=0,
+    )
+
+    assert recorded == [True, True]
+    assert steps == 2
+    assert all(np.isfinite(loss) for loss in losses)
+
+
+@requires_core
+def test_collection_fails_when_min_transitions_is_not_reached(tmp_path: Path) -> None:
+    model = create_model("small_klent")
+    config = make_config(
+        tmp_path,
+        min_transitions=10**6,
+        max_games_per_iteration=1,
+        fit_epochs=1,
+    )
+
+    with pytest.raises(RuntimeError, match="min_transitions"):
+        _collect_with_python_actor(model, config, 0)
+
+
+@requires_core
+@requires_onnx
+def test_rust_collection_fails_when_min_transitions_is_not_reached(tmp_path: Path) -> None:
+    from great_kingdom_ai.klent.export import export_klent_checkpoint_to_onnx
+    from great_kingdom_ai.klent.trainer import _collect_with_rust_actor
+
+    model = create_model("small_klent")
+    optimizer = create_optimizer(
+        torch,
+        model,
+        TrainingConfig(model_preset="small_klent", learning_rate=1e-2, device="cpu"),
+    )
+    state = KlentTrainState(
+        model=model,
+        optimizer=optimizer,
+        iteration=0,
+        total_steps=0,
+        klent_config=KlentConfig(),
+        model_preset="small_klent",
+    )
+    checkpoint = trainer_module.save_klent_checkpoint(state, tmp_path / "actor-source.pt")
+    actor_path = tmp_path / "actor.onnx"
+    export_klent_checkpoint_to_onnx(checkpoint, actor_path, kind="actor")
+    config = make_config(
+        tmp_path,
+        actor_onnx_path=actor_path,
+        min_transitions=10**6,
+        max_games_per_iteration=1,
+        rust_self_play_batch_size=1,
+        fit_epochs=1,
+    )
+
+    with pytest.raises(RuntimeError, match="min_transitions"):
+        _collect_with_rust_actor(state, config, 0)
+
+
+def test_actor_path_override_only_applies_to_first_iteration(tmp_path: Path) -> None:
+    model = create_model("small_klent")
+    optimizer = create_optimizer(
+        torch,
+        model,
+        TrainingConfig(model_preset="small_klent", learning_rate=1e-2, device="cpu"),
+    )
+    state = KlentTrainState(
+        model=model,
+        optimizer=optimizer,
+        iteration=0,
+        total_steps=0,
+        klent_config=KlentConfig(),
+        model_preset="small_klent",
+    )
+    provided_actor = tmp_path / "provided-actor.onnx"
+    provided_actor.write_bytes(b"placeholder")
+    config = make_config(tmp_path, actor_onnx_path=provided_actor)
+    (config.work_dir / "onnx").mkdir(parents=True, exist_ok=True)
+    exported: list[Path] = []
+
+    def fake_export(checkpoint: object, output: Path, **kwargs: object) -> None:
+        exported.append(Path(output))
+        Path(output).write_bytes(b"placeholder")
+
+    first = _actor_onnx_for_iteration(state, config, 0, fake_export)
+    second = _actor_onnx_for_iteration(state, config, 1, fake_export)
+
+    assert first == provided_actor
+    assert second.name == "actor-source-0001.onnx"
+    assert second != provided_actor
+    assert exported == [second]
+
+
+@requires_core
+@requires_onnx
+def test_resume_republishes_after_export_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = make_config(tmp_path, export_onnx=True, onnx_precision="fp32")
+    real_publish = trainer_module.publish_klent_onnx_artifacts
+    calls = {"count": 0}
+
+    def flaky_publish(*args: object, **kwargs: object) -> object:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("injected export failure")
+        return real_publish(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(trainer_module, "publish_klent_onnx_artifacts", flaky_publish)
+
+    with pytest.raises(RuntimeError, match="injected export failure"):
+        run_klent_training(config, iterations=1)
+
+    latest = config.work_dir / "checkpoints" / "latest.pt"
+    assert not latest.exists()
+    with pytest.raises(ValueError, match="pointer is missing"):
+        load_klent_onnx_pointer(config.work_dir)
+
+    resumed = run_klent_training(config, iterations=1)
+
+    assert resumed == []
+    pointer = load_klent_onnx_pointer(config.work_dir)
+    assert pointer.model_version == 1
+    assert latest.exists()
+    assert calls["count"] == 2

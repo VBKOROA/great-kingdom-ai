@@ -220,9 +220,12 @@ def compare_klent_checkpoint_to_onnx(
     batch_size: int = 3,
     seed: int = 0,
     tolerance: float = DEFAULT_PARITY_TOLERANCE,
-    device: str = "cpu",
 ) -> KlentOnnxParitySummary:
-    """Compare PyTorch wrapper inference against ONNX Runtime CPU inference."""
+    """Compare PyTorch CPU inference against ONNX Runtime CPU inference.
+
+    The parity target is always CPU FP32 regardless of the device used for
+    export, so both sides must run on the same device.
+    """
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
     if tolerance < 0.0:
@@ -231,7 +234,7 @@ def compare_klent_checkpoint_to_onnx(
 
     torch = _import_torch()
     ort = _import_onnxruntime()
-    state = load_klent_checkpoint(checkpoint_path, device=device)
+    state = load_klent_checkpoint(checkpoint_path, device="cpu")
     model = state.model.float()
     model.eval()
     export_module = wrapper(model)

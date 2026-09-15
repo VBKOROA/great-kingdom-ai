@@ -19,8 +19,10 @@ klent:
   gamma: 1.0
 
 # Iteration collection: freeze theta_k and gather completed games.
+# max_games_per_iteration is a safety cap; collection fails loudly if
+# min_transitions is not reached within it.
 min_transitions: 32768
-max_games_per_iteration: 512
+max_games_per_iteration: 2048
 max_turns: 200
 use_rust_actor: true
 rust_self_play_batch_size: 256
