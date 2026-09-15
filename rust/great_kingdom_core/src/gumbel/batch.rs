@@ -198,6 +198,11 @@ impl GumbelSelfPlayBatch {
             .collect()
     }
 
+    #[must_use]
+    pub fn boards(&self) -> Vec<Vec<u8>> {
+        self.states.iter().map(GameState::board).collect()
+    }
+
     pub fn search_active_with_logits(
         &mut self,
         policy_logits: Vec<Vec<f32>>,
