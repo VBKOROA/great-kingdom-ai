@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import cast
 
 import torch
 from torch import nn
 
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
+from great_kingdom_ai.replay.terminal_board import TERMINAL_BOARD_CLASSES
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,9 @@ class ModelConfig:
     attention_ffn_multiplier: int = 4
     attention_residual_scale_init: float = 1e-2
     attention_insert_every: int = 0
+    terminal_board_head: bool = False
+    terminal_board_hidden_channels: int = 32
+    terminal_board_classes: int = TERMINAL_BOARD_CLASSES
 
     def __post_init__(self) -> None:
         if self.residual_blocks < 0:
@@ -38,6 +42,10 @@ class ModelConfig:
                 "attention_insert_every must be non-negative, "
                 f"got {self.attention_insert_every}"
             )
+        if self.terminal_board_hidden_channels <= 0:
+            raise ValueError("terminal_board_hidden_channels must be positive")
+        if self.terminal_board_classes <= 0:
+            raise ValueError("terminal_board_classes must be positive")
 
 
 MODEL_PRESETS: dict[str, ModelConfig] = {
@@ -93,6 +101,11 @@ MODEL_PRESETS: dict[str, ModelConfig] = {
         spatial_value_head=True,
     ),
 }
+
+MODEL_PRESETS["strong_attn_terminal_board"] = replace(
+    MODEL_PRESETS["strong_attn"],
+    terminal_board_head=True,
+)
 
 RESIDUAL_STAGE = "residual"
 ATTENTION_STAGE = "attention"
@@ -348,6 +361,21 @@ class PolicyValueNetwork(nn.Module):
                 nn.Linear(config.value_hidden, 1),
                 nn.Tanh(),
             )
+        self.terminal_board_head: nn.Module | None = None
+        if config.terminal_board_head:
+            self.terminal_board_head = nn.Sequential(
+                nn.Conv2d(config.channels, config.terminal_board_hidden_channels, kernel_size=1),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(
+                    config.terminal_board_hidden_channels,
+                    config.terminal_board_classes,
+                    kernel_size=1,
+                ),
+            )
+
+    @property
+    def has_terminal_board_head(self) -> bool:
+        return self.terminal_board_head is not None
 
     def forward_features(self, x: torch.Tensor) -> torch.Tensor:
         features = cast(torch.Tensor, self.stem(x))
@@ -358,17 +386,39 @@ class PolicyValueNetwork(nn.Module):
                 features = cast(torch.Tensor, self.backbone[index](features))
         return features
 
+    def _policy_and_value(
+        self,
+        features: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        board_logits = self.policy_spatial(features).flatten(start_dim=1)
+        pass_logits = self.policy_pass(features)
+        policy_logits = torch.cat([board_logits, pass_logits], dim=1)
+        value = self.value_head(features).squeeze(-1)
+        return policy_logits, value
+
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         is_tracing = cast("Callable[[], bool]", torch.jit.is_tracing)  # type: ignore[attr-defined]
         if not is_tracing():
             self._validate_input_shape(x)
 
         features = self.forward_features(x)
-        board_logits = self.policy_spatial(features).flatten(start_dim=1)
-        pass_logits = self.policy_pass(features)
-        policy_logits = torch.cat([board_logits, pass_logits], dim=1)
-        value = self.value_head(features).squeeze(-1)
-        return policy_logits, value
+        return self._policy_and_value(features)
+
+    def forward_with_aux(
+        self,
+        x: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return policy/value plus terminal board logits with one backbone pass."""
+        if self.terminal_board_head is None:
+            raise ValueError("model does not have a terminal board head")
+        is_tracing = cast("Callable[[], bool]", torch.jit.is_tracing)  # type: ignore[attr-defined]
+        if not is_tracing():
+            self._validate_input_shape(x)
+
+        features = self.forward_features(x)
+        policy_logits, value = self._policy_and_value(features)
+        aux_logits = cast(torch.Tensor, self.terminal_board_head(features))
+        return policy_logits, value, aux_logits
 
     def _validate_input_shape(self, x: torch.Tensor) -> None:
         if x.ndim != 4:
