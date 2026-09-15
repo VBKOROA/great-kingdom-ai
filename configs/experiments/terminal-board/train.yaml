@@ -1,0 +1,62 @@
+# Experiment: strong_attn + terminal board auxiliary loss
+# Copy of configs/runpod/train.yaml with only the auxiliary loss fields changed.
+# This file intentionally does not overwrite the operating train.yaml.
+
+# Model and runtime
+model_preset: strong_attn_terminal_board
+device: cuda
+seed: 20260522
+
+# Training chunk
+batch_size: 512
+steps: 512
+amp: true
+prefetch_batches: 8
+
+# Optimizer
+optimizer: adamw
+learning_rate: 0.0003
+momentum: 0.9
+nesterov: false
+weight_decay: 0.01
+gradient_clip_norm: 5.0
+
+# Loss
+value_loss_weight: 1.0
+policy_loss_weight: 1.0
+l2_loss_weight: 0.0
+terminal_board_loss_weight: 0.1
+mask_policy_loss: true
+
+# Learning-rate schedule
+lr_schedule: warmup_cosine
+lr_decay_gamma: 0.99
+lr_decay_steps: 1000
+lr_warmup_steps: 2000
+lr_min_factor: 0.1
+lr_cosine_steps: 200000
+
+# Data augmentation and recency sampling
+symmetry_augmentation: true
+recent_sample_fraction: 0.0
+recent_sample_window: 262144
+
+# Value target bootstrap
+bootstrap_td_steps: 0
+gamma: 1.0
+value_bootstrap_source: terminal
+
+# Prioritized replay
+priority_enabled: false
+priority_alpha: 0.4
+priority_beta: 0.4
+priority_value_error_weight: 0.5
+priority_policy_kl_weight: 1.0
+priority_target_age_weight: 0.1
+priority_search_reanalyzed_boost: 1.0
+priority_max_priority: 8.0
+priority_epsilon: 0.001
+priority_ema: 0.9
+
+# Exponential moving average model
+ema_decay: 0.999

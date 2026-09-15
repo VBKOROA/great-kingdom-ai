@@ -16,6 +16,7 @@ from great_kingdom_ai.training.checkpoint import (
     save_checkpoint,
     summarize_checkpoint_optimizer_state,
     summarize_optimizer_state_dict,
+    warm_start_terminal_board_head,
 )
 from great_kingdom_ai.training.cli import (
     build_parser,
@@ -55,4 +56,5 @@ __all__ = [
     "summarize_optimizer_state_dict",
     "train_from_replay",
     "train_step",
+    "warm_start_terminal_board_head",
 ]

@@ -146,6 +146,15 @@ def build_factory_init_v2_parser() -> argparse.ArgumentParser:
     parser.add_argument("--checkpoint", type=Path, default=None)
     parser.add_argument("--onnx-output", type=Path, default=None)
     parser.add_argument("--ema-onnx-output", type=Path, default=None)
+    parser.add_argument(
+        "--warm-start-terminal-board",
+        type=Path,
+        default=None,
+        help=(
+            "Warm-start the factory checkpoint from an existing checkpoint and add a "
+            "fresh terminal board head instead of creating random weights"
+        ),
+    )
     parser.add_argument("--no-export-ema-onnx", action="store_true")
     parser.add_argument("--device", choices=["cpu", "cuda"], default=None)
     parser.add_argument(
@@ -177,6 +186,7 @@ def factory_init_v2_main() -> NoReturn:
         checkpoint_path=args.checkpoint,
         onnx_output_path=args.onnx_output,
         ema_onnx_output_path=args.ema_onnx_output,
+        warm_start_checkpoint=args.warm_start_terminal_board,
         export_ema_onnx=not args.no_export_ema_onnx,
         overwrite=args.overwrite,
         onnx_device=args.onnx_device or FactoryInitV2Config.onnx_device,

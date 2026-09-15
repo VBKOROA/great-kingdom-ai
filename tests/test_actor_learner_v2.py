@@ -187,6 +187,47 @@ def test_factory_init_v2_writes_initial_checkpoint_and_onnx(tmp_path: Path) -> N
     ]
 
 
+def test_factory_init_v2_warm_start_uses_existing_checkpoint(tmp_path: Path) -> None:
+    warm_start_calls: list[tuple[str, str]] = []
+
+    def fake_warm_start(path: str | Path, config: TrainingConfig) -> FakeFactoryState:
+        warm_start_calls.append((str(path), config.model_preset))
+        return FakeFactoryState()
+
+    def unused_state_factory(config: TrainingConfig) -> FakeFactoryState:
+        raise AssertionError("state_factory must not be used during warm start")
+
+    def fake_save(state: Any, path: str | Path) -> Path:
+        destination = Path(path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("checkpoint", encoding="utf-8")
+        return destination
+
+    def fake_export(checkpoint_path: str | Path, output_path: str | Path, **kwargs: Any) -> None:
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_text("onnx", encoding="utf-8")
+
+    source = tmp_path / "source.pt"
+    source.write_text("weights", encoding="utf-8")
+    summary = run_factory_init_v2_once(
+        FactoryInitV2Config(
+            work_dir=tmp_path,
+            warm_start_checkpoint=source,
+            onnx_device="cpu",
+            onnx_precision="fp32",
+        ),
+        TrainingConfig(model_preset="strong_attn", device="cpu"),
+        state_factory=unused_state_factory,
+        warm_start_factory=fake_warm_start,
+        checkpoint_saver=fake_save,
+        onnx_exporter=fake_export,
+        printer=PipelinePrinter(enabled=False),
+    )
+
+    assert warm_start_calls == [(str(source), "strong_attn")]
+    assert summary.checkpoint_path.read_text(encoding="utf-8") == "checkpoint"
+
+
 def test_factory_init_v2_refuses_to_overwrite_outputs(tmp_path: Path) -> None:
     checkpoint = tmp_path / "checkpoints" / "training-latest.pt"
     checkpoint.parent.mkdir(parents=True)

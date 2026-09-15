@@ -58,6 +58,7 @@ class FactoryInitV2Config:
     checkpoint_path: Path | None = None
     onnx_output_path: Path | None = None
     ema_onnx_output_path: Path | None = None
+    warm_start_checkpoint: Path | None = None
     export_ema_onnx: bool = True
     overwrite: bool = False
     onnx_device: str = "cpu"

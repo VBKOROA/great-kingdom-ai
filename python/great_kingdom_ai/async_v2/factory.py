@@ -15,7 +15,12 @@ from great_kingdom_ai.async_v2.paths import (
 )
 from great_kingdom_ai.onnx_export import export_checkpoint_to_onnx
 from great_kingdom_ai.pipeline_printer import PipelinePrinter
-from great_kingdom_ai.training import TrainingConfig, create_train_state, save_checkpoint
+from great_kingdom_ai.training import (
+    TrainingConfig,
+    create_train_state,
+    save_checkpoint,
+    warm_start_terminal_board_head,
+)
 
 
 def run_factory_init_v2_once(
@@ -23,6 +28,7 @@ def run_factory_init_v2_once(
     train_config: TrainingConfig,
     *,
     state_factory: Callable[[TrainingConfig], Any] | None = None,
+    warm_start_factory: Callable[[str | Path, TrainingConfig], Any] | None = None,
     checkpoint_saver: Callable[[Any, str | Path], Path] | None = None,
     onnx_exporter: Callable[..., Any] | None = None,
     printer: PipelinePrinter | None = None,
@@ -30,6 +36,11 @@ def run_factory_init_v2_once(
     _validate_factory_init_config(config)
     printer = printer if printer is not None else PipelinePrinter()
     make_state = state_factory if state_factory is not None else create_train_state
+    warm_start = (
+        warm_start_factory
+        if warm_start_factory is not None
+        else warm_start_terminal_board_head
+    )
     save = checkpoint_saver if checkpoint_saver is not None else save_checkpoint
     export_onnx = onnx_exporter if onnx_exporter is not None else export_checkpoint_to_onnx
     checkpoint_path = _factory_checkpoint_path(config)
@@ -57,11 +68,16 @@ def run_factory_init_v2_once(
     printer.metric("onnx device", config.onnx_device)
     printer.metric("onnx precision", config.onnx_precision)
     printer.metric("onnx weights", "raw")
+    if config.warm_start_checkpoint is not None:
+        printer.metric("warm start checkpoint", config.warm_start_checkpoint)
 
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     onnx_path.parent.mkdir(parents=True, exist_ok=True)
     printer.step(f"creating factory checkpoint -> {checkpoint_path}")
-    state = make_state(train_config)
+    if config.warm_start_checkpoint is not None:
+        state = warm_start(config.warm_start_checkpoint, train_config)
+    else:
+        state = make_state(train_config)
     saved_checkpoint = Path(save(state, checkpoint_path))
     printer.step(f"exporting raw factory ONNX -> {onnx_path}")
     temporary_onnx_path = onnx_path.with_suffix(f"{onnx_path.suffix}.tmp")
