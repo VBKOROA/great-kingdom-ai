@@ -16,13 +16,13 @@ from great_kingdom_ai.game_core import (
     flat_features_for_replay,
 )
 from great_kingdom_ai.replay.sample import ReplaySample
-from great_kingdom_ai.self_play_data import (
-    policy_target_from_visit_counts,
-    value_target_for_player,
-)
 from great_kingdom_ai.replay.terminal_board import (
     terminal_board_from_flat,
     terminal_board_to_flat_values,
+)
+from great_kingdom_ai.self_play_data import (
+    policy_target_from_visit_counts,
+    value_target_for_player,
 )
 from great_kingdom_ai.self_play_types import (
     PASS_ACTION,

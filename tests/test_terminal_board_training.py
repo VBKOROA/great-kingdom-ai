@@ -124,7 +124,10 @@ def test_terminal_board_preset_enables_head() -> None:
     assert policy.shape == (1, ACTION_SPACE)
     assert value.shape == (1,)
     assert MODEL_PRESETS["strong_attn_terminal_board"].terminal_board_head is True
-    assert MODEL_PRESETS["strong_attn_terminal_board"].channels == MODEL_PRESETS["strong_attn"].channels
+    assert (
+        MODEL_PRESETS["strong_attn_terminal_board"].channels
+        == MODEL_PRESETS["strong_attn"].channels
+    )
     assert MODEL_PRESETS["strong_attn"].terminal_board_head is False
 
 
@@ -157,7 +160,7 @@ def test_aux_loss_matches_hand_computed_weighted_mean() -> None:
     )
     assert loss is not None
     assert float(loss) == pytest.approx(log4)
-    assert stats["terminal_board_valid_count"] == 2
+    assert stats.valid_count == 2
 
     # A one-hot logit for sample 0 makes its cell loss exactly zero.
     aux_logits = torch.full((2, 4, BOARD_SIZE, BOARD_SIZE), -20.0)
@@ -183,7 +186,7 @@ def test_aux_loss_with_no_valid_targets_is_zero() -> None:
     )
     assert loss is not None
     assert float(loss) == 0.0
-    assert stats["terminal_board_valid_count"] == 0
+    assert stats.valid_count == 0
 
 
 def test_lambda_zero_keeps_existing_loss_and_skips_head() -> None:

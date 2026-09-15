@@ -5,7 +5,11 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from great_kingdom_ai.augmentation import ALL_SYMMETRIES, augment_sample, augment_training_arrays_randomly
+from great_kingdom_ai.augmentation import (
+    ALL_SYMMETRIES,
+    augment_sample,
+    augment_training_arrays_randomly,
+)
 from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS, PASS_ACTION
 from great_kingdom_ai.replay import (
     TrajectoryEpisode,

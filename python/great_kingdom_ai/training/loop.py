@@ -102,7 +102,11 @@ def compute_losses(
             "terminal_board_loss_weight > 0 requires a model with a terminal board head"
         )
     if aux_active:
-        policy_logits, value, aux_logits = model.forward_with_aux(batch.features)
+        forward_with_aux = cast(
+            "Callable[[Tensor], tuple[Tensor, Tensor, Tensor]]",
+            getattr(model, "forward_with_aux"),
+        )
+        policy_logits, value, aux_logits = forward_with_aux(batch.features)
     else:
         policy_logits, value = model(batch.features)
         aux_logits = None
@@ -145,7 +149,11 @@ def compute_losses(
         per_sample_policy_kl=per_sample_policy_kl,
         per_sample_value_abs_error=per_sample_value_error.abs(),
         terminal_board_loss=terminal_loss,
-        **terminal_stats,
+        terminal_board_valid_ratio=terminal_stats.valid_ratio,
+        terminal_board_valid_count=terminal_stats.valid_count,
+        terminal_board_accuracy=terminal_stats.accuracy,
+        terminal_board_blank_accuracy=terminal_stats.blank_accuracy,
+        terminal_board_blank_count=terminal_stats.blank_count,
     )
 
 def train_step(state: TrainState, batch: TrainingBatch, config: TrainingConfig) -> LossBreakdown:
@@ -283,37 +291,37 @@ def train_from_replay(
         losses=losses,
     )
 
+@dataclass(frozen=True)
+class _TerminalBoardAuxStats:
+    valid_ratio: float = 0.0
+    valid_count: int = 0
+    accuracy: float = 0.0
+    blank_accuracy: float = 0.0
+    blank_count: int = 0
+
+
 def _terminal_board_aux_loss(
     torch: Any,
     *,
     aux_logits: torch.Tensor | None,
     batch: TrainingBatch,
     enabled: bool,
-) -> tuple[torch.Tensor | None, dict[str, float | int]]:
+) -> tuple[torch.Tensor | None, _TerminalBoardAuxStats]:
     if not enabled:
-        return None, {}
-    stats: dict[str, float | int] = {
-        "terminal_board_valid_ratio": 0.0,
-        "terminal_board_valid_count": 0,
-        "terminal_board_accuracy": 0.0,
-        "terminal_board_blank_accuracy": 0.0,
-        "terminal_board_blank_count": 0,
-    }
+        return None, _TerminalBoardAuxStats()
     target = batch.terminal_board_target
     valid = batch.terminal_board_valid
     device = batch.features.device
     dtype = aux_logits.dtype if aux_logits is not None else torch.float32
     zero = torch.zeros((), device=device, dtype=dtype)
     if aux_logits is None or target is None or valid is None:
-        return zero, stats
+        return zero, _TerminalBoardAuxStats()
 
     batch_size = int(valid.shape[0])
     valid_count = int(valid.sum().detach().cpu())
-    stats["terminal_board_valid_count"] = valid_count
-    if batch_size > 0:
-        stats["terminal_board_valid_ratio"] = valid_count / batch_size
+    valid_ratio = valid_count / batch_size if batch_size > 0 else 0.0
     if valid_count == 0:
-        return zero, stats
+        return zero, _TerminalBoardAuxStats(valid_ratio=valid_ratio)
 
     valid_indexes = valid.nonzero(as_tuple=False).squeeze(1)
     logits = aux_logits.index_select(0, valid_indexes)
@@ -322,20 +330,26 @@ def _terminal_board_aux_loss(
     per_cell_loss = torch.nn.functional.cross_entropy(logits, targets, reduction="none")
     board_loss = per_cell_loss.reshape(valid_count, -1).mean(dim=1)
     loss = (board_loss * weights).sum() / weights.sum()
+    accuracy = 0.0
+    blank_accuracy = 0.0
+    blank_count = 0
     with torch.no_grad():
         predictions = logits.argmax(dim=1)
         correct = predictions == targets
         total_cells = int(correct.numel())
         if total_cells > 0:
-            stats["terminal_board_accuracy"] = float(correct.sum().cpu()) / total_cells
+            accuracy = float(correct.sum().cpu()) / total_cells
         blank_mask = targets == 0
         blank_count = int(blank_mask.sum().cpu())
-        stats["terminal_board_blank_count"] = blank_count
         if blank_count > 0:
-            stats["terminal_board_blank_accuracy"] = (
-                float((correct & blank_mask).sum().cpu()) / blank_count
-            )
-    return loss, stats
+            blank_accuracy = float((correct & blank_mask).sum().cpu()) / blank_count
+    return loss, _TerminalBoardAuxStats(
+        valid_ratio=valid_ratio,
+        valid_count=valid_count,
+        accuracy=accuracy,
+        blank_accuracy=blank_accuracy,
+        blank_count=blank_count,
+    )
 
 
 def _l2_regularization(model: nn.Module) -> torch.Tensor:
