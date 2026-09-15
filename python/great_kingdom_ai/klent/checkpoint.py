@@ -28,28 +28,37 @@ class KlentTrainState:
     model_preset: str
     last_shard: str | None = None
     scaler: Any | None = None
+    run_id: str = ""
 
 
 def save_klent_checkpoint(state: KlentTrainState, path: str | Path) -> Path:
+    """Write a checkpoint atomically so interrupted saves cannot corrupt the target."""
     torch = _import_torch()
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "algorithm": KLENT_ALGORITHM,
-            "iteration": state.iteration,
-            "total_steps": state.total_steps,
-            "model_preset": state.model_preset,
-            "model_config": asdict(state.model.config),
-            "klent_config": asdict(state.klent_config),
-            "model_state": state.model.state_dict(),
-            "optimizer": _optimizer_type(state.optimizer),
-            "optimizer_state": state.optimizer.state_dict(),
-            "scaler_state": None if state.scaler is None else state.scaler.state_dict(),
-            "last_shard": state.last_shard,
-        },
-        destination,
-    )
+    temporary = destination.with_name(f".{destination.name}.tmp")
+    try:
+        torch.save(
+            {
+                "algorithm": KLENT_ALGORITHM,
+                "iteration": state.iteration,
+                "total_steps": state.total_steps,
+                "model_preset": state.model_preset,
+                "model_config": asdict(state.model.config),
+                "klent_config": asdict(state.klent_config),
+                "model_state": state.model.state_dict(),
+                "optimizer": _optimizer_type(state.optimizer),
+                "optimizer_state": state.optimizer.state_dict(),
+                "scaler_state": None if state.scaler is None else state.scaler.state_dict(),
+                "last_shard": state.last_shard,
+                "run_id": state.run_id,
+            },
+            temporary,
+        )
+        temporary.replace(destination)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
     return destination
 
 
@@ -103,7 +112,16 @@ def load_klent_checkpoint(
             None if checkpoint.get("last_shard") is None else str(checkpoint["last_shard"])
         ),
         scaler=scaler,
+        run_id=str(checkpoint.get("run_id", "")),
     )
+
+
+def read_klent_checkpoint_run_id(path: str | Path) -> str:
+    """Read the run identifier without rebuilding the model, for resume filtering."""
+    torch = _import_torch()
+    checkpoint = torch.load(Path(path), map_location="cpu", weights_only=False)
+    _validate_klent_checkpoint(checkpoint)
+    return str(checkpoint.get("run_id", ""))
 
 
 def warm_start_klent_model(
@@ -180,6 +198,7 @@ def _optimizer_type(optimizer: Optimizer) -> str:
 __all__ = [
     "KlentTrainState",
     "load_klent_checkpoint",
+    "read_klent_checkpoint_run_id",
     "save_klent_checkpoint",
     "warm_start_klent_model",
 ]

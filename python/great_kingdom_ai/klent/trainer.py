@@ -9,7 +9,9 @@ publication did not, instead of retraining or mixing partial state.
 
 from __future__ import annotations
 
+import json
 import random
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -22,6 +24,7 @@ from great_kingdom_ai.klent._torch import _import_torch
 from great_kingdom_ai.klent.checkpoint import (
     KlentTrainState,
     load_klent_checkpoint,
+    read_klent_checkpoint_run_id,
     save_klent_checkpoint,
     warm_start_klent_model,
 )
@@ -48,6 +51,8 @@ if TYPE_CHECKING:
     from torch.optim import Optimizer
 
     from great_kingdom_ai.replay import TrajectoryEpisode
+
+_ACTOR_OVERRIDE_TOLERANCE = 1e-2
 
 
 @dataclass(frozen=True)
@@ -206,6 +211,7 @@ def run_klent_iteration(
         model_preset=config.model_preset,
         last_shard=str(shard_path),
         scaler=state.scaler,
+        run_id=state.run_id,
     )
     checkpoint_path = _iteration_checkpoint_path(config.work_dir, next_iteration)
     save_klent_checkpoint(next_state, checkpoint_path)
@@ -403,16 +409,21 @@ def _actor_onnx_for_iteration(
 ) -> Path:
     """Return the actor model that matches the frozen iteration model.
 
-    ``actor_onnx_path`` is only an initial (iteration 0) override. Later
-    iterations always export an actor from their own frozen checkpoint so the
-    shard records and the collected behavior cannot diverge.
+    ``actor_onnx_path`` is only an initial (iteration 0) override, and it is
+    used only after its outputs are verified against the learner checkpoint so
+    the shard records and the collected behavior cannot diverge. Later
+    iterations always export an actor from their own frozen checkpoint.
     """
     if config.actor_onnx_path is not None and iteration == 0:
-        if not config.actor_onnx_path.exists():
-            raise FileNotFoundError(f"actor ONNX model is missing: {config.actor_onnx_path}")
-        return config.actor_onnx_path
+        provided = config.actor_onnx_path
+        if not provided.exists():
+            raise FileNotFoundError(f"actor ONNX model is missing: {provided}")
+        source_checkpoint = _actor_source_checkpoint_path(config.work_dir, iteration)
+        save_klent_checkpoint(state, source_checkpoint)
+        _verify_actor_override(source_checkpoint, provided)
+        return provided
 
-    source_checkpoint = config.work_dir / "checkpoints" / f"actor-source-{iteration:04d}.pt"
+    source_checkpoint = _actor_source_checkpoint_path(config.work_dir, iteration)
     save_klent_checkpoint(state, source_checkpoint)
     actor_path = config.work_dir / "onnx" / f"actor-source-{iteration:04d}.onnx"
     export_checkpoint_to_onnx(
@@ -423,6 +434,35 @@ def _actor_onnx_for_iteration(
         precision=config.onnx_precision,
     )
     return actor_path
+
+
+def _verify_actor_override(checkpoint_path: Path, actor_onnx_path: Path) -> None:
+    from great_kingdom_ai.klent.export import compare_klent_checkpoint_to_onnx
+
+    try:
+        summary = compare_klent_checkpoint_to_onnx(
+            checkpoint_path,
+            actor_onnx_path,
+            kind="actor",
+            tolerance=_ACTOR_OVERRIDE_TOLERANCE,
+        )
+    except ValueError as error:
+        raise RuntimeError(
+            f"actor_onnx_path {actor_onnx_path} cannot be compared with the "
+            f"iteration 0 learner checkpoint: {error}"
+        ) from error
+    if summary.passed:
+        return
+    raise RuntimeError(
+        f"actor_onnx_path {actor_onnx_path} does not match the iteration 0 "
+        f"learner checkpoint (policy diff {summary.max_policy_abs_diff:.3g}, "
+        f"value diff {summary.max_value_abs_diff:.3g}); start the learner from "
+        "the matching warm_start_checkpoint or drop actor_onnx_path"
+    )
+
+
+def _actor_source_checkpoint_path(work_dir: Path, iteration: int) -> Path:
+    return work_dir / "checkpoints" / f"actor-source-{iteration:04d}.pt"
 
 
 def _klent_batch_from_indexes(
@@ -469,15 +509,15 @@ def _initial_state(config: KlentTrainConfig, *, resume: bool) -> KlentTrainState
     from great_kingdom_ai.training.checkpoint import create_optimizer
     from great_kingdom_ai.training.config import TrainingConfig
 
+    run_id = _resolve_run_id(config, resume=resume)
     if resume:
-        recovered = _resume_from_iteration_checkpoint(config)
+        recovered = _resume_from_iteration_checkpoint(config, run_id)
         if recovered is not None:
             return recovered
         latest = _latest_checkpoint_path(config.work_dir)
-        if latest.exists():
+        if latest.exists() and _readable_checkpoint_run_id(latest) == run_id:
             state = _load_state(latest, config)
-            _ensure_published(config, state)
-            _publish_latest_checkpoint(config.work_dir, state.iteration)
+            _ensure_published(config, state, source_path=latest)
             return state
 
     if config.warm_start_checkpoint is not None:
@@ -517,6 +557,7 @@ def _initial_state(config: KlentTrainConfig, *, resume: bool) -> KlentTrainState
         klent_config=config.klent,
         model_preset=config.model_preset,
         scaler=scaler,
+        run_id=run_id,
     )
 
 
@@ -536,29 +577,36 @@ def _load_state(path: Path, config: KlentTrainConfig) -> KlentTrainState:
 
 def _resume_from_iteration_checkpoint(
     config: KlentTrainConfig,
+    run_id: str,
 ) -> KlentTrainState | None:
-    """Resume from the newest iteration checkpoint, completing pending publication.
+    """Resume from the newest usable iteration checkpoint of the active run.
 
     Iteration checkpoints are written before ONNX publication, so a crash
     between training and publication is recovered by publishing from the
-    existing checkpoint instead of retraining the iteration.
+    existing checkpoint instead of retraining the iteration. Checkpoints from
+    other runs and interrupted (unreadable) files are skipped.
     """
-    checkpoints = _iteration_checkpoints(config.work_dir)
-    if not checkpoints:
-        return None
-    iteration, path = checkpoints[-1]
-    state = _load_state(path, config)
-    if state.iteration != iteration:
-        raise ValueError(
-            f"iteration checkpoint {path} stores iteration {state.iteration} "
-            f"but is named for {iteration}"
-        )
-    _ensure_published(config, state)
-    _publish_latest_checkpoint(config.work_dir, state.iteration)
-    return state
+    for iteration, path in reversed(_iteration_checkpoints(config.work_dir)):
+        if _readable_checkpoint_run_id(path) != run_id:
+            continue
+        state = _load_state(path, config)
+        if state.iteration != iteration:
+            raise ValueError(
+                f"iteration checkpoint {path} stores iteration {state.iteration} "
+                f"but is named for {iteration}"
+            )
+        _ensure_published(config, state)
+        _publish_latest_checkpoint(config.work_dir, state.iteration)
+        return state
+    return None
 
 
-def _ensure_published(config: KlentTrainConfig, state: KlentTrainState) -> None:
+def _ensure_published(
+    config: KlentTrainConfig,
+    state: KlentTrainState,
+    *,
+    source_path: Path | None = None,
+) -> None:
     if not config.export_onnx:
         return
     try:
@@ -567,7 +615,13 @@ def _ensure_published(config: KlentTrainConfig, state: KlentTrainState) -> None:
         pointer = None
     if pointer is not None and pointer.model_version >= state.iteration:
         return
-    checkpoint_path = _iteration_checkpoint_path(config.work_dir, state.iteration)
+    checkpoint_path = (
+        source_path
+        if source_path is not None
+        else _iteration_checkpoint_path(config.work_dir, state.iteration)
+    )
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"KLENT checkpoint for publication is missing: {checkpoint_path}")
     publish_klent_onnx_artifacts(
         checkpoint_path,
         config.work_dir,
@@ -587,6 +641,68 @@ def _publish_latest_checkpoint(work_dir: Path, iteration: int) -> None:
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"iteration checkpoint is missing: {checkpoint_path}")
     copy_file_atomic(checkpoint_path, _latest_checkpoint_path(work_dir))
+
+
+def _resolve_run_id(config: KlentTrainConfig, *, resume: bool) -> str:
+    """Return the active run id, rotating it for fresh runs.
+
+    Iteration checkpoints embed the run id so a ``--no-resume`` restart cannot
+    later resume into the previous run's checkpoints.
+    """
+    marker = _run_marker_path(config.work_dir)
+    if resume and marker.exists():
+        return _read_run_id(marker)
+    if resume:
+        run_id = _newest_known_run_id(config.work_dir)
+    else:
+        run_id = uuid.uuid4().hex
+    _write_run_id(marker, run_id)
+    return run_id
+
+
+def _newest_known_run_id(work_dir: Path) -> str:
+    """Adopt the run id of an existing directory that predates run markers."""
+    candidates = [path for _iteration, path in reversed(_iteration_checkpoints(work_dir))]
+    candidates.append(_latest_checkpoint_path(work_dir))
+    for path in candidates:
+        if not path.exists():
+            continue
+        run_id = _readable_checkpoint_run_id(path)
+        if run_id is not None:
+            return run_id
+    return ""
+
+
+def _readable_checkpoint_run_id(path: Path) -> str | None:
+    try:
+        return read_klent_checkpoint_run_id(path)
+    except Exception:
+        return None
+
+
+def _run_marker_path(work_dir: Path) -> Path:
+    return work_dir / "checkpoints" / "run.json"
+
+
+def _read_run_id(path: Path) -> str:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or "run_id" not in data:
+        raise ValueError(f"KLENT run marker is malformed: {path}")
+    return str(data["run_id"])
+
+
+def _write_run_id(path: Path, run_id: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps({"run_id": run_id}, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def _iteration_checkpoints(work_dir: Path) -> list[tuple[int, Path]]:

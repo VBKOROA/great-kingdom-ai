@@ -20,6 +20,7 @@ from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, FEATURE_CHANNELS
 from great_kingdom_ai.klent.checkpoint import (  # noqa: E402
     KlentTrainState,
     load_klent_checkpoint,
+    save_klent_checkpoint,
     warm_start_klent_model,
 )
 from great_kingdom_ai.klent.publish import (  # noqa: E402
@@ -115,6 +116,66 @@ def test_run_klent_training_resumes_from_latest_checkpoint(tmp_path: Path) -> No
     assert latest.iteration == 2
     assert latest.total_steps > 0
     assert latest.last_shard is not None
+
+
+@requires_core
+def test_fresh_run_does_not_adopt_previous_run_checkpoints(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    run_klent_training(config, iterations=2)
+    latest_path = config.work_dir / "checkpoints" / "latest.pt"
+
+    run_klent_training(config, iterations=1, resume=False)
+    fresh = load_klent_checkpoint(latest_path)
+    assert fresh.iteration == 1
+
+    resumed = run_klent_training(config, iterations=2)
+
+    assert [summary.iteration for summary in resumed] == [1]
+    trained = load_klent_checkpoint(latest_path)
+    assert trained.iteration == 2
+    assert trained.total_steps > fresh.total_steps
+
+
+@requires_core
+def test_resume_skips_corrupt_iteration_checkpoint(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    run_klent_training(config, iterations=1)
+    corrupt = config.work_dir / "checkpoints" / "iteration-0002.pt"
+    corrupt.write_bytes(b"truncated checkpoint")
+
+    resumed = run_klent_training(config, iterations=2)
+
+    assert [summary.iteration for summary in resumed] == [1]
+    repaired = load_klent_checkpoint(corrupt)
+    assert repaired.iteration == 2
+
+
+@requires_core
+def test_resume_falls_back_to_latest_checkpoint(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    run_klent_training(config, iterations=1)
+    (config.work_dir / "checkpoints" / "iteration-0001.pt").unlink()
+
+    resumed = run_klent_training(config, iterations=2)
+
+    assert [summary.iteration for summary in resumed] == [1]
+    latest = load_klent_checkpoint(config.work_dir / "checkpoints" / "latest.pt")
+    assert latest.iteration == 2
+
+
+@requires_core
+@requires_onnx
+def test_resume_republishes_from_latest_checkpoint(tmp_path: Path) -> None:
+    config = make_config(tmp_path, export_onnx=True, onnx_precision="fp32")
+    run_klent_training(config, iterations=1)
+    (config.work_dir / "checkpoints" / "iteration-0001.pt").unlink()
+    (config.work_dir / "onnx" / "current.json").unlink()
+
+    resumed = run_klent_training(config, iterations=1)
+
+    assert resumed == []
+    pointer = load_klent_onnx_pointer(config.work_dir)
+    assert pointer.model_version == 1
 
 
 @requires_core
@@ -225,6 +286,40 @@ def test_load_klent_checkpoint_rejects_foreign_algorithm(tmp_path: Path) -> None
 
     with pytest.raises(ValueError, match="algorithm"):
         load_klent_checkpoint(path)
+
+
+def test_save_klent_checkpoint_keeps_previous_file_on_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = create_model("small_klent")
+    optimizer = create_optimizer(
+        torch,
+        model,
+        TrainingConfig(model_preset="small_klent", learning_rate=1e-2, device="cpu"),
+    )
+    state = KlentTrainState(
+        model=model,
+        optimizer=optimizer,
+        iteration=1,
+        total_steps=0,
+        klent_config=KlentConfig(),
+        model_preset="small_klent",
+    )
+    path = tmp_path / "iteration-0001.pt"
+    save_klent_checkpoint(state, path)
+
+    def failing_save(obj: object, f: object, *args: object, **kwargs: object) -> None:
+        Path(f).write_bytes(b"partial checkpoint")  # type: ignore[arg-type]
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(torch, "save", failing_save)
+
+    with pytest.raises(RuntimeError, match="disk full"):
+        save_klent_checkpoint(state, path)
+
+    assert not (tmp_path / ".iteration-0001.pt.tmp").exists()
+    assert load_klent_checkpoint(path).iteration == 1
 
 
 def test_warm_start_klent_model_copies_backbone_and_initializes_q_head(
@@ -380,7 +475,10 @@ def test_rust_collection_fails_when_min_transitions_is_not_reached(tmp_path: Pat
         _collect_with_rust_actor(state, config, 0)
 
 
+@requires_onnx
 def test_actor_path_override_only_applies_to_first_iteration(tmp_path: Path) -> None:
+    from great_kingdom_ai.klent.export import export_klent_checkpoint_to_onnx
+
     model = create_model("small_klent")
     optimizer = create_optimizer(
         torch,
@@ -396,7 +494,8 @@ def test_actor_path_override_only_applies_to_first_iteration(tmp_path: Path) -> 
         model_preset="small_klent",
     )
     provided_actor = tmp_path / "provided-actor.onnx"
-    provided_actor.write_bytes(b"placeholder")
+    source = save_klent_checkpoint(state, tmp_path / "provided-source.pt")
+    export_klent_checkpoint_to_onnx(source, provided_actor, kind="actor")
     config = make_config(tmp_path, actor_onnx_path=provided_actor)
     (config.work_dir / "onnx").mkdir(parents=True, exist_ok=True)
     exported: list[Path] = []
@@ -412,6 +511,53 @@ def test_actor_path_override_only_applies_to_first_iteration(tmp_path: Path) -> 
     assert second.name == "actor-source-0001.onnx"
     assert second != provided_actor
     assert exported == [second]
+
+
+@requires_onnx
+def test_actor_path_override_mismatch_is_rejected(tmp_path: Path) -> None:
+    from great_kingdom_ai.klent.export import export_klent_checkpoint_to_onnx
+
+    model = create_model("small_klent")
+    optimizer = create_optimizer(
+        torch,
+        model,
+        TrainingConfig(model_preset="small_klent", learning_rate=1e-2, device="cpu"),
+    )
+    state = KlentTrainState(
+        model=model,
+        optimizer=optimizer,
+        iteration=0,
+        total_steps=0,
+        klent_config=KlentConfig(),
+        model_preset="small_klent",
+    )
+    other = create_model("small_klent")
+    other_optimizer = create_optimizer(
+        torch,
+        other,
+        TrainingConfig(model_preset="small_klent", learning_rate=1e-2, device="cpu"),
+    )
+    other_state = KlentTrainState(
+        model=other,
+        optimizer=other_optimizer,
+        iteration=0,
+        total_steps=0,
+        klent_config=KlentConfig(),
+        model_preset="small_klent",
+    )
+    other_checkpoint = save_klent_checkpoint(other_state, tmp_path / "other.pt")
+    mismatched_actor = tmp_path / "mismatched-actor.onnx"
+    export_klent_checkpoint_to_onnx(other_checkpoint, mismatched_actor, kind="actor")
+    config = make_config(tmp_path, actor_onnx_path=mismatched_actor)
+    exported: list[Path] = []
+
+    def fake_export(checkpoint: object, output: Path, **kwargs: object) -> None:
+        exported.append(Path(output))
+
+    with pytest.raises(RuntimeError, match="actor_onnx_path"):
+        _actor_onnx_for_iteration(state, config, 0, fake_export)
+
+    assert exported == []
 
 
 @requires_core
