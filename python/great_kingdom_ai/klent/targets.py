@@ -177,7 +177,7 @@ def _validate_action_tensors(
             f"{tuple(policy_logits.shape)}, {tuple(q_values.shape)}, "
             f"{tuple(legal_mask.shape)}"
         )
-    if policy_logits.shape[1] == 0:
+    if not _is_tracing(torch) and policy_logits.shape[1] == 0:
         raise ValueError("action dimension must be non-empty")
     del torch
 
