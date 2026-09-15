@@ -4,54 +4,64 @@ device: cuda
 seed: 20260522
 
 # Training chunk
+# Unbenchmarked starting point for one actor + learner sharing an RTX 3090 24GB.
 batch_size: 512
-steps: 512
+# Maximum steps per --loop chunk; the replay budget can shorten a chunk.
+steps: 128
 amp: true
-prefetch_batches: 8
+prefetch_batches: 2
 
 # Optimizer
 optimizer: adamw
 learning_rate: 0.0003
-momentum: 0.9
-nesterov: false
+# SGD-only options (unused by AdamW).
+# momentum: 0.9
+# nesterov: false
 weight_decay: 0.01
 gradient_clip_norm: 5.0
 
 # Loss
 value_loss_weight: 1.0
 policy_loss_weight: 1.0
+# AdamW already applies weight decay.
 l2_loss_weight: 0.0
+# strong_attn has no terminal-board head.
+terminal_board_loss_weight: 0.0
 mask_policy_loss: true
 
 # Learning-rate schedule
-lr_schedule: warmup_cosine
-lr_decay_gamma: 0.99
-lr_decay_steps: 1000
-lr_warmup_steps: 2000
-lr_min_factor: 0.1
-lr_cosine_steps: 200000
+# Continuous self-play has no fixed final step; warm up, then keep adapting.
+# These are initialization defaults; resume retains checkpoint step/optimizer state.
+lr_schedule: constant_with_warmup
+lr_warmup_steps: 512
+# Unused by constant_with_warmup.
+# lr_decay_gamma: 0.99
+# lr_decay_steps: 1000
+# lr_min_factor: 0.1
+# lr_cosine_steps: 200000
 
 # Data augmentation and recency sampling
 symmetry_augmentation: true
 recent_sample_fraction: 0.0
-recent_sample_window: 262144
+# recent_sample_window: 262144
 
 # Value target bootstrap
 bootstrap_td_steps: 0
-gamma: 1.0
-value_bootstrap_source: terminal
+# gamma: 1.0
+# value_bootstrap_source: terminal
 
 # Prioritized replay
 priority_enabled: false
-priority_alpha: 0.4
-priority_beta: 0.4
-priority_value_error_weight: 0.5
-priority_policy_kl_weight: 1.0
-priority_target_age_weight: 0.1
-priority_search_reanalyzed_boost: 1.0
-priority_max_priority: 8.0
-priority_epsilon: 0.001
-priority_ema: 0.9
+# priority_alpha: 0.4
+# priority_beta: 0.4
+# priority_value_error_weight: 0.5
+# priority_policy_kl_weight: 1.0
+# priority_target_age_weight: 0.1
+# priority_search_reanalyzed_boost: 1.0
+# priority_max_priority: 8.0
+# priority_epsilon: 0.001
+# priority_ema: 0.9
 
 # Exponential moving average model
+# Weight half-life ~693 optimizer steps, independent of chunk boundaries.
 ema_decay: 0.999

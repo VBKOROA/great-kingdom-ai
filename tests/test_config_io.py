@@ -16,12 +16,12 @@ def test_runpod_yaml_configs_load_with_existing_values() -> None:
     assert actor.work_dir == Path("data/runpod/train-strong-attn")
     assert actor.ema_opponent_fraction == 0.25
     assert actor.self_play.gumbel_simulations == 64
-    assert actor.self_play.playout_cap_fast_simulations == 32
+    assert actor.self_play.playout_cap_fast_simulations == 16
 
     assert learner.work_dir == actor.work_dir
     assert learner.source_checkpoint is None
-    assert learner.replay_capacity == 1_048_576
-    assert learner.train_reuse_factor == 8.0
+    assert learner.replay_capacity == 262_144
+    assert learner.train_reuse_factor == 4.0
 
     assert training.model_preset == "strong_attn"
     assert training.batch_size == 512

@@ -6,20 +6,23 @@ ema_opponent_fraction: 0.25
 model_version: training-latest
 
 # Shard generation
-games: 64
+games: 256
 seed_start: 0
 
 # ONNX and self-play batching
+# Unbenchmarked starting point for RTX 3090 24GB, FP16 strong_attn, and a shared learner.
+# With 25% EMA opponents, 256 games run as 192 raw games then 64 mixed games.
 onnx_device: cuda
-onnx_max_batch_size: 1024
-rust_self_play_batch_size: 64
+onnx_max_batch_size: 512
+rust_self_play_batch_size: 256
 
 self_play:
   # Search budget
   max_turns: 112
   gumbel_simulations: 64
   gumbel_max_considered_actions: 16
-  leaf_batch_size: 1024
+  # Per-game pending leaves; favor cross-game batching for 16/64-simulation search.
+  leaf_batch_size: 4
 
   # Gumbel search tuning
   gumbel_c_visit: 50.0
@@ -36,10 +39,10 @@ self_play:
   temperature_turns: 0
   sampling_temperature: 1.0
 
-  # Playout cap randomization (disabled; values are retained for easy activation)
-  playout_cap_randomization: false
+  # Playout cap randomization
+  playout_cap_randomization: true
   playout_cap_full_search_fraction: 0.25
-  playout_cap_full_simulations: 128
-  playout_cap_fast_simulations: 32
-  playout_cap_full_max_considered_actions: 8
+  playout_cap_full_simulations: 64
+  playout_cap_fast_simulations: 16
+  playout_cap_full_max_considered_actions: 16
   playout_cap_fast_max_considered_actions: 4

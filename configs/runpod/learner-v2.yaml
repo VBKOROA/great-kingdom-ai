@@ -2,9 +2,13 @@
 work_dir: data/runpod/train-strong-attn
 
 # Replay and training cadence
-replay_capacity: 1048576
+# Unbenchmarked starting point: one actor + learner on a shared RTX 3090.
+# Retained training transitions, not games; keep uniform replay reasonably fresh.
+replay_capacity: 262144
+# 32 training batches at batch_size=512 before the first update.
 min_replay_transitions: 16384
-train_reuse_factor: 8.0
+# In --loop, each new transition adds four sampled training rows to the budget.
+train_reuse_factor: 4.0
 
 # Checkpoint loading and output overrides
 source_checkpoint: null
