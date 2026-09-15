@@ -23,6 +23,12 @@ from great_kingdom_ai.replay.schema import (
     TrajectoryEpisode,
     TrajectoryTransition,
 )
+from great_kingdom_ai.replay.terminal_board import (
+    NEUTRAL_CELL,
+    TERMINAL_BOARD_ENCODING,
+    TERMINAL_BOARD_SHAPE,
+    validate_absolute_terminal_board,
+)
 
 
 @dataclass
@@ -60,6 +66,9 @@ class TrajectoryReplayStore:
     root_policy_logits_present: np.ndarray | None = None
     next_features: np.ndarray | None = None
     next_features_present: np.ndarray | None = None
+    terminal_boards: np.ndarray | None = None
+    terminal_board_present: np.ndarray | None = None
+    terminal_board_encoding: str = TERMINAL_BOARD_ENCODING
 
     @classmethod
     def empty(cls, capacity: int) -> TrajectoryReplayStore:
@@ -91,6 +100,7 @@ class TrajectoryReplayStore:
         else:
             features = None
             transition_count = int(np.asarray(data["timesteps"]).shape[0])
+        episode_count = int(np.asarray(data["episode_ids"]).shape[0])
         _validate_payload_lengths(data, transition_count)
         turn_offsets, turn_players, turn_actions, turn_root_values, turn_full_search = (
             _load_turn_timeline(data)
@@ -105,6 +115,13 @@ class TrajectoryReplayStore:
             key="next_features",
             shape=(transition_count, *FEATURE_SHAPE),
         )
+        terminal_boards, terminal_board_present = _load_optional_episode_array(
+            data,
+            key="terminal_boards",
+            shape=(episode_count, *TERMINAL_BOARD_SHAPE),
+            dtype=np.uint8,
+        )
+        terminal_board_encoding = _load_terminal_board_encoding(data)
         table, ids = _load_search_config_hash_encoding(data, transition_count)
         store = cls(
             capacity=capacity,
@@ -144,6 +161,11 @@ class TrajectoryReplayStore:
             ),
             next_features=next_features if next_features_present.any() else None,
             next_features_present=next_features_present if next_features_present.any() else None,
+            terminal_boards=terminal_boards if terminal_board_present.any() else None,
+            terminal_board_present=(
+                terminal_board_present if terminal_board_present.any() else None
+            ),
+            terminal_board_encoding=terminal_board_encoding,
         )
         store.validate()
         return store
@@ -213,6 +235,20 @@ class TrajectoryReplayStore:
                 raise ValueError("trajectory replay next_features shape mismatch")
             if self.next_features_present is None:
                 raise ValueError("trajectory replay next_features_present missing")
+        if self.terminal_boards is not None:
+            if self.terminal_boards.shape != (self.episode_count, *TERMINAL_BOARD_SHAPE):
+                raise ValueError("trajectory replay terminal_boards shape mismatch")
+            if self.terminal_board_present is None:
+                raise ValueError("trajectory replay terminal_board_present missing")
+            if self.terminal_board_present.shape != (self.episode_count,):
+                raise ValueError("trajectory replay terminal_board_present length mismatch")
+            if np.any(self.terminal_boards[self.terminal_board_present] > NEUTRAL_CELL):
+                raise ValueError("trajectory replay terminal_boards contain invalid cells")
+        if self.terminal_board_encoding != TERMINAL_BOARD_ENCODING:
+            raise ValueError(
+                "trajectory replay terminal_board_encoding is not supported: "
+                f"{self.terminal_board_encoding!r}"
+            )
         if self.search_config_hash_ids.shape != (len(self),):
             raise ValueError("trajectory replay search_config_hash_ids length mismatch")
         if np.any(self.search_config_hash_ids < 0) or np.any(
@@ -352,6 +388,13 @@ class TrajectoryReplayStore:
         if self.next_features is not None and self.next_features_present is not None:
             payload["next_features"] = self.next_features
             payload["next_features_present"] = self.next_features_present
+        if self.terminal_boards is not None and self.terminal_board_present is not None:
+            payload["terminal_boards"] = self.terminal_boards
+            payload["terminal_board_present"] = self.terminal_board_present
+            payload["terminal_board_encoding"] = np.asarray(
+                self.terminal_board_encoding,
+                dtype=np.str_,
+            )
         return payload
 
     def transitions(self) -> list[TrajectoryTransition]:
@@ -397,6 +440,7 @@ def trajectory_episode_from_self_play_result(
     model_version: int = 0,
     search_config_hash: str = "",
     created_iteration: int = 0,
+    terminal_board: np.ndarray | None = None,
 ) -> TrajectoryEpisode:
     """Build a trajectory episode from a self-play game log and per-turn samples.
 
@@ -440,6 +484,11 @@ def trajectory_episode_from_self_play_result(
         winner=int(log.winner),
         end_reason=int(log.end_reason),
         territory_scores=log.territory_scores,
+        terminal_board=(
+            None
+            if terminal_board is None
+            else validate_absolute_terminal_board(terminal_board).copy()
+        ),
     )
 
 
@@ -487,6 +536,11 @@ def _validated_episode(episode: TrajectoryEpisode) -> TrajectoryEpisode:
         turn_actions=episode.turn_actions,
         turn_root_values=episode.turn_root_values,
         turn_full_search=episode.turn_full_search,
+        terminal_board=(
+            None
+            if episode.terminal_board is None
+            else validate_absolute_terminal_board(episode.terminal_board).copy()
+        ),
     )
 
 
@@ -694,6 +748,10 @@ def _episodes_to_payload(
     _add_optional_4d(payload, "next_features", [
         transition.next_features for transition in transitions
     ], FEATURE_SHAPE)
+    _add_optional_episode_boards(
+        payload,
+        [episode.terminal_board for episode in episodes],
+    )
     return payload
 
 
@@ -825,6 +883,13 @@ def _episode_from_store(
         turn_actions=store.turn_actions[turn_start:turn_end].copy(),
         turn_root_values=store.turn_root_values[turn_start:turn_end].copy(),
         turn_full_search=store.turn_full_search[turn_start:turn_end].copy(),
+        terminal_board=(
+            store.terminal_boards[episode_index].copy()
+            if store.terminal_boards is not None
+            and store.terminal_board_present is not None
+            and store.terminal_board_present[episode_index]
+            else None
+        ),
     )
 
 
@@ -893,6 +958,12 @@ def _concat_many_stores(
     )
     _add_optional_concat_many(payload, stores, "root_policy_logits", (ACTION_SPACE,))
     _add_optional_concat_many(payload, stores, "next_features", FEATURE_SHAPE)
+    if any(store.terminal_boards is not None for store in stores):
+        _add_episode_concat_many(payload, stores, "terminal_boards")
+        payload["terminal_board_encoding"] = np.asarray(
+            TERMINAL_BOARD_ENCODING,
+            dtype=np.str_,
+        )
     return TrajectoryReplayStore.from_payload(payload)
 
 
@@ -996,6 +1067,9 @@ def _evict_to_capacity(store: TrajectoryReplayStore) -> TrajectoryReplayStore:
         "territory_scores",
     ):
         payload[key] = payload[key][drop_episodes:]
+    for key in ("terminal_boards", "terminal_board_present"):
+        if key in payload:
+            payload[key] = payload[key][drop_episodes:]
     payload["episode_offsets"] = payload["episode_offsets"][drop_episodes:] - transition_start
     payload["turn_offsets"] = payload["turn_offsets"][drop_episodes:] - turn_start
     for key in (
@@ -1206,6 +1280,70 @@ def _load_optional_array(
     if present.shape != (shape[0],):
         raise ValueError(f"trajectory replay {key}_present length mismatch")
     return values, present
+
+
+def _add_optional_episode_boards(
+    payload: dict[str, np.ndarray],
+    boards: Sequence[np.ndarray | None],
+) -> None:
+    if not any(board is not None for board in boards):
+        return
+    values = np.zeros((len(boards), *TERMINAL_BOARD_SHAPE), dtype=np.uint8)
+    present = np.zeros((len(boards),), dtype=np.bool_)
+    for index, board in enumerate(boards):
+        if board is None:
+            continue
+        values[index] = validate_absolute_terminal_board(board)
+        present[index] = True
+    payload["terminal_boards"] = values
+    payload["terminal_board_present"] = present
+    payload["terminal_board_encoding"] = np.asarray(TERMINAL_BOARD_ENCODING, dtype=np.str_)
+
+
+def _add_episode_concat_many(
+    payload: dict[str, np.ndarray],
+    stores: Sequence[TrajectoryReplayStore],
+    key: str,
+) -> None:
+    total_episodes = sum(store.episode_count for store in stores)
+    values = np.zeros((total_episodes, *TERMINAL_BOARD_SHAPE), dtype=np.uint8)
+    present = np.zeros((total_episodes,), dtype=np.bool_)
+    offset = 0
+    for store in stores:
+        count = store.episode_count
+        store_values = getattr(store, key)
+        store_present = getattr(store, f"{key[:-1]}_present")
+        if store_values is not None and store_present is not None:
+            values[offset : offset + count] = store_values
+            present[offset : offset + count] = store_present
+        offset += count
+    payload[key] = values
+    payload[f"{key[:-1]}_present"] = present
+
+
+def _load_optional_episode_array(
+    data: Any,
+    *,
+    key: str,
+    shape: tuple[int, ...],
+    dtype: Any,
+) -> tuple[np.ndarray | None, np.ndarray]:
+    present_key = f"{key[:-1]}_present"
+    if key not in data:
+        return None, np.zeros((shape[0],), dtype=np.bool_)
+    values = np.asarray(data[key], dtype=dtype)
+    present = np.asarray(data[present_key], dtype=np.bool_)
+    if values.shape != shape:
+        raise ValueError(f"trajectory replay {key} shape must be {shape}")
+    if present.shape != (shape[0],):
+        raise ValueError(f"trajectory replay {present_key} length mismatch")
+    return values, present
+
+
+def _load_terminal_board_encoding(data: Any) -> str:
+    if "terminal_board_encoding" not in data:
+        return TERMINAL_BOARD_ENCODING
+    return str(np.asarray(data["terminal_board_encoding"]).item())
 
 
 def _validate_payload_lengths(data: Any, transition_count: int) -> None:

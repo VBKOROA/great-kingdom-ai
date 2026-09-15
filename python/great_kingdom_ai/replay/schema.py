@@ -59,3 +59,4 @@ class TrajectoryEpisode:
     turn_actions: np.ndarray | None = None
     turn_root_values: np.ndarray | None = None
     turn_full_search: np.ndarray | None = None
+    terminal_board: np.ndarray | None = None
