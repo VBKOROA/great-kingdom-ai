@@ -68,6 +68,8 @@ class TrajectoryReplayStore:
     next_features_present: np.ndarray | None = None
     terminal_boards: np.ndarray | None = None
     terminal_board_present: np.ndarray | None = None
+    lambda_returns: np.ndarray | None = None
+    lambda_returns_present: np.ndarray | None = None
     terminal_board_encoding: str = TERMINAL_BOARD_ENCODING
 
     @classmethod
@@ -121,6 +123,11 @@ class TrajectoryReplayStore:
             shape=(episode_count, *TERMINAL_BOARD_SHAPE),
             dtype=np.uint8,
         )
+        lambda_returns, lambda_returns_present = _load_optional_array(
+            data,
+            key="lambda_returns",
+            shape=(transition_count,),
+        )
         terminal_board_encoding = _load_terminal_board_encoding(data)
         table, ids = _load_search_config_hash_encoding(data, transition_count)
         store = cls(
@@ -164,6 +171,10 @@ class TrajectoryReplayStore:
             terminal_boards=terminal_boards if terminal_board_present.any() else None,
             terminal_board_present=(
                 terminal_board_present if terminal_board_present.any() else None
+            ),
+            lambda_returns=lambda_returns if lambda_returns_present.any() else None,
+            lambda_returns_present=(
+                lambda_returns_present if lambda_returns_present.any() else None
             ),
             terminal_board_encoding=terminal_board_encoding,
         )
@@ -244,6 +255,18 @@ class TrajectoryReplayStore:
                 raise ValueError("trajectory replay terminal_board_present length mismatch")
             if np.any(self.terminal_boards[self.terminal_board_present] > NEUTRAL_CELL):
                 raise ValueError("trajectory replay terminal_boards contain invalid cells")
+        if self.lambda_returns is not None:
+            if self.lambda_returns.shape != (len(self),):
+                raise ValueError("trajectory replay lambda_returns shape mismatch")
+            if self.lambda_returns_present is None:
+                raise ValueError("trajectory replay lambda_returns_present missing")
+            if self.lambda_returns_present.shape != (len(self),):
+                raise ValueError("trajectory replay lambda_returns_present length mismatch")
+            present_returns = self.lambda_returns[self.lambda_returns_present]
+            if not np.isfinite(present_returns).all():
+                raise ValueError("trajectory replay lambda_returns must be finite")
+            if np.any(np.abs(present_returns) > 1.0):
+                raise ValueError("trajectory replay lambda_returns must be in [-1, 1]")
         if self.terminal_board_encoding != TERMINAL_BOARD_ENCODING:
             raise ValueError(
                 "trajectory replay terminal_board_encoding is not supported: "
@@ -395,6 +418,9 @@ class TrajectoryReplayStore:
                 self.terminal_board_encoding,
                 dtype=np.str_,
             )
+        if self.lambda_returns is not None and self.lambda_returns_present is not None:
+            payload["lambda_returns"] = self.lambda_returns
+            payload["lambda_returns_present"] = self.lambda_returns_present
         return payload
 
     def transitions(self) -> list[TrajectoryTransition]:
@@ -437,6 +463,7 @@ def trajectory_episode_from_self_play_result(
     *,
     episode_id: int,
     root_values: Sequence[float | None] | None = None,
+    lambda_returns: Sequence[float | None] | None = None,
     model_version: int = 0,
     search_config_hash: str = "",
     created_iteration: int = 0,
@@ -454,6 +481,8 @@ def trajectory_episode_from_self_play_result(
         )
     if root_values is not None and len(root_values) != len(samples):
         raise ValueError("root_values and replay samples must have the same length")
+    if lambda_returns is not None and len(lambda_returns) != len(samples):
+        raise ValueError("lambda_returns and replay samples must have the same length")
     transitions = []
     for index, (move, sample) in enumerate(zip(log.moves, samples, strict=True)):
         next_features = samples[index + 1].features if index + 1 < len(samples) else None
@@ -475,6 +504,9 @@ def trajectory_episode_from_self_play_result(
                 search_config_hash=search_config_hash,
                 created_iteration=created_iteration,
                 sample_weight=sample.sample_weight,
+                lambda_return=(
+                    None if lambda_returns is None else lambda_returns[index]
+                ),
             )
         )
     return TrajectoryEpisode(
@@ -556,6 +588,9 @@ def _validated_transition(transition: TrajectoryTransition) -> TrajectoryTransit
     next_features = _optional_features(transition.next_features, "next_features")
     root_value = None if transition.root_value is None else float(transition.root_value)
     sample_weight = float(transition.sample_weight)
+    lambda_return = (
+        None if transition.lambda_return is None else float(transition.lambda_return)
+    )
 
     if transition.episode_id < 0:
         raise ValueError("episode_id must be non-negative")
@@ -584,6 +619,9 @@ def _validated_transition(transition: TrajectoryTransition) -> TrajectoryTransit
         raise ValueError("created_iteration must be non-negative")
     if not np.isfinite(sample_weight) or sample_weight <= 0.0:
         raise ValueError("sample_weight must be finite and positive")
+    if lambda_return is not None:
+        if not np.isfinite(lambda_return) or lambda_return < -1.0 or lambda_return > 1.0:
+            raise ValueError("lambda_return must be finite and in [-1, 1]")
 
     return TrajectoryTransition(
         episode_id=int(transition.episode_id),
@@ -604,6 +642,7 @@ def _validated_transition(transition: TrajectoryTransition) -> TrajectoryTransit
         search_config_hash=str(transition.search_config_hash),
         created_iteration=int(transition.created_iteration),
         sample_weight=sample_weight,
+        lambda_return=lambda_return,
     )
 
 
@@ -748,6 +787,12 @@ def _episodes_to_payload(
     _add_optional_4d(payload, "next_features", [
         transition.next_features for transition in transitions
     ], FEATURE_SHAPE)
+    _add_optional_array(
+        payload,
+        "lambda_returns",
+        [transition.lambda_return for transition in transitions],
+        (),
+    )
     _add_optional_episode_boards(
         payload,
         [episode.terminal_board for episode in episodes],
@@ -867,6 +912,13 @@ def _episode_from_store(
                 search_config_hash=search_config_hashes[row],
                 created_iteration=int(store.created_iterations[row]),
                 sample_weight=float(store.sample_weights[row]),
+                lambda_return=(
+                    None
+                    if store.lambda_returns is None
+                    or store.lambda_returns_present is None
+                    or not store.lambda_returns_present[row]
+                    else float(store.lambda_returns[row])
+                ),
             )
         )
     territory_score_row = store.territory_scores[episode_index]
@@ -958,6 +1010,7 @@ def _concat_many_stores(
     )
     _add_optional_concat_many(payload, stores, "root_policy_logits", (ACTION_SPACE,))
     _add_optional_concat_many(payload, stores, "next_features", FEATURE_SHAPE)
+    _add_optional_concat_many(payload, stores, "lambda_returns", ())
     if any(store.terminal_boards is not None for store in stores):
         _add_episode_concat_many(payload, stores, "terminal_boards")
         payload["terminal_board_encoding"] = np.asarray(
@@ -1091,6 +1144,8 @@ def _evict_to_capacity(store: TrajectoryReplayStore) -> TrajectoryReplayStore:
         "root_policy_logits_present",
         "next_features",
         "next_features_present",
+        "lambda_returns",
+        "lambda_returns_present",
     ):
         if key in payload:
             payload[key] = payload[key][transition_start:]
@@ -1249,7 +1304,7 @@ def _add_optional_4d(
 def _add_optional_array(
     payload: dict[str, np.ndarray],
     key: str,
-    arrays: Sequence[np.ndarray | None],
+    arrays: Sequence[np.ndarray | float | None],
     shape: tuple[int, ...],
 ) -> None:
     if not any(array is not None for array in arrays):

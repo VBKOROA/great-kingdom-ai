@@ -45,6 +45,7 @@ class TrajectoryTransition:
     search_config_hash: str = ""
     created_iteration: int = 0
     sample_weight: float = 1.0
+    lambda_return: float | None = None
 
 
 @dataclass(frozen=True)

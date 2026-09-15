@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import great_kingdom_ai.replay.trajectory as trajectory_module
@@ -293,6 +293,72 @@ def test_trajectory_replay_extends_from_store_without_episode_roundtrip() -> Non
     assert replay.root_policy_logits_present is not None
     assert replay.root_policy_logits_present.tolist() == [False, False, True]
     assert replay.search_config_hash_table.tolist() == ["", "search-v1"]
+
+
+def make_lambda_episode(
+    episode_id: int = 0,
+    *,
+    lambda_returns: tuple[float, float] = (0.25, -1.0),
+) -> TrajectoryEpisode:
+    episode = make_episode(episode_id, actions=[1, 2])
+    transitions = tuple(
+        replace(transition, lambda_return=value)
+        for transition, value in zip(episode.transitions, lambda_returns, strict=True)
+    )
+    return replace(episode, transitions=transitions)
+
+
+def test_trajectory_replay_save_load_preserves_lambda_returns(tmp_path: Path) -> None:
+    path = tmp_path / "lambda-replay.npz"
+    store = TrajectoryReplayStore.from_episodes(4, (make_lambda_episode(),))
+
+    assert store.lambda_returns is not None
+    assert store.lambda_returns.tolist() == pytest.approx([0.25, -1.0])
+    assert store.lambda_returns_present is not None
+    assert store.lambda_returns_present.tolist() == [True, True]
+
+    store.save(path)
+    loaded = TrajectoryReplayStore.load(path)
+
+    assert [transition.lambda_return for transition in loaded.transitions()] == pytest.approx(
+        [0.25, -1.0]
+    )
+
+
+def test_trajectory_replay_lambda_returns_default_to_missing() -> None:
+    store = TrajectoryReplayStore.from_episodes(4, (make_episode(0, actions=[1, 2]),))
+
+    assert store.lambda_returns is None
+    assert store.lambda_returns_present is None
+    assert all(transition.lambda_return is None for transition in store.transitions())
+    payload = trajectory_module._episodes_to_payload(store.capacity, store.episodes)
+    assert "lambda_returns" not in payload
+
+
+def test_trajectory_replay_concat_and_eviction_preserve_lambda_returns() -> None:
+    first = TrajectoryReplayStore.from_episodes(8, (make_episode(0, actions=[1, 2]),))
+    second = TrajectoryReplayStore.from_episodes(8, (make_lambda_episode(1),))
+
+    first.extend_store(second)
+
+    assert first.lambda_returns_present is not None
+    assert first.lambda_returns_present.tolist() == [False, False, True, True]
+    assert first.lambda_returns is not None
+    assert first.lambda_returns.tolist()[2:] == pytest.approx([0.25, -1.0])
+
+    evicted = TrajectoryReplayStore.from_episodes(2, (make_episode(0, actions=[1, 2]),))
+    evicted.extend_store(second)
+
+    assert len(evicted) == 2
+    assert evicted.lambda_returns_present is not None
+    assert evicted.lambda_returns_present.tolist() == [True, True]
+
+
+def test_trajectory_replay_rejects_out_of_range_lambda_returns() -> None:
+    episode = make_lambda_episode(lambda_returns=(1.5, -1.0))
+
+    with pytest.raises(ValueError, match="lambda_return"):
+        TrajectoryReplayStore.from_episodes(4, (episode,))
 
 
 def test_bootstrap_value_target_uses_future_root_value_from_sample_player_perspective() -> None:
