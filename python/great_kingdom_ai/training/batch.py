@@ -35,6 +35,7 @@ class TrainingBatch:
     replay_indexes: np.ndarray | None = None
     terminal_board_target: torch.Tensor | None = None
     terminal_board_valid: torch.Tensor | None = None
+    action: torch.Tensor | None = None
 
 
 @dataclass(frozen=True)
@@ -342,6 +343,11 @@ def _batch_to_device(
             None
             if batch.terminal_board_valid is None
             else batch.terminal_board_valid.to(device=device, non_blocking=non_blocking)
+        ),
+        action=(
+            None
+            if batch.action is None
+            else batch.action.to(device=device, non_blocking=non_blocking)
         ),
     )
 
