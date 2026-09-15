@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -287,3 +288,22 @@ def test_augmentation_applies_same_symmetry_to_terminal_target() -> None:
         np.rot90(board.astype(np.int64), k=1).reshape(BOARD_SIZE, BOARD_SIZE),
     )
     assert transformed_features[0, 0, 0, 0] == features[0, 0, 0, 0]
+
+
+def test_dataset_sample_drops_invalid_terminal_targets(monkeypatch) -> None:
+    store = TrajectoryReplayStore.from_episodes(
+        8,
+        (make_episode(0, terminal_board=make_board()),),
+    )
+    dataset = TrajectoryReplayDataset(store)
+    batch = dataset.sample_arrays(2, random.Random(0))
+    invalid_batch = replace(
+        batch,
+        terminal_board_valid=np.asarray([True, False]),
+    )
+    monkeypatch.setattr(dataset, "sample_arrays", lambda *args, **kwargs: invalid_batch)
+
+    samples = dataset.sample(2, random.Random(0))
+
+    assert samples[0].terminal_board_target is not None
+    assert samples[1].terminal_board_target is None

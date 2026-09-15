@@ -82,6 +82,8 @@ class TrajectoryReplayDataset:
                 terminal_board_target=(
                     None
                     if batch.terminal_board_targets is None
+                    or batch.terminal_board_valid is None
+                    or not bool(batch.terminal_board_valid[index])
                     else batch.terminal_board_targets[index]
                 ),
             )
@@ -131,7 +133,7 @@ class TrajectoryReplayDataset:
 
         index_array = np.asarray(indexes, dtype=np.int64)
         features, legal_masks = _features_and_masks_for_rows(self._replay, index_array)
-        terminal_board_targets, terminal_board_valid = _terminal_board_targets_for_rows(
+        terminal_board_targets, terminal_board_valid = terminal_board_targets_for_rows(
             self._replay,
             index_array,
         )
@@ -231,7 +233,7 @@ def _features_and_masks_for_rows(
     return _reconstruct_features_and_masks(replay, indexes)
 
 
-def _terminal_board_targets_for_rows(
+def terminal_board_targets_for_rows(
     replay: TrajectoryReplayStore,
     indexes: np.ndarray,
 ) -> tuple[np.ndarray | None, np.ndarray]:
@@ -360,4 +362,4 @@ def _terminal_value_for_row(
     )
 
 
-__all__ = ["TrajectoryArrayBatch", "TrajectoryReplayDataset"]
+__all__ = ["TrajectoryArrayBatch", "TrajectoryReplayDataset", "terminal_board_targets_for_rows"]
