@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass
-import math
+from typing import Any
 
 import numpy as np
 
@@ -28,6 +29,51 @@ class TrajectoryArrayBatch:
     terminal_board_targets: np.ndarray | None = None
     terminal_board_valid: np.ndarray | None = None
     actions: np.ndarray | None = None
+
+
+def sample_replay_indexes(
+    replay: TrajectoryReplayStore,
+    batch_size: int,
+    rng: random.Random,
+    *,
+    recent_fraction: float = 0.0,
+    recent_window: int = 0,
+    priority_config: PrioritySamplingConfig | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Sample replay row indexes and their importance weights."""
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    if batch_size > len(replay):
+        raise ValueError("batch_size exceeds trajectory replay size")
+
+    if priority_config is not None and priority_config.enabled:
+        priorities = np.maximum(
+            np.asarray(replay.sampling_priorities, dtype=np.float32),
+            np.float32(1e-6),
+        )
+        sampled = sample_priority_indexes(
+            priorities=priorities ** np.float32(priority_config.alpha),
+            batch_size=batch_size,
+            rng=rng,
+            beta=priority_config.beta,
+            recent_fraction=recent_fraction,
+            recent_window=recent_window,
+        )
+        indexes = sampled.indexes
+        importance_weights = sampled.importance_weights
+    else:
+        sampled = sample_priority_indexes(
+            priorities=np.ones((len(replay),), dtype=np.float32),
+            batch_size=batch_size,
+            rng=rng,
+            beta=0.0,
+            recent_fraction=recent_fraction,
+            recent_window=recent_window,
+        )
+        indexes = sampled.indexes
+        importance_weights = np.ones((batch_size,), dtype=np.float32)
+
+    return np.asarray(indexes, dtype=np.int64), np.asarray(importance_weights, dtype=np.float32)
 
 
 class TrajectoryReplayDataset:
@@ -105,39 +151,14 @@ class TrajectoryReplayDataset:
         recent_window: int = 0,
         priority_config: PrioritySamplingConfig | None = None,
     ) -> TrajectoryArrayBatch:
-        if batch_size <= 0:
-            raise ValueError("batch_size must be positive")
-        if batch_size > len(self):
-            raise ValueError("batch_size exceeds trajectory replay size")
-
-        if priority_config is not None and priority_config.enabled:
-            priorities = np.maximum(
-                np.asarray(self._replay.sampling_priorities, dtype=np.float32),
-                np.float32(1e-6),
-            )
-            sampled = sample_priority_indexes(
-                priorities=priorities ** np.float32(priority_config.alpha),
-                batch_size=batch_size,
-                rng=rng,
-                beta=priority_config.beta,
-                recent_fraction=recent_fraction,
-                recent_window=recent_window,
-            )
-            indexes = sampled.indexes
-            importance_weights = sampled.importance_weights
-        else:
-            sampled = sample_priority_indexes(
-                priorities=np.ones((len(self),), dtype=np.float32),
-                batch_size=batch_size,
-                rng=rng,
-                beta=0.0,
-                recent_fraction=recent_fraction,
-                recent_window=recent_window,
-            )
-            indexes = sampled.indexes
-            importance_weights = np.ones((batch_size,), dtype=np.float32)
-
-        index_array = np.asarray(indexes, dtype=np.int64)
+        index_array, importance_weights = sample_replay_indexes(
+            self._replay,
+            batch_size,
+            rng,
+            recent_fraction=recent_fraction,
+            recent_window=recent_window,
+            priority_config=priority_config,
+        )
         features, legal_masks = _features_and_masks_for_rows(self._replay, index_array)
         terminal_board_targets, terminal_board_valid = terminal_board_targets_for_rows(
             self._replay,
@@ -322,7 +343,7 @@ def _reconstruct_features_and_masks(
 
 
 def _reconstruct_features_and_masks_slow(
-    core: object,
+    core: Any,
     replay: TrajectoryReplayStore,
     indexes: np.ndarray,
     episode_indexes: np.ndarray,
@@ -333,7 +354,7 @@ def _reconstruct_features_and_masks_slow(
     )
     legal_masks = np.empty((indexes.shape[0], ACTION_SPACE), dtype=np.bool_)
     expected_flat = FEATURE_CHANNELS * BOARD_SIZE * BOARD_SIZE
-    game_state = getattr(core, "GameState")
+    game_state = core.GameState
     for output_row, replay_row in enumerate(indexes):
         episode_index = int(episode_indexes[output_row])
         turn_start = int(replay.turn_offsets[episode_index])
