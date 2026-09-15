@@ -766,6 +766,44 @@ mod tests {
     }
 
     #[test]
+    fn terminal_board_preserves_captured_and_new_castles() {
+        let mut board = [Cell::Empty; BOARD_CELLS];
+        board[CENTER_INDEX] = Cell::Neutral;
+        board[index(1, 1)] = Cell::Orange;
+        board[index(0, 1)] = Cell::Blue;
+        board[index(1, 0)] = Cell::Blue;
+        board[index(1, 2)] = Cell::Blue;
+        let mut state = state_with_board(board, Player::Blue);
+
+        let _outcome = state
+            .apply(Action::Place { row: 2, col: 1 })
+            .unwrap()
+            .unwrap();
+
+        assert!(state.is_terminal());
+        assert_eq!(state.board[index(1, 1)], Cell::Orange);
+        assert_eq!(state.board[index(2, 1)], Cell::Blue);
+        assert_eq!(state.board[index(0, 1)], Cell::Blue);
+        assert_eq!(state.board[index(1, 0)], Cell::Blue);
+        assert_eq!(state.board[index(1, 2)], Cell::Blue);
+    }
+
+    #[test]
+    fn trusted_search_terminal_capture_matches_regular_apply() {
+        let mut board = [Cell::Empty; BOARD_CELLS];
+        board[CENTER_INDEX] = Cell::Neutral;
+        board[index(1, 1)] = Cell::Orange;
+        board[index(0, 1)] = Cell::Blue;
+        board[index(1, 0)] = Cell::Blue;
+        board[index(1, 2)] = Cell::Blue;
+
+        assert_trusted_apply_matches_regular_apply(
+            state_with_board(board, Player::Blue),
+            Action::Place { row: 2, col: 1 },
+        );
+    }
+
+    #[test]
     fn opponent_capture_takes_priority_over_own_destroyed_group() {
         let mut board = [Cell::Blue; BOARD_CELLS];
         board[CENTER_INDEX] = Cell::Neutral;
