@@ -34,6 +34,21 @@ OPPONENT_CLASS = 2
 TERMINAL_BOARD_SHAPE = (BOARD_SIZE, BOARD_SIZE)
 
 
+def terminal_board_from_flat(flat: np.ndarray) -> np.ndarray:
+    """Reshape a flat engine board (list, bytes, or array) into a 9x9 ``uint8``."""
+    if isinstance(flat, bytes | bytearray | memoryview):
+        array = np.frombuffer(flat, dtype=np.uint8).reshape(BOARD_SIZE, BOARD_SIZE).copy()
+    else:
+        array = np.asarray(flat, dtype=np.uint8).reshape(BOARD_SIZE, BOARD_SIZE)
+    return validate_absolute_terminal_board(array)
+
+
+def terminal_board_to_flat_values(board: np.ndarray) -> tuple[int, ...]:
+    """Flatten an absolute board into a JSON-friendly tuple of ints."""
+    array = validate_absolute_terminal_board(board)
+    return tuple(int(value) for value in array.reshape(-1))
+
+
 def validate_absolute_terminal_board(board: np.ndarray) -> np.ndarray:
     """Validate an absolute engine cell board and return it as ``uint8``."""
     array = np.asarray(board)
@@ -92,5 +107,7 @@ __all__ = [
     "TERMINAL_BOARD_ENCODING",
     "TERMINAL_BOARD_SHAPE",
     "absolute_terminal_boards_to_perspective",
+    "terminal_board_from_flat",
+    "terminal_board_to_flat_values",
     "validate_absolute_terminal_board",
 ]

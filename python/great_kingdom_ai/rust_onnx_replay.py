@@ -8,8 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+import numpy as np
+
 from great_kingdom_ai.replay.sample import ReplaySample
 from great_kingdom_ai.replay.schema import GameLogLike, TrajectoryEpisode
+from great_kingdom_ai.replay.terminal_board import terminal_board_from_flat
 from great_kingdom_ai.replay.trajectory import (
     TrajectoryReplayStore,
     trajectory_episode_from_self_play_result,
@@ -103,11 +106,19 @@ def _episodes_from_logs_and_samples(
                 cast(GameLogLike, log),
                 episode_samples,
                 episode_id=first_episode_id + index,
+                terminal_board=_log_terminal_board(log),
             )
         )
     if sample_offset != len(samples):
         raise ValueError("replay samples must be grouped by game log moves")
     return episodes
+
+
+def _log_terminal_board(log: GameLogLike) -> np.ndarray | None:
+    flat = getattr(log, "terminal_board", None)
+    if flat is None:
+        return None
+    return terminal_board_from_flat(np.asarray(flat, dtype=np.uint8))
 
 
 def _read_json_list(path: Path) -> list[dict[str, Any]]:

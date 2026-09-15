@@ -90,6 +90,7 @@ class GameLog:
     winner: int
     end_reason: int
     territory_scores: tuple[int, int]
+    terminal_board: tuple[int, ...] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

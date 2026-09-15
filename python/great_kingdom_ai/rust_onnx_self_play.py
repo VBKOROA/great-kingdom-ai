@@ -15,6 +15,10 @@ from great_kingdom_ai.replay import (
     TrajectoryTransition,
 )
 from great_kingdom_ai.replay.sample import ReplaySample
+from great_kingdom_ai.replay.terminal_board import (
+    terminal_board_from_flat,
+    terminal_board_to_flat_values,
+)
 from great_kingdom_ai.self_play import GameLog, MoveLog, SelfPlayConfig
 from great_kingdom_ai.self_play_data import value_target_for_player
 
@@ -264,6 +268,7 @@ def _run_one_batch(
     winners = batch.winners()
     end_reasons = batch.end_reasons()
     territory_scores = batch.territory_scores()
+    boards = batch.boards() if hasattr(batch, "boards") else None
     logs: list[GameLog] = []
     samples: list[ReplaySample] = []
     episodes: list[TrajectoryEpisode] = []
@@ -278,6 +283,13 @@ def _run_one_batch(
             winner=int(winner),
             end_reason=int(end_reason),
             territory_scores=territory_scores[game_index],
+            terminal_board=(
+                None
+                if boards is None
+                else terminal_board_to_flat_values(
+                    terminal_board_from_flat(boards[game_index])
+                )
+            ),
         )
         logs.append(log)
         samples.extend(
@@ -321,6 +333,11 @@ def _run_one_batch(
                     winner=int(winner),
                     end_reason=int(end_reason),
                     territory_scores=territory_scores[game_index],
+                    terminal_board=(
+                        None
+                        if boards is None
+                        else terminal_board_from_flat(boards[game_index])
+                    ),
                     turn_players=np.asarray(
                         [row[1] for row in turn_rows[game_index]],
                         dtype=np.int64,

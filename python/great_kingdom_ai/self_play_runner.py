@@ -20,6 +20,10 @@ from great_kingdom_ai.self_play_data import (
     policy_target_from_visit_counts,
     value_target_for_player,
 )
+from great_kingdom_ai.replay.terminal_board import (
+    terminal_board_from_flat,
+    terminal_board_to_flat_values,
+)
 from great_kingdom_ai.self_play_types import (
     PASS_ACTION,
     GameLog,
@@ -115,6 +119,7 @@ def play_self_play_game(
             winner=winner,
             end_reason=end_reason,
             territory_scores=game_state.territory_scores(),
+            terminal_board=_terminal_board_values(game_state),
         ),
         samples,
     )
@@ -548,9 +553,17 @@ def finish_batched_game(game: BatchedGame) -> tuple[GameLog, list[ReplaySample]]
             winner=winner,
             end_reason=end_reason,
             territory_scores=game.state.territory_scores(),
+            terminal_board=_terminal_board_values(game.state),
         ),
         samples,
     )
+
+
+def _terminal_board_values(state: SelfPlayState) -> tuple[int, ...] | None:
+    board_fn = getattr(state, "board", None)
+    if board_fn is None:
+        return None
+    return terminal_board_to_flat_values(terminal_board_from_flat(board_fn()))
 
 
 def finish_core_batch_games(
@@ -562,6 +575,7 @@ def finish_core_batch_games(
     winners = batch.winners()
     end_reasons = batch.end_reasons()
     territory_scores = batch.territory_scores()
+    boards = batch.boards() if hasattr(batch, "boards") else None
     outputs: list[tuple[GameLog, list[ReplaySample]]] = []
     for game_index, seed in enumerate(seeds):
         winner = winners[game_index]
@@ -585,6 +599,13 @@ def finish_core_batch_games(
                     winner=winner,
                     end_reason=end_reason,
                     territory_scores=territory_scores[game_index],
+                    terminal_board=(
+                        None
+                        if boards is None
+                        else terminal_board_to_flat_values(
+                            terminal_board_from_flat(boards[game_index])
+                        )
+                    ),
                 ),
                 samples,
             )
