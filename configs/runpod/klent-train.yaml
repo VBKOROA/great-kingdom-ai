@@ -1,0 +1,44 @@
+# KLENT synchronous baseline for one RTX 3090 24GB (AMD EPYC 7C13).
+#
+# This is the initial paper Algorithm 1 configuration from
+# docs/klent-implementation-plan.md. Run with:
+#   great-kingdom-klent-train --config configs/runpod/klent-train.yaml --iterations 2
+#
+# Measure before changing: FP16/AMP NaN checks, GPU memory, transitions/s,
+# fit seconds per iteration, and search-free vs Gumbel Arena win rates.
+work_dir: data/runpod/klent-strong-attn
+model_preset: strong_attn_klent
+device: cuda
+seed: 20260522
+
+# KLENT coefficients.
+klent:
+  alpha: 0.03
+  beta: 0.1
+  lambda_param: 0.8825
+  gamma: 1.0
+
+# Iteration collection: freeze theta_k and gather completed games.
+min_transitions: 32768
+max_games_per_iteration: 512
+max_turns: 200
+use_rust_actor: true
+rust_self_play_batch_size: 256
+symmetry_augmentation: true
+
+# Fit once over the frozen iteration buffer (Algorithm 1 initial value).
+fit_epochs: 1
+batch_size: 512
+optimizer: adamw
+learning_rate: 0.0003
+weight_decay: 0.01
+gradient_clip_norm: 5.0
+amp: true
+
+# Publish actor.onnx (3 outputs) and eval.onnx (2 outputs) per version.
+export_onnx: true
+onnx_device: cuda
+onnx_precision: fp16
+# CPU parity checks do not run FP16 ONNX; verify parity on Runpod separately.
+check_onnx_parity: false
+keep_shards: true

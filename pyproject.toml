@@ -37,6 +37,7 @@ great-kingdom-actor-v2 = "great_kingdom_ai.async_v2.cli:actor_v2_main"
 great-kingdom-learner-v2 = "great_kingdom_ai.async_v2.cli:learner_v2_main"
 great-kingdom-init-async-v2 = "great_kingdom_ai.async_v2.cli:factory_init_v2_main"
 great-kingdom-replay-monitor-v2 = "great_kingdom_ai.replay_monitor:main"
+great-kingdom-klent-train = "great_kingdom_ai.klent.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["python"]
