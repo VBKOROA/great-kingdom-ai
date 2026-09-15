@@ -102,6 +102,52 @@ def test_arrays_to_batch_uses_precomputed_legal_masks() -> None:
     assert losses.total.item() > 0.0
 
 
+def test_batch_conversion_carries_taken_actions() -> None:
+    samples = [
+        ReplaySample(
+            features=make_sample(0).features,
+            policy=make_sample(0).policy,
+            value=1.0,
+            action=0,
+        ),
+        ReplaySample(
+            features=make_sample(1).features,
+            policy=make_sample(1).policy,
+            value=-1.0,
+            action=4,
+        ),
+    ]
+
+    sample_batch = samples_to_batch(samples)
+    array_batch = arrays_to_batch(
+        TrainingArrays(
+            features=np.stack([sample.features for sample in samples], axis=0),
+            policies=np.stack([sample.policy for sample in samples], axis=0),
+            values=np.asarray([sample.value for sample in samples], dtype=np.float32),
+            sample_weights=np.asarray([1.0, 1.0], dtype=np.float32),
+            actions=np.asarray([0, 4], dtype=np.int64),
+        )
+    )
+
+    assert sample_batch.action is not None
+    assert sample_batch.action.tolist() == [0, 4]
+    assert array_batch.action is not None
+    assert array_batch.action.tolist() == [0, 4]
+
+
+def test_batch_conversion_rejects_mixed_action_presence() -> None:
+    with_action = ReplaySample(
+        features=make_sample(0).features,
+        policy=make_sample(0).policy,
+        value=1.0,
+        action=0,
+    )
+    without_action = make_sample(1)
+
+    with pytest.raises(ValueError, match="action must be present"):
+        samples_to_batch([with_action, without_action])
+
+
 def test_train_step_updates_model_parameters() -> None:
     config = TrainingConfig(batch_size=2, steps=1, seed=3)
     state = create_train_state(config)

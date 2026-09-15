@@ -8,7 +8,7 @@ from typing import Literal
 
 import numpy as np
 
-from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE
+from great_kingdom_ai.features import ACTION_SPACE, BOARD_SIZE, PASS_ACTION
 from great_kingdom_ai.replay.sample import ReplaySample
 from great_kingdom_ai.replay.schema import FEATURE_SHAPE
 
@@ -76,6 +76,11 @@ def augment_sample(sample: ReplaySample, symmetry: Symmetry) -> ReplaySample:
         root_policy_logits=transformed_root_logits,
         sample_weight=sample.sample_weight,
         terminal_board_target=transformed_terminal_board,
+        action=(
+            None
+            if sample.action is None
+            else int(_action_index_permutation(symmetry)[int(sample.action)])
+        ),
     )
 
 
@@ -107,7 +112,7 @@ def augment_policy_training_arrays_randomly(
     symmetries: Iterable[Symmetry] = ALL_SYMMETRIES,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Apply random board symmetries to feature and policy training arrays."""
-    transformed_features, transformed_policies, _legal_masks, _terminal = (
+    transformed_features, transformed_policies, _legal_masks, _terminal, _actions = (
         augment_training_arrays_randomly(
             features,
             policies,
@@ -127,12 +132,20 @@ def augment_training_arrays_randomly(
     *,
     symmetries: Iterable[Symmetry] = ALL_SYMMETRIES,
     terminal_board_targets: np.ndarray | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
+    actions: np.ndarray | None = None,
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray | None,
+    np.ndarray | None,
+    np.ndarray | None,
+]:
     """Apply random board symmetries to features, policies, and legal masks.
 
     When ``terminal_board_targets`` is provided the same per-row symmetry is
     applied to the terminal board target so the auxiliary target stays aligned
-    with the augmented features and policy.
+    with the augmented features and policy. ``actions`` are permuted with the
+    same policy index rule and pass stays fixed.
     """
     choices = tuple(symmetries)
     if not choices:
@@ -157,6 +170,14 @@ def augment_training_arrays_randomly(
             "expected terminal_board_targets shape "
             f"{(features.shape[0], BOARD_SIZE, BOARD_SIZE)}, got {terminal_board_targets.shape}"
         )
+    if actions is not None:
+        actions = np.asarray(actions, dtype=np.int64)
+        if actions.shape != (features.shape[0],):
+            raise ValueError(
+                f"expected actions shape {(features.shape[0],)}, got {actions.shape}"
+            )
+        if np.any(actions < 0) or np.any(actions >= ACTION_SPACE):
+            raise ValueError(f"actions must be in [0, {ACTION_SPACE})")
 
     transformed_features = np.empty_like(features, dtype=np.float32)
     transformed_policies = np.empty_like(policies, dtype=np.float32)
@@ -168,6 +189,7 @@ def augment_training_arrays_randomly(
         if terminal_board_targets is None
         else np.empty_like(terminal_board_targets)
     )
+    transformed_actions = None if actions is None else np.empty_like(actions)
     selected = [rng.choice(choices) for _ in range(features.shape[0])]
     for symmetry in choices:
         indexes = [index for index, candidate in enumerate(selected) if candidate == symmetry]
@@ -204,12 +226,26 @@ def augment_training_arrays_randomly(
                 terminal_board_targets[index_array],
                 symmetry,
             )
+        if transformed_actions is not None and actions is not None:
+            transformed_actions[index_array] = _action_index_permutation(symmetry)[
+                actions[index_array]
+            ]
     return (
         transformed_features,
         transformed_policies,
         transformed_legal_masks,
         transformed_terminal_boards,
+        transformed_actions,
     )
+
+
+def _action_index_permutation(symmetry: Symmetry) -> np.ndarray:
+    """Return the full action-space permutation induced by one symmetry."""
+    board_indexes = np.arange(BOARD_SIZE * BOARD_SIZE).reshape(BOARD_SIZE, BOARD_SIZE)
+    positions = _transform_spatial(board_indexes, symmetry).reshape(-1)
+    permutation = np.empty(BOARD_SIZE * BOARD_SIZE, dtype=np.int64)
+    permutation[positions] = np.arange(BOARD_SIZE * BOARD_SIZE)
+    return np.concatenate([permutation, np.asarray([PASS_ACTION], dtype=np.int64)])
 
 
 def _transform_spatial(array: np.ndarray, symmetry: Symmetry) -> np.ndarray:

@@ -48,6 +48,7 @@ class TrainingArrays:
     indexes: np.ndarray | None = None
     terminal_board_targets: np.ndarray | None = None
     terminal_board_valid: np.ndarray | None = None
+    actions: np.ndarray | None = None
 
 
 
@@ -74,6 +75,7 @@ def samples_to_batch(
     sample_weights = np.asarray([sample.sample_weight for sample in samples], dtype=np.float32)
     legal_masks = _legal_masks_from_features(features)
     terminal_targets, terminal_valid = _terminal_targets_from_samples(samples)
+    actions = _actions_from_samples(samples)
 
     return TrainingBatch(
         features=_tensor_from_numpy(torch, features, pin_memory=pin_memory).to(device=device),
@@ -100,6 +102,11 @@ def samples_to_batch(
                 device=device
             )
         ),
+        action=(
+            None
+            if actions is None
+            else _tensor_from_numpy(torch, actions, pin_memory=pin_memory).to(device=device)
+        ),
     )
 
 
@@ -124,6 +131,7 @@ def arrays_to_batch(
     if legal_masks.shape != policies.shape:
         raise ValueError("legal_masks shape must match policies shape")
     terminal_targets, terminal_valid = _terminal_targets_from_arrays(arrays)
+    actions = _actions_from_arrays(arrays)
     return TrainingBatch(
         features=_tensor_from_numpy(torch, features, pin_memory=pin_memory).to(device=device),
         policy=_tensor_from_numpy(torch, policies, pin_memory=pin_memory).to(device=device),
@@ -152,6 +160,11 @@ def arrays_to_batch(
             else _tensor_from_numpy(torch, terminal_valid, pin_memory=pin_memory).to(
                 device=device
             )
+        ),
+        action=(
+            None
+            if actions is None
+            else _tensor_from_numpy(torch, actions, pin_memory=pin_memory).to(device=device)
         ),
     )
 
@@ -277,15 +290,21 @@ def _sample_training_batch(
                 if getattr(raw_arrays, "terminal_board_valid", None) is None
                 else np.asarray(raw_arrays.terminal_board_valid, dtype=np.bool_)
             ),
+            actions=(
+                None
+                if getattr(raw_arrays, "actions", None) is None
+                else np.asarray(raw_arrays.actions, dtype=np.int64)
+            ),
         )
         if config.symmetry_augmentation:
-            features, policies, legal_masks, terminal_targets = (
+            features, policies, legal_masks, terminal_targets, actions = (
                 augment_training_arrays_randomly(
                     arrays.features,
                     arrays.policies,
                     arrays.legal_masks,
                     rng,
                     terminal_board_targets=arrays.terminal_board_targets,
+                    actions=arrays.actions,
                 )
             )
             arrays = TrainingArrays(
@@ -297,6 +316,7 @@ def _sample_training_batch(
                 indexes=arrays.indexes,
                 terminal_board_targets=terminal_targets,
                 terminal_board_valid=arrays.terminal_board_valid,
+                actions=actions,
             )
         return arrays_to_batch(arrays, device=device, pin_memory=pin_memory)
 
@@ -371,6 +391,27 @@ def _use_cuda_prefetch(torch: Any, config: TrainingConfig) -> bool:
         and str(config.device).startswith("cuda")
         and torch.cuda.is_available()
     )
+
+
+def _actions_from_samples(samples: Sequence[ReplaySample]) -> np.ndarray | None:
+    present = [sample.action is not None for sample in samples]
+    if not any(present):
+        return None
+    if not all(present):
+        raise ValueError("action must be present for all samples or none")
+    return np.asarray(
+        [int(sample.action) for sample in samples if sample.action is not None],
+        dtype=np.int64,
+    )
+
+
+def _actions_from_arrays(arrays: TrainingArrays) -> np.ndarray | None:
+    if arrays.actions is None:
+        return None
+    actions = np.ascontiguousarray(arrays.actions, dtype=np.int64)
+    if actions.shape != (arrays.policies.shape[0],):
+        raise ValueError("actions shape must match the policy batch")
+    return actions
 
 
 def _terminal_targets_from_samples(

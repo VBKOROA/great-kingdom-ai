@@ -90,7 +90,7 @@ def test_augment_training_arrays_transforms_legal_masks_with_policies() -> None:
     legal_masks[0, 1 * BOARD_SIZE + 2] = True
     legal_masks[0, 81] = True
 
-    features, policies, transformed_legal_masks, _terminal = (
+    features, policies, transformed_legal_masks, _terminal, _actions = (
         augment_training_arrays_randomly(
             sample.features[np.newaxis],
             sample.policy[np.newaxis],
@@ -105,3 +105,57 @@ def test_augment_training_arrays_transforms_legal_masks_with_policies() -> None:
     assert transformed_legal_masks is not None
     assert transformed_legal_masks[0, 6 * BOARD_SIZE + 1]
     assert transformed_legal_masks[0, 81]
+
+
+def test_augment_sample_permutes_action_like_policy() -> None:
+    for symmetry in ALL_SYMMETRIES:
+        action = 1 * BOARD_SIZE + 2
+        sample = make_sample(action=action)
+        sample = ReplaySample(
+            features=sample.features,
+            policy=sample.policy,
+            value=sample.value,
+            action=action,
+        )
+
+        augmented = augment_sample(sample, symmetry)
+
+        assert augmented.action is not None
+        expected_action = int(np.argmax(augmented.policy[:81]))
+        assert augmented.action == expected_action
+        assert augmented.action != action or symmetry == "identity"
+
+
+def test_augment_sample_keeps_pass_action_on_pass_index() -> None:
+    features = np.zeros((FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
+    policy = np.zeros(ACTION_SPACE, dtype=np.float32)
+    policy[81] = 1.0
+    sample = ReplaySample(features=features, policy=policy, value=1.0, action=81)
+
+    augmented = augment_sample(sample, "rot270")
+
+    assert augmented.action == 81
+
+
+def test_augment_training_arrays_permutes_actions_like_policies() -> None:
+    actions = np.asarray([1 * BOARD_SIZE + 2, 81], dtype=np.int64)
+    policies = np.zeros((2, ACTION_SPACE), dtype=np.float32)
+    policies[0, actions[0]] = 1.0
+    policies[1, actions[1]] = 1.0
+    features = np.zeros((2, FEATURE_CHANNELS, BOARD_SIZE, BOARD_SIZE), dtype=np.float32)
+
+    _features, transformed_policies, _masks, _boards, transformed_actions = (
+        augment_training_arrays_randomly(
+            features,
+            policies,
+            None,
+            random.Random(1),
+            symmetries=("rot90",),
+            actions=actions,
+        )
+    )
+
+    assert transformed_actions is not None
+    assert transformed_actions[0] == int(np.argmax(transformed_policies[0, :81]))
+    assert transformed_actions[0] == 6 * BOARD_SIZE + 1
+    assert transformed_actions[1] == 81

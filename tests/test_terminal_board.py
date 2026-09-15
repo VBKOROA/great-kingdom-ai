@@ -272,7 +272,7 @@ def test_augmentation_applies_same_symmetry_to_terminal_target() -> None:
     board = make_board()
     features = make_features(10)[None]
     policies = make_policy(10)[None]
-    transformed_features, _policies, _masks, transformed_boards = (
+    transformed_features, _policies, _masks, transformed_boards, _actions = (
         augment_training_arrays_randomly(
             features,
             policies,

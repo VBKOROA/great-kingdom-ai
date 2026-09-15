@@ -22,6 +22,7 @@ class ReplaySample:
     root_policy_logits: np.ndarray | None = None
     sample_weight: float = 1.0
     terminal_board_target: np.ndarray | None = None
+    action: int | None = None
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,7 @@ class ReplayArrayBatch:
     values: np.ndarray
     sample_weights: np.ndarray
     legal_masks: np.ndarray
+    actions: np.ndarray | None = None
 
 
 def validate_replay_sample(sample: ReplaySample) -> ReplaySample:
@@ -38,6 +40,7 @@ def validate_replay_sample(sample: ReplaySample) -> ReplaySample:
     policy = np.asarray(sample.policy, dtype=np.float32)
     value = float(sample.value)
     sample_weight = float(sample.sample_weight)
+    action = None if sample.action is None else int(sample.action)
 
     if features.shape != FEATURE_SHAPE:
         raise ValueError(f"expected feature shape {FEATURE_SHAPE}, got {features.shape}")
@@ -84,6 +87,8 @@ def validate_replay_sample(sample: ReplaySample) -> ReplaySample:
         raise ValueError("value target must be in [-1, 1]")
     if not np.isfinite(sample_weight) or sample_weight <= 0.0:
         raise ValueError("sample_weight must be finite and positive")
+    if action is not None and (action < 0 or action >= ACTION_SPACE):
+        raise ValueError(f"action must be in [0, {ACTION_SPACE})")
 
     return ReplaySample(
         features=features.copy(),
@@ -94,6 +99,7 @@ def validate_replay_sample(sample: ReplaySample) -> ReplaySample:
         ),
         sample_weight=sample_weight,
         terminal_board_target=terminal_board_target,
+        action=action,
     )
 
 

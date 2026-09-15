@@ -99,6 +99,25 @@ def test_trajectory_replay_dataset_samples_terminal_targets_with_recency() -> No
     assert batch.legal_masks.shape == (2, ACTION_SPACE)
 
 
+def test_trajectory_replay_dataset_supplies_taken_actions() -> None:
+    store = TrajectoryReplayStore.from_episodes(
+        8,
+        (make_episode(0, winner=1), make_episode(1, winner=2)),
+    )
+    dataset = TrajectoryReplayDataset(store)
+
+    batch = dataset.sample_arrays(len(store), random.Random(0))
+    samples = dataset.sample(3, random.Random(0))
+    sample_batch = dataset.sample_arrays(3, random.Random(0))
+
+    assert batch.actions is not None
+    assert batch.actions.tolist() == store.actions[batch.indexes].tolist()
+    assert sample_batch.actions is not None
+    assert all(sample.action is not None for sample in samples)
+    assert [sample.action for sample in samples] == sample_batch.actions.tolist()
+    assert {sample.action for sample in samples} <= {1, PASS_ACTION}
+
+
 def test_trajectory_replay_dataset_bootstraps_from_episode_turn_root_values() -> None:
     transition = make_transition(
         episode_id=0,

@@ -27,6 +27,7 @@ class TrajectoryArrayBatch:
     legal_masks: np.ndarray
     terminal_board_targets: np.ndarray | None = None
     terminal_board_valid: np.ndarray | None = None
+    actions: np.ndarray | None = None
 
 
 class TrajectoryReplayDataset:
@@ -85,6 +86,11 @@ class TrajectoryReplayDataset:
                     or batch.terminal_board_valid is None
                     or not bool(batch.terminal_board_valid[index])
                     else batch.terminal_board_targets[index]
+                ),
+                action=(
+                    None
+                    if batch.actions is None
+                    else int(batch.actions[index])
                 ),
             )
             for index in range(batch_size)
@@ -153,6 +159,7 @@ class TrajectoryReplayDataset:
             legal_masks=legal_masks,
             terminal_board_targets=terminal_board_targets,
             terminal_board_valid=terminal_board_valid,
+            actions=np.ascontiguousarray(self._replay.actions[index_array], dtype=np.int64),
         )
 
     def update_sampling_priorities(
