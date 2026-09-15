@@ -16,3 +16,4 @@ data/ablation/
 *.pt
 .antigravitycli
 *.onnx
+*.pdf
