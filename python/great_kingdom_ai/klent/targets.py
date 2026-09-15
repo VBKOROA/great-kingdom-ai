@@ -10,6 +10,8 @@ import math
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, cast
 
+import numpy as np
+
 from great_kingdom_ai.features import (
     BOARD_CELLS,
     BOARD_SIZE,
@@ -58,9 +60,9 @@ def compute_analytical_policy(
 
 
 def compute_lambda_returns(
-    rewards: Tensor | Sequence[float],
-    state_values: Tensor | Sequence[float],
-    players: Tensor | Sequence[int],
+    rewards: Tensor | Sequence[float] | np.ndarray,
+    state_values: Tensor | Sequence[float] | np.ndarray,
+    players: Tensor | Sequence[int] | np.ndarray,
     *,
     lambda_param: float,
     gamma: float = 1.0,
@@ -191,12 +193,12 @@ def _is_tracing(torch: Any) -> bool:
     return bool(is_tracing()) if is_tracing is not None else False
 
 
-def _float_list(torch: Any, values: Tensor | Sequence[float]) -> list[float]:
+def _float_list(torch: Any, values: Tensor | Sequence[float] | np.ndarray) -> list[float]:
     tensor = torch.as_tensor(values, dtype=torch.float32).detach().reshape(-1)
     return [float(value) for value in tensor.cpu()]
 
 
-def _int_list(torch: Any, values: Tensor | Sequence[int]) -> list[int]:
+def _int_list(torch: Any, values: Tensor | Sequence[int] | np.ndarray) -> list[int]:
     tensor = torch.as_tensor(values).detach().reshape(-1)
     return [int(value) for value in tensor.cpu()]
 

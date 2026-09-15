@@ -3,7 +3,26 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from torch import Tensor
+
+
+class KlentPolicyValueModel(Protocol):
+    """Structural boundary for models consumed by KLENT self-play and fitting."""
+
+    training: bool
+
+    def forward_q(self, features: Tensor) -> tuple[Tensor, Tensor]: ...
+
+    def parameters(self) -> Iterator[Tensor]: ...
+
+    def eval(self) -> Any: ...
+
+    def train(self, mode: bool = True) -> Any: ...
 
 
 def validate_alpha_beta(alpha: float, beta: float) -> None:
@@ -40,6 +59,7 @@ class KlentConfig:
 
 __all__ = [
     "KlentConfig",
+    "KlentPolicyValueModel",
     "validate_alpha_beta",
     "validate_lambda_gamma",
 ]

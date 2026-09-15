@@ -114,6 +114,11 @@ MODEL_PRESETS["strong_attn_klent"] = replace(
     action_value_head=True,
 )
 
+MODEL_PRESETS["small_klent"] = replace(
+    MODEL_PRESETS["small"],
+    action_value_head=True,
+)
+
 RESIDUAL_STAGE = "residual"
 ATTENTION_STAGE = "attention"
 

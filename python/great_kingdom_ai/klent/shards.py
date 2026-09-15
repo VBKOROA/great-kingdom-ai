@@ -14,7 +14,7 @@ from great_kingdom_ai.replay.trajectory import TrajectoryReplayStore
 
 KLENT_ALGORITHM = "klent"
 KLENT_SCHEMA_VERSION = 1
-KLENT_SHARD_METADATA_NAME = "metadata.json"
+KLENT_SHARD_METADATA_SUFFIX = ".metadata.json"
 
 
 @dataclass(frozen=True)
@@ -119,7 +119,17 @@ class KlentShardMetadata:
 
 
 def shard_metadata_path(replay_path: str | Path) -> Path:
-    return Path(replay_path).with_name(KLENT_SHARD_METADATA_NAME)
+    """Return the per-shard metadata path (``<shard>.metadata.json``)."""
+    path = Path(replay_path)
+    return path.with_name(path.name + KLENT_SHARD_METADATA_SUFFIX)
+
+
+def klent_config_hash(config: KlentConfig) -> str:
+    """Stable tag stored on transitions to mark the KLENT target coefficients."""
+    return (
+        f"klent:alpha={config.alpha:g},beta={config.beta:g},"
+        f"lambda={config.lambda_param:g},gamma={config.gamma:g}"
+    )
 
 
 def save_klent_shard(
@@ -173,8 +183,9 @@ def load_klent_shard(
 __all__ = [
     "KLENT_ALGORITHM",
     "KLENT_SCHEMA_VERSION",
-    "KLENT_SHARD_METADATA_NAME",
+    "KLENT_SHARD_METADATA_SUFFIX",
     "KlentShardMetadata",
+    "klent_config_hash",
     "load_klent_shard",
     "save_klent_shard",
     "shard_metadata_path",

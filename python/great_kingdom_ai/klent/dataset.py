@@ -88,6 +88,27 @@ class KlentReplayDataset:
             recent_window=recent_window,
             priority_config=priority_config,
         )
+        batch = self.arrays_for_indexes(index_array)
+        return TrajectoryArrayBatch(
+            indexes=batch.indexes,
+            features=batch.features,
+            policies=batch.policies,
+            values=batch.values,
+            sample_weights=np.ascontiguousarray(
+                batch.sample_weights * importance_weights,
+                dtype=np.float32,
+            ),
+            legal_masks=batch.legal_masks,
+            actions=batch.actions,
+        )
+
+    def arrays_for_indexes(self, indexes: np.ndarray) -> TrajectoryArrayBatch:
+        """Return replay arrays for explicit row indexes without resampling."""
+        index_array = np.asarray(indexes, dtype=np.int64)
+        if index_array.ndim != 1 or index_array.shape[0] == 0:
+            raise ValueError("indexes must be a non-empty rank-1 array")
+        if np.any(index_array < 0) or np.any(index_array >= len(self._replay)):
+            raise IndexError("indexes are out of range")
         assert self._replay.features is not None
         assert self._replay.legal_masks is not None
         return TrajectoryArrayBatch(
@@ -99,8 +120,7 @@ class KlentReplayDataset:
             ),
             values=np.ascontiguousarray(self._values[index_array], dtype=np.float32),
             sample_weights=np.ascontiguousarray(
-                self._replay.sample_weights[index_array].astype(np.float32, copy=False)
-                * importance_weights,
+                self._replay.sample_weights[index_array].astype(np.float32, copy=False),
                 dtype=np.float32,
             ),
             legal_masks=np.ascontiguousarray(
